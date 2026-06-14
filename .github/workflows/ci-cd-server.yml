@@ -1,0 +1,272 @@
+name: CI/CD - Server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/src-tauri/**'
+      - 'app/src/**'
+      - 'deploy/**'
+      - 'docs/**'
+      - 'Dockerfile'
+      - 'docker-compose*.yml'
+      - 'tests/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/src-tauri/**'
+      - 'app/src/**'
+      - 'deploy/**'
+      - 'docs/**'
+      - 'Dockerfile'
+      - 'docker-compose*.yml'
+      - 'tests/**'
+  release:
+    types: [published]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  MAX_IMAGE_SIZE_MB: 400
+
+jobs:
+  rust-test:
+    name: Rust Tests + Coverage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: cargo test (headless)
+        working-directory: app/src-tauri
+        run: cargo test --no-default-features --features headless-server --lib --tests
+
+      - name: cargo llvm-cov coverage gate
+        working-directory: app/src-tauri
+        run: |
+          cargo install cargo-llvm-cov --locked 2>/dev/null || true
+          cargo llvm-cov --no-default-features --features headless-server --lib --fail-under-lines 80
+
+      - name: cargo audit
+        working-directory: app/src-tauri
+        run: |
+          cargo install cargo-audit --locked 2>/dev/null || true
+          cargo audit || echo "audit warnings (non-blocking)"
+
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/cache@v4
+        with:
+          path: app/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Type check
+        working-directory: app
+        run: npx tsc --noEmit
+
+      - name: Vitest
+        working-directory: app
+        run: |
+          npm run test
+          npm run test:coverage
+
+  build-and-smoke:
+    name: Docker Build + Smoke Tests
+    needs: [rust-test, frontend-test]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          push: false
+          load: true
+          tags: telegram-drive-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check image size
+        run: |
+          SIZE_BYTES=$(docker images --format "{{.Size}}" telegram-drive-api:ci)
+          echo "Image size: $SIZE_BYTES"
+          # Convert to MB for comparison (handle KB/MB/GB)
+          SIZE_MB=$(docker image inspect telegram-drive-api:ci --format='{{.Size}}' | awk '{print int($1/1024/1024)}')
+          echo "Image size: ${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt "${{ env.MAX_IMAGE_SIZE_MB }}" ]; then
+            echo "ERROR: Docker image size ${SIZE_MB}MB exceeds limit ${{ env.MAX_IMAGE_SIZE_MB }}MB"
+            exit 1
+          fi
+
+      - name: Start container
+        run: |
+          docker run -d --name td-api -p 11334:1334 \
+            -e TELEGRAM_API_ID=12345 \
+            -e TELEGRAM_API_HASH=ci_dummy_hash_not_for_production \
+            -e ACCESS_PWD=ci-test-pwd \
+            -e API_KEY=ci-test-api-key \
+            -e RATE_LIMIT_RPM=600 \
+            telegram-drive-api:ci
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11334/api/v1/health | grep -q '"status":"ok"'; then
+              curl -fsS http://127.0.0.1:11334/api/v1/health
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs td-api
+          exit 1
+
+      - name: Integration tests
+        run: |
+          chmod +x tests/integration/test-api.sh
+          tests/integration/test-api.sh http://127.0.0.1:11334 ci-test-pwd ci-test-api-key
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs td-api
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f td-api || true
+
+  publish-image:
+    name: Publish Docker Image
+    needs: [build-and-smoke]
+    if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=,suffix=,format=short
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  tauri-release:
+    name: Tauri Desktop Release
+    if: github.event_name == 'release'
+    needs: [rust-test, frontend-test]
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: ''
+            args: ''
+          - platform: ubuntu-22.04
+            target: ''
+            args: ''
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            args: '--target x86_64-apple-darwin'
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            args: '--target aarch64-apple-darwin'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl \
+            libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: ./app
+          args: ${{ matrix.args }}

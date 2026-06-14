@@ -1,16 +1,34 @@
 # Telegram Drive — Docker API 服务
 
-
-
 面向 **7×24 服务器部署** 的无头 API 网关：业务系统用 HTTP 上传/下载/列举文件，无需阿里云 OSS。架构基于 **Telegram 用户 API（grammers）**，容量与单文件大小优于 Bot API 方案（如 [tg-disk](https://github.com/Yohann0617/tg-disk)）。
+
+**v4.0.0-beta 更新**：
+- Docker 镜像瘦身至 <400MB（UPX 压缩、移除桌面依赖、非 root 运行）
+- SQLite 连接池化（r2d2），支持更高并发
+- API Key 自动升级为 Argon2id
+- CSP nonce 安全策略
+- CI/CD 自动构建并推送 `ghcr.io/caamer20/telegram-drive`（linux/amd64, linux/arm64）
 
 **生产 / 500 并发 / 降级方案**：详见 [docs/DEPLOYMENT-PRODUCTION.md](docs/DEPLOYMENT-PRODUCTION.md)（含 Redis 多副本、容量规划、Nginx、运维清单）。
 
-
-
 **默认端口：`1334`**（可在 `.env` 中设置 `PORT`，宿主机与容器内一致，避免与其它服务抢 8080）。
 
+## 镜像使用（v4.0+）
 
+```bash
+# 使用预构建镜像（推荐）
+docker run -d \
+  -p 1334:1334 \
+  -v ./data:/data \
+  -e TELEGRAM_API_ID=... \
+  -e TELEGRAM_API_HASH=... \
+  -e ACCESS_PWD=... \
+  -e API_KEY=... \
+  ghcr.io/caamer20/telegram-drive:v4.0.0-beta
+
+# 自行构建（多阶段、UPX 压缩）
+docker build -t telegram-drive-server:4.0 .
+```
 
 ## 工作流（一条 compose 管前后端）
 
@@ -26,6 +44,8 @@
 改 `deploy/web`、`docs` 保存即生效。改 Rust 由 cargo watch 重编，通常无需 `docker build`。
 
 无 Docker 裸机调试仍用 `start.bat`，共用 `deploy/web` 与 `data/`。
+
+**注意**：v4.0 Dockerfile 移除了 GTK/WebKit 依赖，仅提供 headless API 服务；桌面端请使用 Tauri 安装包。
 
 
 

@@ -47,7 +47,7 @@ fn generate_cookie_val(token: &str, password_hash: &str) -> String {
 }
 
 fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLinkRow>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = db.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked, owner_id

@@ -63,6 +63,7 @@
       <div class="stats" id="stats" style="display:none">
         <div class="stat-item"><span class="stat-value" id="file-count">0</span><span class="stat-label">待上传文件</span></div>
         <div class="stat-item"><span class="stat-value" id="total-size">0</span><span class="stat-label">总大小</span></div>
+        <div class="stat-item"><span class="stat-value conn-status conn-disconnected" id="conn-status">未连接</span><span class="stat-label">进度连接</span></div>
       </div>
 
       <div id="file-list"></div>
@@ -112,6 +113,7 @@
       resultLinksSelector: '#result-links',
       closeModalSelector: '#close-modal',
       retryStatusSelector: '#retry-status',
+      connectionStatusSelector: '#conn-status',
       uploadBtnLabel: '开始上传',
       loginUrl: '/login.html'
     });

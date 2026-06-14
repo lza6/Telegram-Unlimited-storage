@@ -1,6 +1,47 @@
 # Changelog
 
-## [4.0.0-beta] - 2026-06-01
+## [4.0.0-beta] - 2026-06-14
+
+### Production-ready hardening & DevOps modernization
+
+This release completes the v3 → v4 upgrade roadmap with security hardening, backend architecture improvements, frontend refactoring, A11y compliance, and DevOps enhancements.
+
+#### Security Hardening (Phase 1)
+- **[H-01] Argon2id API key migration** — Auto-upgrade legacy SHA-256 hashes on successful authentication across single-tenant settings, multi-tenant database, admin auth, API auth, and secure download paths. `verify_and_upgrade_key` centralizes migration logic.
+- **[H-02] Constant-time password comparison** — Verified `constant_time_eq` used correctly in all auth paths.
+- **[H-03] Content-Disposition hardening** — RFC 5987 encoding for filenames with special characters; injection prevention tested.
+- **[H-04] CSP nonce-based hardening** — Per-request nonce generation for scripts/styles; inline tags auto-injected with nonce attributes; external CDN origins limited to essential resources.
+
+#### Backend Architecture (Phase 2)
+- **[M-01] SQLite connection pooling** — `r2d2` pool with `max_size=8`, `min_idle=2`, 5s timeout, WAL mode. Replaced all `Mutex<Connection>` with pool `get()`.
+- **[M-02] Configurable Telegram DC address** — `TG_DC_ADDR` env var; no hardcoded `unwrap()` panic risk.
+- **[M-03~M-06] Verified existing implementations** — WebDAV constant-time comparison, X-Forwarded-For trust model, HMAC cookie signing, rate limiter background cleanup.
+
+#### Frontend Refactoring (Phase 3)
+- **AuthWizard decomposition** — 725-line monolith split into 11 modules under `components/auth/` (types, theme toggle, phone/code/password steps, QR login, help/donate modals).
+- **Dashboard refactoring** — 802 → 575 lines; extracted `usePreviewManager`, `useGlobalSearch`, `useDragAndDrop` hooks.
+- **A11y compliance** — ARIA roles (`dialog`, `menu`, `region`, `button`), labels, focus traps, keyboard navigation added to ContextMenu, MoveToFolderModal, UploadQueue, DownloadQueue, FileCard, FileExplorer, Sidebar, EmptyState, SettingsModal.
+- **Responsive design** — TopBar mobile search dropdown, button sizing adaptation (`sm:` breakpoints), Sidebar collapsible on mobile.
+
+#### DevOps (Phase 5)
+- **Docker image slimming** — UPX binary compression (`--best --lzma`), stripped debug symbols, removed GTK/WebKit dependencies (headless-only), apt cache cleanup, non-root user. Target <400MB.
+- **CI/CD enhancement** — New `ci-cd-server.yml`: Rust tests + 80% coverage gate, frontend tests + TypeScript check, Docker build + size check (<400MB), integration tests, GHCR multi-platform push (amd64/arm64), release-triggered Tauri desktop builds.
+
+#### Code Quality (Phase 6)
+- **Version sync** — `Cargo.toml`, `package.json`, `tauri.conf.json` unified at `4.0.0-beta`.
+- **Build fixes** — `telegram-drive-server.rs`: added `Ordering` import, fixed `config` borrow-after-move.
+- **Test coverage** — Rust 136 tests passing; frontend 241 tests passing.
+
+### Migration from v3
+
+- Legacy API keys auto-upgrade to Argon2id on next successful auth
+- CSP nonce may require inline scripts/styles to be externalized or use nonce attributes
+- Docker image uses non-root user; ensure volume permissions (`chown telegram:telegram /data`)
+- SQLite connection pool default `max_size=8` — adjust if needed via code
+
+---
+
+## [4.0.0-beta] - 2026-06-01 (Initial beta tag)
 
 ### Security hardening & Frontend modernization
 

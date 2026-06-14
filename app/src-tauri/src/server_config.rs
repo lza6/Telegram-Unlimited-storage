@@ -65,6 +65,8 @@ pub struct ServerConfig {
     pub s3_bucket: Option<String>,
     pub s3_access_key: Option<String>,
     pub s3_secret_key: Option<String>,
+    /// Telegram DC address for keep-alive probes (host:port). Default: 149.154.167.50:443.
+    pub tg_dc_addr: String,
 }
 
 impl ServerConfig {
@@ -246,6 +248,11 @@ impl ServerConfig {
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            tg_dc_addr: std::env::var("TG_DC_ADDR")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "149.154.167.50:443".to_string()),
         })
     }
 
@@ -501,6 +508,11 @@ pub fn for_desktop_api(
         s3_bucket: None,
         s3_access_key: None,
         s3_secret_key: None,
+        tg_dc_addr: std::env::var("TG_DC_ADDR")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "149.154.167.50:443".to_string()),
     })
 }
 
@@ -570,6 +582,7 @@ pub fn test_config() -> std::sync::Arc<ServerConfig> {
         s3_bucket: None,
         s3_access_key: None,
         s3_secret_key: None,
+        tg_dc_addr: "149.154.167.50:443".to_string(),
     })
 }
 

@@ -60,6 +60,7 @@ export function DownloadQueue({
         <TransferQueuePanel
             items={items}
             panelClassName={PANEL_CLASS}
+            ariaLabel="Download queue"
             title="Downloads"
             titlePrefix={<Download className="w-4 h-4 text-telegram-secondary" />}
             titleSuffix={

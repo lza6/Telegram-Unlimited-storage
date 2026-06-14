@@ -195,6 +195,13 @@ pre.code {
 .stat-item { display: flex; flex-direction: column; gap: 4px; }
 .stat-value { font-size: 1.25rem; font-weight: 700; color: var(--accent); }
 .stat-label { font-size: 0.75rem; color: var(--muted); }
+/* Connection status indicator */
+.conn-status { font-size: 0.9rem; font-weight: 600; transition: color 0.2s; }
+.conn-status.conn-connecting { color: #fbbf24; }
+.conn-status.conn-connected { color: #4ade80; }
+.conn-status.conn-reconnecting { color: #fb923c; }
+.conn-status.conn-error { color: #f87171; }
+.conn-status.conn-closed, .conn-status.conn-disconnected { color: var(--muted); }
 .file-item {
   background: #152535;
   border: 1px solid #2d3a4f;

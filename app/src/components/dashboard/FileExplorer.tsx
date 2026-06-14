@@ -222,6 +222,8 @@ export function FileExplorer({
     return (
         <div
             ref={parentRef}
+            role={viewMode === 'grid' ? 'grid' : 'list'}
+            aria-label="File list"
             className="flex-1 p-6 overflow-auto custom-scrollbar"
             onClick={(e) => {
                 if (e.target === e.currentTarget) onSelectionClear();
@@ -233,18 +235,21 @@ export function FileExplorer({
                     <div className="flex items-center gap-2 mb-4 text-xs text-telegram-subtext">
                         <span>Sort by:</span>
                         <button
+                            aria-label="Sort by name"
                             onClick={() => handleSort('name')}
                             className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'name' ? 'text-telegram-primary' : ''}`}
                         >
                             Name <SortIcon field="name" />
                         </button>
                         <button
+                            aria-label="Sort by size"
                             onClick={() => handleSort('size')}
                             className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'size' ? 'text-telegram-primary' : ''}`}
                         >
                             Size <SortIcon field="size" />
                         </button>
                         <button
+                            aria-label="Sort by date"
                             onClick={() => handleSort('date')}
                             className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'date' ? 'text-telegram-primary' : ''}`}
                         >

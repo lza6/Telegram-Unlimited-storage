@@ -22,7 +22,7 @@ export function EmptyState({ onUpload, uploadEnabled = true, blockedTitle, varia
 
         return (
 
-            <div className="flex flex-col items-center justify-center py-20 px-8 text-center">
+            <div role="status" className="flex flex-col items-center justify-center py-20 px-8 text-center">
 
                 <Search className="w-16 h-16 mb-6 text-telegram-subtext/40" />
 
@@ -48,7 +48,7 @@ export function EmptyState({ onUpload, uploadEnabled = true, blockedTitle, varia
 
     return (
 
-        <div className="flex flex-col items-center justify-center py-20 px-8 text-center">
+        <div role="status" className="flex flex-col items-center justify-center py-20 px-8 text-center">
 
             {/* Custom SVG Illustration */}
 

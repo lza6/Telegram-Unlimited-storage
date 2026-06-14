@@ -12,7 +12,7 @@ describe('TransferQueuePanel', () => {
                 activeStatuses={['pending', 'uploading']}
                 inProgressStatus="uploading"
                 progressBarClassName="bg-blue-500"
-                getItemLabel={(item) => item.label}
+                getItemLabel={(item) => (item as { label: string }).label}
                 renderStatusIndicator={() => <span data-testid="dot" />}
                 onClearFinished={vi.fn()}
                 onCancelAll={vi.fn()}
@@ -42,7 +42,7 @@ describe('TransferQueuePanel', () => {
                 activeStatuses={['pending', 'uploading']}
                 inProgressStatus="uploading"
                 progressBarClassName="bg-blue-500"
-                getItemLabel={(item) => item.label}
+                getItemLabel={(item) => (item as { label: string }).label}
                 renderStatusIndicator={() => <span data-testid="dot" />}
                 onClearFinished={vi.fn()}
                 onCancelAll={vi.fn()}

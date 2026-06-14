@@ -86,7 +86,7 @@ pub fn invalidate_folders(db: &DbConnection) {
 }
 
 pub fn cleanup_stale(db: &DbConnection, max_age_secs: u64) -> Result<usize, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = db.get().map_err(|e| e.to_string())?;
     let cutoff = chrono::Utc::now().timestamp() - max_age_secs as i64;
     let mut stmt = conn
         .prepare("DELETE FROM metadata_cache WHERE updated_at < ?")
@@ -108,7 +108,7 @@ fn get_payload<T: for<'de> Deserialize<'de>>(
     if ttl_secs == 0 {
         return None;
     }
-    let conn = db.lock().ok()?;
+    let conn = db.get().ok()?;
     let mut stmt = conn
         .prepare("SELECT payload, updated_at FROM metadata_cache WHERE cache_key = ? AND kind = ?")
         .ok()?;
@@ -134,7 +134,7 @@ fn put_payload<T: Serialize + ?Sized>(
 ) -> Result<(), String> {
     let payload = serde_json::to_string(value).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = db.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "INSERT INTO metadata_cache (cache_key, kind, payload, updated_at)
@@ -155,7 +155,7 @@ fn put_payload<T: Serialize + ?Sized>(
 }
 
 fn delete_key(db: &DbConnection, key: &str) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    let conn = db.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("DELETE FROM metadata_cache WHERE cache_key = ?")
         .map_err(|e| e.to_string())?;

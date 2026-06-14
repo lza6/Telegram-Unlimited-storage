@@ -58,8 +58,8 @@ export function useFileOperations(
         if (opts?.canTransfer && opts.canTransfer()) return true;
         if (opts?.canIndexDelete && opts.canIndexDelete()) return true;
         toast.error(
-            opts.indexDeleteBlockedMessage
-                || opts.transferBlockedMessage
+            opts?.indexDeleteBlockedMessage
+                || opts?.transferBlockedMessage
                 || '无法删除 — Telegram 会话或 Bot 服务未就绪',
         );
         return false;

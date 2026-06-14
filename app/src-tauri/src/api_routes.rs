@@ -54,7 +54,7 @@ pub(crate) fn check_auth(
 
     if let Some(key) = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()) {
         if let Some(h) = &api_state.key_hash {
-            if crate::commands::api_settings::verify_key(key, h) {
+            if crate::commands::api_settings::verify_and_upgrade_key(key, h, &config.data_dir) {
                 return Ok(());
             }
             return Err(json_error("UNAUTHORIZED", "Invalid API key", 401));

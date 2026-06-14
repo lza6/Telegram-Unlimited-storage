@@ -1,4 +1,5 @@
 use actix_web::{test, web, App};
+use app_lib::bot_pool::BotPool;
 use app_lib::metrics;
 use app_lib::server_config::test_config;
 use std::sync::Arc;
@@ -8,11 +9,13 @@ async fn metrics_endpoint_exposes_upload_queue_gauges() {
     app_lib::server_uptime::mark_started();
     let config = test_config();
     let upload_gate = Arc::new(app_lib::upload_gate::UploadGate::new(4, 2));
+    let bot_pool = Arc::new(BotPool::new(vec![]));
 
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(config))
             .app_data(web::Data::new(upload_gate))
+            .app_data(web::Data::new(bot_pool))
             .configure(metrics::configure_metrics),
     )
     .await;

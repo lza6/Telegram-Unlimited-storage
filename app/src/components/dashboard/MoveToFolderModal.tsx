@@ -1,4 +1,5 @@
-import { Plus, HardDrive, Folder } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { HardDrive, Folder, X } from 'lucide-react';
 import { TelegramFolder } from '../../types';
 
 interface MoveToFolderModalProps {
@@ -9,9 +10,52 @@ interface MoveToFolderModalProps {
 }
 
 export function MoveToFolderModal({ folders, onClose, onSelect, activeFolderId }: MoveToFolderModalProps) {
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const previousActiveElement = useRef<HTMLElement | null>(null);
+
+    // Focus trap and initial focus
+    useEffect(() => {
+        previousActiveElement.current = document.activeElement as HTMLElement;
+        // Focus first focusable element
+        const firstFocusable = dialogRef.current?.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+        firstFocusable?.focus();
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                onClose();
+                return;
+            }
+            if (e.key === 'Tab') {
+                const focusableElements = dialogRef.current?.querySelectorAll<HTMLElement>(
+                    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                );
+                if (!focusableElements || focusableElements.length === 0) return;
+
+                const first = focusableElements[0];
+                const last = focusableElements[focusableElements.length - 1];
+
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            // Restore focus to previous element
+            previousActiveElement.current?.focus();
+        };
+    }, [onClose]);
+
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
             <div
+                ref={dialogRef}
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="move-folder-title"
@@ -20,7 +64,7 @@ export function MoveToFolderModal({ folders, onClose, onSelect, activeFolderId }
             >
                 <div className="p-4 border-b border-telegram-border flex justify-between items-center">
                     <h3 id="move-folder-title" className="text-telegram-text font-medium">Move to Folder</h3>
-                    <button onClick={onClose} aria-label="Close" className="text-telegram-subtext hover:text-telegram-text"><Plus className="w-5 h-5 rotate-45" /></button>
+                    <button onClick={onClose} aria-label="Close" className="text-telegram-subtext hover:text-telegram-text"><X className="w-5 h-5" /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     {activeFolderId !== null && (

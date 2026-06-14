@@ -111,7 +111,7 @@ pub fn resolve_tenant_from_api_key(
     if config.multi_tenant_enabled {
         crate::db::find_tenant_id_by_api_key(db, key).ok().flatten()
     } else if let Some(ref hash) = config.api_key_hash {
-        if api_settings::verify_key(key, hash) {
+        if api_settings::verify_and_upgrade_key(key, hash, &config.data_dir) {
             Some("default".to_string())
         } else {
             None

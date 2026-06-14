@@ -27,6 +27,46 @@ fn sanitize_filename_for_header(filename: &str) -> String {
     cleaned.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Encode a filename for RFC 5987 `filename*` parameter.
+/// Keeps unreserved characters ([A-Za-z0-9-._~]) and %-encodes the rest.
+fn rfc5987_encode(input: &str) -> String {
+    let mut out = String::new();
+    for b in input.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Build a safe Content-Disposition header value.
+///
+/// Returns `attachment` or `inline` with both a legacy ASCII `filename` and a
+/// RFC 5987 `filename*=UTF-8''...` parameter. The legacy name keeps only
+/// ASCII letters, digits, and safe punctuation to avoid header injection.
+fn build_content_disposition(kind: &str, filename: &str) -> String {
+    // Legacy filename: keep a conservative set of ASCII characters.
+    let legacy: String = filename
+        .chars()
+        .filter(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    *c,
+                    ' ' | '-' | '_' | '.' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+                )
+        })
+        .collect();
+    let legacy = sanitize_filename_for_header(&legacy);
+
+    // RFC 5987 filename* for modern browsers (preserves Unicode).
+    let encoded = rfc5987_encode(filename);
+
+    format!("{kind}; filename=\"{legacy}\"; filename*=UTF-8''{encoded}")
+}
+
 pub async fn download_message_stream(
     req: &HttpRequest,
     message_id: i32,
@@ -107,15 +147,9 @@ pub async fn download_message_stream(
     );
 
     let disposition = if force_attachment || !is_previewable(&mime) {
-        format!(
-            "attachment; filename=\"{}\"",
-            sanitize_filename_for_header(&filename)
-        )
+        build_content_disposition("attachment", &filename)
     } else {
-        format!(
-            "inline; filename=\"{}\"",
-            sanitize_filename_for_header(&filename)
-        )
+        build_content_disposition("inline", &filename)
     };
 
     if is_range {
@@ -173,15 +207,9 @@ async fn bot_download_message(
 
     let mime = mime_guess(&filename);
     let disposition = if force_attachment || !is_previewable(&mime) {
-        format!(
-            "attachment; filename=\"{}\"",
-            sanitize_filename_for_header(&filename)
-        )
+        build_content_disposition("attachment", &filename)
     } else {
-        format!(
-            "inline; filename=\"{}\"",
-            sanitize_filename_for_header(&filename)
-        )
+        build_content_disposition("inline", &filename)
     };
 
     let status = resp.status();
@@ -400,15 +428,9 @@ pub async fn download_manifest_stream(
 
     let ext_mime = mime_guess(&orig_filename);
     let disposition = if is_previewable(&ext_mime) {
-        format!(
-            "inline; filename=\"{}\"",
-            sanitize_filename_for_header(&orig_filename)
-        )
+        build_content_disposition("inline", &orig_filename)
     } else {
-        format!(
-            "attachment; filename=\"{}\"",
-            sanitize_filename_for_header(&orig_filename)
-        )
+        build_content_disposition("attachment", &orig_filename)
     };
 
     let max_chunk = net_config.download_chunk_i32();
@@ -491,15 +513,9 @@ async fn bot_download_manifest(
 
     let ext_mime = mime_guess(&orig_filename);
     let disposition = if is_previewable(&ext_mime) {
-        format!(
-            "inline; filename=\"{}\"",
-            sanitize_filename_for_header(&orig_filename)
-        )
+        build_content_disposition("inline", &orig_filename)
     } else {
-        format!(
-            "attachment; filename=\"{}\"",
-            sanitize_filename_for_header(&orig_filename)
-        )
+        build_content_disposition("attachment", &orig_filename)
     };
 
     let config = config.clone();
@@ -546,5 +562,53 @@ fn mime_guess(filename: &str) -> String {
         "mp3" => "audio/mpeg".into(),
         "pdf" => "application/pdf".into(),
         _ => "application/octet-stream".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_filename_escapes_quotes_and_backslash() {
+        assert_eq!(
+            sanitize_filename_for_header(r#"my\"file.pdf"#),
+            r#"my\\\"file.pdf"#
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_strips_control_chars() {
+        assert_eq!(
+            sanitize_filename_for_header("hello\x00\nworld.txt"),
+            "helloworld.txt"
+        );
+    }
+
+    #[test]
+    fn rfc5987_encode_keeps_unreserved() {
+        assert_eq!(rfc5987_encode("hello-world_2.0.txt"), "hello-world_2.0.txt");
+    }
+
+    #[test]
+    fn rfc5987_encode_escapes_unicode() {
+        assert_eq!(rfc5987_encode("中文.pdf"), "%E4%B8%AD%E6%96%87.pdf");
+    }
+
+    #[test]
+    fn build_content_disposition_includes_legacy_and_rfc5987() {
+        let cd = build_content_disposition("attachment", "report 中文.pdf");
+        assert!(cd.starts_with("attachment; "));
+        assert!(cd.contains("filename=\"report .pdf\""));
+        assert!(cd.contains("filename*=UTF-8''report%20%E4%B8%AD%E6%96%87.pdf"));
+    }
+
+    #[test]
+    fn build_content_disposition_prevents_header_injection() {
+        let cd = build_content_disposition("attachment", "evil\r\nX-Inject: yes\".txt");
+        // Legacy name should have CRLF stripped, quotes escaped, and non-letters removed.
+        assert!(!cd.contains("\r\n"));
+        assert!(!cd.contains("X-Inject:"));
+        assert!(cd.contains("filename=\"evil"));
     }
 }

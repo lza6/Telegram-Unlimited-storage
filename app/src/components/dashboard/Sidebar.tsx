@@ -50,7 +50,7 @@ export function Sidebar({
     }
 
     return (
-        <aside className={`${collapsed ? 'hidden' : 'flex'} md:flex w-64 bg-telegram-surface border-r border-telegram-border flex-col fixed md:relative inset-y-0 left-0 z-[90]`} onClick={e => e.stopPropagation()}>
+        <aside className={`${collapsed ? '-translate-x-full md:translate-x-0' : 'translate-x-0'} md:flex w-64 bg-telegram-surface border-r border-telegram-border flex-col fixed md:relative inset-y-0 left-0 z-[90] transition-transform duration-300 ease-out`} onClick={e => e.stopPropagation()}>
             {/* Mobile close button */}
             {onToggle && (
                 <button
@@ -67,7 +67,7 @@ export function Sidebar({
             </div>
 
             {/* Scrollable folder list */}
-            <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto min-h-0">
+            <nav role="navigation" aria-label="Folder navigation" className="flex-1 px-2 py-4 space-y-1 overflow-y-auto min-h-0">
                 <SidebarItem
                     icon={HardDrive}
                     label="Saved Messages"

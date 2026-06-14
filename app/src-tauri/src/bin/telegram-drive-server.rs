@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use app_lib::commands::TelegramState;
@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // VPN keep-alive (same as desktop) when configured in network_settings.json
     {
         let ka_config = net_config.clone();
+        let dc_addr_str = config.tg_dc_addr.clone();
         tokio::spawn(async move {
             loop {
                 let interval = ka_config.keep_alive_interval_sec();
@@ -76,8 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
-                let dc_addr: std::net::SocketAddr = std::env::var("TG_DC_ADDR")
-                    .unwrap_or_else(|_| "149.154.167.50:443".to_string())
+                let dc_addr: std::net::SocketAddr = dc_addr_str
                     .parse()
                     .unwrap_or_else(|_| "149.154.167.50:443".parse().expect("default DC addr"));
                 let _ = tokio::task::spawn_blocking(move || {

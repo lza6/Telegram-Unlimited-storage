@@ -11,6 +11,12 @@
   --color-telegram-subtext: #8e9fb3;
   --color-telegram-border: rgba(255, 255, 255, 0.1);
   --color-telegram-hover: rgba(255, 255, 255, 0.05);
+
+  /* Mobile breakpoints */
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
 }
 
 /* Light Theme Overrides */
@@ -245,4 +251,16 @@ body,
 :root.light input:focus,
 :root.light textarea:focus {
   border-color: var(--color-telegram-primary);
+}
+
+/* Mobile safe area support */
+.safe-area-inset-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Mobile main content offset for bottom tab bar */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .mobile-content-offset {
+    padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+  }
 }

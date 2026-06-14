@@ -37,6 +37,9 @@ Error.html
 /data/api_settings.json
 /data/network_settings.json
 
+# Test coverage output (generated)
+app/coverage/
+
 # Android local builds
 /android/
 /app/src-tauri/gen/android/

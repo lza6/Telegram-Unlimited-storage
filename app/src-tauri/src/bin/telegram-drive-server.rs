@@ -94,6 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let upload_gate = Arc::new(app_lib::upload_gate::build_upload_gate(&config));
+    let download_counter = Arc::new(app_lib::download_counter::DownloadCounter::from_env());
+    let counter_running = Arc::new(AtomicBool::new(true));
+    download_counter.spawn_cleanup_task(300, counter_running.clone());
 
     let runtime = Arc::new(ServerRuntime {
         tg_state: tg_state.clone(),
@@ -105,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         upload_gate,
         upload_progress: Arc::new(app_lib::upload_progress::UploadProgressHub::new()),
+        download_counter,
         stream_token,
         api_running: Arc::new(AtomicBool::new(true)),
     });
@@ -119,6 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         app_lib::server_maintenance::wait_shutdown_signal().await;
         log::info!("Graceful shutdown: stopping HTTP server…");
+        counter_running.store(false, Ordering::SeqCst);
         handle.stop(true).await;
         if app_lib::commands::signal_runner_shutdown(&runtime.tg_state.runner_shutdown) {
             log::info!("Signaled grammers runner shutdown");

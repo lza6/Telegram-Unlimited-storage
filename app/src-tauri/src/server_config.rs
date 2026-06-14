@@ -49,6 +49,8 @@ pub struct ServerConfig {
     pub multi_tenant_enabled: bool,
     /// Presigned / share link TTL in seconds (default 3600). 0 = never expire (rotate secret to revoke).
     pub upload_link_ttl_secs: u64,
+    /// Maximum allowed downloads per presigned URL. 0 = unlimited (default).
+    pub presigned_max_downloads: Option<u32>,
     /// Enable WebDAV at WEBDAV_PREFIX (maps to file_assets + download).
     pub webdav_enabled: bool,
     pub webdav_prefix: String,
@@ -205,6 +207,10 @@ impl ServerConfig {
                 .filter(|s| !s.is_empty()),
             multi_tenant_enabled: env_bool("MULTI_TENANT_ENABLED", true),
             upload_link_ttl_secs: env_u64("UPLOAD_LINK_TTL_SECS", 0),
+            presigned_max_downloads: std::env::var("PRESIGNED_MAX_DOWNLOADS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v: &u32| *v > 0),
             webdav_enabled: env_bool("WEBDAV_ENABLED", false),
             webdav_prefix: std::env::var("WEBDAV_PREFIX")
                 .unwrap_or_else(|_| "/webdav".to_string())
@@ -484,6 +490,7 @@ pub fn for_desktop_api(
         download_signing_secret: None,
         multi_tenant_enabled: false,
         upload_link_ttl_secs: 3600,
+        presigned_max_downloads: None,
         webdav_enabled: false,
         webdav_prefix: "/webdav".to_string(),
         metrics_enabled: false,
@@ -552,6 +559,7 @@ pub fn test_config() -> std::sync::Arc<ServerConfig> {
         download_signing_secret: Some("test-signing-secret-32chars-min!!".to_string()),
         multi_tenant_enabled: true,
         upload_link_ttl_secs: 0,
+        presigned_max_downloads: None,
         webdav_enabled: false,
         webdav_prefix: "/webdav".to_string(),
         metrics_enabled: true,

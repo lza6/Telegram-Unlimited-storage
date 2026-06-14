@@ -52,6 +52,7 @@ pub fn issue_upload_download_link(
             folder_id,
             expires_at,
             owner_id: owner.to_string(),
+            max_downloads: config.presigned_max_downloads,
         };
         let url = presigned_url::build_presigned_url(base_url, &params, secret)?;
         return Ok(SecureDownloadLink {

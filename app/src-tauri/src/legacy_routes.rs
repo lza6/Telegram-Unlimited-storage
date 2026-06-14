@@ -448,6 +448,8 @@ struct PresignedDownloadQuery {
     exp: i64,
     owner: String,
     sig: String,
+    #[serde(default)]
+    max_downloads: Option<u32>,
 }
 
 #[get("/d/signed")]
@@ -458,6 +460,7 @@ async fn presigned_download_query(
     admin: web::Data<AdminState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
     net_config: web::Data<Arc<crate::vpn_optimizer::NetworkConfig>>,
+    counter: web::Data<crate::download_counter::DownloadCounter>,
 ) -> impl Responder {
     let secret = match admin.config.download_signing_secret.as_deref() {
         Some(s) => s,
@@ -474,6 +477,7 @@ async fn presigned_download_query(
         query.exp,
         &query.owner,
         &query.sig,
+        query.max_downloads,
     );
 
     if crate::presigned_url::is_expired(params.expires_at) {
@@ -486,6 +490,18 @@ async fn presigned_download_query(
         return HttpResponse::Forbidden().json(serde_json::json!({
             "error": { "code": "INVALID_SIGNATURE", "message": "Invalid or tampered download signature" }
         }));
+    }
+
+    // Enforce max download limit if configured in URL
+    if let Some(max_downloads) = params.max_downloads {
+        if let Err(msg) = counter
+            .try_consume(&query.sig, max_downloads, params.expires_at)
+            .await
+        {
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "error": { "code": "DOWNLOAD_LIMIT_REACHED", "message": msg }
+            }));
+        }
     }
 
     if let Err(msg) = crate::file_access::assert_presigned_asset(

@@ -58,6 +58,7 @@ urlencoding = "2"
 redis = { version = "0.27", default-features = false, features = ["script"] }
 actix-ws = "0.3"
 parking_lot = "0.12"
+async-trait = "0.1"
 
 [[bin]]
 name = "app"

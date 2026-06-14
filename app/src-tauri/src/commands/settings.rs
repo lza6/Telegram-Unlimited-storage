@@ -1,7 +1,7 @@
 //! Tauri commands for applying proxy and VPN optimizer settings.
 //! These are called from the frontend when the user changes network configuration.
 
-use tauri::State;
+use tauri::{Manager, State};
 use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig, NetworkConfigSnapshot};
 
 /// Apply proxy settings from the frontend.
@@ -9,31 +9,50 @@ use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig, NetworkConfigS
 #[tauri::command]
 pub async fn cmd_apply_proxy_settings(
     enabled: bool,
-    proxy_type: String,
+    _proxy_type: String,
     host: String,
     port: u16,
     username: String,
     password: String,
-    secret: String,
+    _secret: String,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    let existing = net_config.proxy.read().await.clone();
+    let proxy_type = {
+        let t = _proxy_type.trim().to_lowercase();
+        if t.is_empty() {
+            existing.proxy_type.clone()
+        } else if t != "socks5" {
+            return Err("Only SOCKS5 proxy is supported".into());
+        } else {
+            "socks5".into()
+        }
+    };
     let config = ProxyConfig {
         enabled,
         proxy_type,
         host,
         port,
         username,
-        password,
-        secret,
+        password: if password.is_empty() {
+            existing.password
+        } else {
+            password
+        },
+        secret: existing.secret,
     };
+
+    if config.enabled && config.host.trim().is_empty() {
+        return Err("Proxy enabled but host is empty".into());
+    }
 
     log::info!(
         "Applying proxy settings: enabled={}, type={}, host={}:{}",
         config.enabled, config.proxy_type, config.host, config.port
     );
 
-    *net_config.proxy.write().map_err(|e| e.to_string())? = config;
+    *net_config.proxy.write().await = config;
 
     let snapshot = net_config.snapshot();
     if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {
@@ -92,7 +111,7 @@ pub async fn cmd_apply_vpn_settings(
         config.enabled, config.timeout_multiplier, config.retry_attempts, config.flood_wait_respect
     );
 
-    *net_config.vpn.write().map_err(|e| e.to_string())? = config;
+    *net_config.vpn.write().await = config;
 
     let snapshot = net_config.snapshot();
     if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {
@@ -100,6 +119,31 @@ pub async fn cmd_apply_vpn_settings(
     }
 
     Ok("VPN settings applied".into())
+}
+
+/// Get adaptive polling interval (ms) for frontend network checks.
+#[tauri::command]
+pub async fn cmd_get_polling_interval_ms(
+    last_check_ok: bool,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+) -> Result<u64, String> {
+    Ok(net_config.polling_interval_ms(last_check_ok))
+}
+
+/// Get persisted share domain override (ui_settings.json in app data dir).
+#[tauri::command]
+pub fn cmd_get_ui_share_domain(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(crate::ui_settings::load_ui_settings(&dir).share_domain)
+}
+
+/// Persist share domain override for link generation consistency with headless Web UI.
+#[tauri::command]
+pub fn cmd_set_ui_share_domain(share_domain: String, app: tauri::AppHandle) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut ui = crate::ui_settings::load_ui_settings(&dir);
+    ui.share_domain = share_domain.trim().to_string();
+    crate::ui_settings::save_ui_settings(&dir, &ui)
 }
 
 /// Get current network configuration snapshot (called on startup / settings load).

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Telegram Drive 文件列表 — 浏览、搜索、下载与批量管理索引文件。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="文件管理 · Telegram Drive API" />
+  <meta property="og:description" content="Telegram Drive 文件列表 — 浏览、搜索、下载与批量管理索引文件。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="文件管理 · Telegram Drive API" />
+  <meta name="twitter:description" content="Telegram Drive 文件列表 — 浏览、搜索、下载与批量管理索引文件。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/files.html" />
+  <script src="/assets/page-meta.js"></script>
+  <title>文件管理 · Telegram Drive API</title>
+  <link rel="stylesheet" href="/assets/admin.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <strong>Telegram Drive</strong>
+      <nav style="margin-top:20px">
+        <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
+        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/shares.html" data-nav="shares">分享管理</a>
+        <a href="/settings.html" data-nav="settings">服务设置</a>
+        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
+        <a href="/docs.html" data-nav="docs">API 文档</a>
+        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+      </nav>
+      <p class="muted" style="margin-top:16px;font-size:0.8rem">Bot 模式仅支持批量删除（删索引）；批量移动需 User 模式。完整管理可用桌面端。</p>
+    </aside>
+    <section class="content">
+      <h2>文件列表</h2>
+      <div id="service-banner" class="service-banner" hidden role="alert" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+      <div class="toolbar">
+        <input type="search" id="search-input" placeholder="搜索文件名，回车查询…" class="toolbar-input" />
+        <button type="button" id="refresh-btn" class="btn-secondary btn-sm">刷新</button>
+        <select id="bulk-move-folder" class="toolbar-input" aria-label="移动到文件夹" disabled>
+          <option value="">Saved Messages</option>
+        </select>
+        <button type="button" id="bulk-move-btn" class="btn-secondary btn-sm" disabled>移动选中</button>
+        <button type="button" id="bulk-delete-btn" class="btn-danger btn-sm" disabled>删除选中</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:40px"><input type="checkbox" id="select-all" aria-label="全选" /></th>
+              <th>ID</th>
+              <th>名称</th>
+              <th>大小</th>
+              <th>MIME</th>
+              <th>创建时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="files-body"></tbody>
+        </table>
+      </div>
+      <div id="pager" class="pager"></div>
+    </section>
+  </div>
+  <script src="/assets/api-client.js"></script>
+  <script src="/assets/web-pure.js"></script>
+  <script src="/assets/share-domain.js"></script>
+  <script src="/assets/files-pure.js"></script>
+  <script src="/assets/download-pure.js"></script>
+  <script src="/assets/files-core.js"></script>
+</body>
+</html>

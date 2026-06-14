@@ -1,5 +1,84 @@
 # Changelog
 
+## [4.0.0-beta] - 2026-06-01
+
+### Security hardening & Frontend modernization
+
+#### Security (Phase 1)
+- **Argon2id upgrade hint** — `verify_api_key` returns `(valid, should_upgrade)` tuple; auto-migrate legacy SHA-256 hashes on successful login
+- **Timing attack prevention** — `constant_time_eq` for password/token comparison in admin_routes, webdav_routes
+- **HMAC-SHA256 cookie signing** — Replaced raw SHA-256 in `share_routes` to prevent length-extension attacks
+- **CSP hardening** — Removed `unsafe-inline` from script-src, removed external CDN origins (unpkg.com)
+- **X-Forwarded-For trust model** — Only trust proxy headers from `TRUSTED_PROXIES` env var (comma-separated IPs)
+- **Rate limiter memory management** — Background cleanup task prunes stale entries every 60s
+- **Filename sanitization** — Escape `\` and `"` in Content-Disposition headers (http_download)
+- **DC IP configurable** — `TG_DC_ADDR` env var for Telegram data center address (no hardcoded unwrap)
+
+#### Frontend Architecture (Phase 3)
+- **React.lazy** — AuthWizard and Dashboard lazy-loaded with Suspense fallback
+- **React.memo** — FileCard, FileListItem, SidebarItem memoized for render performance
+- **ARIA accessibility** — role, aria-modal, aria-label, aria-checked, aria-labelledby on modals (SettingsModal, MoveToFolderModal, ShareDialog, ContextMenu, FileCard)
+- **Responsive design** — Modals use `max-w-*` + `mx-4` for mobile; Sidebar collapsible with hamburger menu on <768px
+- **UploadQueue A11y** — `role="region"` + `aria-label` for screen readers
+
+#### Code Quality
+- **Type safety** — Frontend passes `tsc --noEmit`; no `any` in modified code
+- **No major refactoring** — All changes surgical; preserved existing architecture
+
+### Migration from v3
+- Set `TRUSTED_PROXIES` if behind reverse proxy (e.g., `TRUSTED_PROXIES=10.0.0.1,10.0.0.2`)
+- Existing API keys with legacy SHA-256 will auto-upgrade to Argon2id on next successful authentication
+- CSP changes may break inline scripts — move to external files or use nonces
+
+---
+
+## [3.0.0-beta] - 2026-06-01
+
+### Enterprise security & v3 roadmap
+
+- **HMAC presigned downloads** — `GET /d/signed` with `DOWNLOAD_SIGNING_SECRET`; default **non-expiring** links (`UPLOAD_LINK_TTL_SECS=0`)
+- **Multi-tenant ownership** — `file_assets.owner_id`, API key tenants, block bare `file_id` when `PUBLIC_FILE_ID_DOWNLOAD=false`
+- **WebDAV gateway** — `WEBDAV_ENABLED` + `WEBDAV_PREFIX`; PROPFIND/GET/PUT/**DELETE/MKCOL**; Basic or `X-API-Key`
+- **Observability** — `GET /metrics`, JSON request logs with `request_id` + `duration_ms`, `X-Request-Id` response header
+- **UploadGate** — `UPLOAD_QUEUE_BACKEND=memory|redis`；Redis 模式通过 `REDIS_URL` 跨副本共享 chunk/file 槽位（Lua 原子计数）
+- **7×24 headless** — SIGTERM/Ctrl+C graceful shutdown, `MAINTENANCE_INTERVAL_SECS` periodic cleanup, `BOT_KEEPALIVE_HOURS` Bot ping
+- **Stability** — `signal_runner_shutdown`, `telegram_error` retry classification, preview/api_routes panic-free paths; `NetworkConfig` uses `tokio::sync::RwLock`
+- **Desktop parity** — Settings → REST API shows live `/api/v1/health` (Telegram, ready, upload queue)
+- **Web UX** — login/upload toasts, visible 503 retry countdown on upload page
+- **Chunked upload fix** — Web `upload-core.js` sends required `session_id`; SSE `/upload_events` + WebSocket `/upload_ws` progress (auto fallback)
+- **Multi-bot pool** — `TG_BOT_TOKENS` round-robin uploads; `bot_pool_index` persisted for correct Bot download routing
+- **Tests & CI** — expanded Rust tests (fs, legacy, share, transport, tenant_auth), integration scripts, Vitest, Playwright E2E in Docker CI, coverage gate **88%**
+- **Docs** — API matrix, download security, WebDAV, Runbook, OpenAPI 3.0.0-beta
+
+### Migration from v2
+
+- Set `DOWNLOAD_SIGNING_SECRET` (≥32 chars) for presigned URLs; rotate to revoke permanent links
+- Keep `PUBLIC_FILE_ID_DOWNLOAD=false` in production
+- Port defaults to **1334** (`http://localhost:1334`)
+
+---
+
+## [2.0.0] - 2026-06-01
+
+### Production-ready API (v2.0)
+
+- **OpenAPI 契约 100% 对齐** — `route_registry` + 自动化契约测试，补全分享路由与 2FA 登录路径
+- **真实限流** — IP + `X-API-Key` 滑动窗口（`RATE_LIMIT_RPM` / `RATE_LIMIT_API_RPM`），429 + `Retry-After`
+- **CORS 白名单** — `CORS_ORIGINS` 环境变量；默认禁止跨域
+- **安全响应头** — `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`
+- **Health v2** — `telegram_connected`、`uptime_secs`、`build`、`ready`、`upload_queue`
+- **UploadGate** — 服务端强制执行 `CHUNK_CONCURRENT` / `FILES_CONCURRENT`；槽位满时 `503` + `Retry-After`；Web 上传自动退避
+- **Argon2id** — 新 API Key / 分享密码；旧 SHA-256 仍可验证
+- **ACCESS_PWD 锁定** — `ACCESS_LOCKOUT_MAX` / `ACCESS_LOCKOUT_SECS`
+- **结构化日志** — `LOG_FORMAT=json` 可选 JSON 行日志
+- **测试** — Rust 单元/集成 + CI `cargo test`；`stress-upload-slots.ps1` 压测背压
+- **Web 管理台** — 登录页 WCAG 基础；429 文案
+- **上传直链** — `/upload`、`/merge_chunks`、`POST /api/v1/files` 统一返回 `download_url`；API 下载走 `http_download`（Bot/User 均可用）
+- **下载安全** — 默认禁止裸 `/d?file_id=`；上传后自动发放 `/d/{token}`（`UPLOAD_SHARE_TTL_HOURS`）；对标 OSS 预签名链接
+- **Docker** — `healthcheck`；文档 `docs/planning/`
+
+---
+
 ## [1.6.8] - 2026-05-25
 
 ### Features & Fixes

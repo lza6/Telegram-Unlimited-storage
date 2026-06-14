@@ -28,15 +28,43 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 *   **Auto-Updates**: Seamless updates for Windows, macOS, and Linux.
 *   **Media Streaming**: Stream video and audio files directly without downloading.
 *   **PDF Viewer:** Built-in PDF support with infinite scrolling for seamless document reading.
-*   **Drag & Drop**: Intuitive drag-and-drop upload and file management.
+*   **Drag & Drop Upload**: Desktop — drag files from Finder/Explorer onto the window (Tauri `onDragDropEvent`); in-dashboard HTML5 drag for file moves stays enabled via `dragDropEnabled: false`. Browser dev — use Upload button.
 *   **Thumbnail Previews**: Inline thumbnails for images and media files.
 *   **Folder Management**: Create "Folders" (private Telegram Channels) to organize content.
 *   **Shareable Links**: Generate direct download links with optional password protection and expiration, and revoke access anytime from the dashboard. Also supports copying native Telegram message links for files in public channels.
 *   **REST API for AI Integration**: Secure local API (off by default) with configurable port and API key auth. OpenAPI spec for seamless LLM and tool integration.
-*   **Proxy Support**: Native integration for SOCKS5 and MTProto proxies to bypass regional restrictions and secure your traffic.
-*   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, and adaptive keep-alives to ensure maximum stability on high-latency connections.
+*   **Proxy Support**: SOCKS5 proxy (grammers-backed); applied on save with automatic reconnect.
+*   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, adaptive keep-alives, and auto-detect VPN to enable optimizer when VPN interfaces are present.
 *   **Privacy Focused**: API keys and data stay local. No third-party servers.
 *   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, and Linux.
+
+## Server API (7×24 headless)
+
+独立 Docker API 网关（Bot/User 双模式、分片上传、预签名下载、多租户）：
+
+- 快速开始：[README-DOCKER.md](README-DOCKER.md)
+- 生产 / 高并发：[docs/DEPLOYMENT-PRODUCTION.md](docs/DEPLOYMENT-PRODUCTION.md)
+- 闭环审计记录：[docs/AUDIT-CLOSURE.md](docs/AUDIT-CLOSURE.md)（第三十九轮：Connection Hook 测试 + E2E API 管线）
+- 深度审查（R56）：[docs/ROUND-56-AUDIT.md](docs/ROUND-56-AUDIT.md) ·（R55）：[docs/ROUND-55-AUDIT.md](docs/ROUND-55-AUDIT.md) · E2E 增量登记：[docs/E2E-CHECKPOINTS.md](docs/E2E-CHECKPOINTS.md) · 扩展：[docs/PRODUCT-EXTENSION-IDEAS.md](docs/PRODUCT-EXTENSION-IDEAS.md)
+- 扩展建议：[docs/EXTENSION-UX-R37.md](docs/EXTENSION-UX-R37.md)
+- TDD 计划：[docs/ROUND-25-TDD.md](docs/ROUND-25-TDD.md) · [docs/ROUND-16-TDD.md](docs/ROUND-16-TDD.md)
+- 桌面 REST 与 Headless 差异：[docs/DESKTOP-API.md](docs/DESKTOP-API.md)
+
+Web 控制台（`deploy/web`）提供**上传、文件列表（下载/分享）、分享管理、传输模式、分享域名与 Headless 网络开关**；深度文件操作请用**桌面端**或 **REST API**（`/api/v1/*`）。Web 与后端统一通过 `TdApi.ensureServiceReady()` 校验 Telegram 就绪（User 模式含 `auth/status.connected`）；`dashboard.html` 与 `upload.html` 共用 `page-readiness.js`；登录页与 Telegram 登录均用 `safeNext()` 防开放重定向。桌面端启动时 `connectionStatus=checking`，首检通过前禁止传输；8550/14201 传输模式通过 `transport_mode.json` 同步。`GET /api/v1/settings` 返回 `effective_share_link_base`（Headless 与 API 同端口；桌面 REST 为流媒体 **14201**）；另含 `effective_share_base_url` 供桌面流媒体参考。
+
+| 页面 | 说明 |
+|------|------|
+| `/dashboard.html` | 服务状态 + 分片上传（可选目标文件夹） |
+| `/files.html` | 列表 / 搜索 / 批量删除·移动 / 下载 / 创建分享 |
+| `/shares.html` | 分享管理 + 手动创建（需 Telegram 就绪） |
+| `/settings.html` | 传输模式、分享域名、Headless 网络、Metrics |
+| `/upload.html` | tg-disk 兼容上传（统一侧栏） |
+| `/docs.html` | OpenAPI 静态文档（统一侧栏） |
+| `/telegram.html` | User 模式 Telegram 登录（统一侧栏） |
+
+Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头（OpenAPI 中 admin 路由均标注 `AccessPwdAuth` + `ApiKeyAuth`）；分享域名写入服务端 `ui_settings.json`（`PUT /api/v1/settings`），桌面端通过 `cmd_set_ui_share_domain` 同步，写入失败会 toast。外部集成使用 `X-API-Key`（Argon2 hash 校验）。Web 文件列表行内「分享」会确认创建无密码永久链接；带密码/有效期请用分享管理页。
+
+**桌面可选 REST API**（Settings → API）：启用后自动生成 **Local Access Password**（`X-Access-Pwd`），亦可生成 API Key。老版本已开启 API 的用户在下次启动时会自动补全本地密码。侧栏显示三种连接态（会话活跃 / 会话过期 / 无网络）。开发环境下 REST 端口（默认 **8550**）可同时提供 `deploy/web` 静态页（含 `/telegram.html`），Settings 切 User 时优先在浏览器打开该页完成绑定。详见 [docs/DESKTOP-API.md](docs/DESKTOP-API.md)。
 
 ##  Screenshots
 

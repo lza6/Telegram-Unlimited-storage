@@ -12,6 +12,59 @@ const DC_ADDRESSES: &[&str] = &[
     "91.108.56.130:443",   // DC5
 ];
 
+/// Detect VPN network interfaces on the system (blocking).
+/// Returns true if common VPN interfaces/adapters are found.
+pub fn detect_vpn_interfaces() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        match std::process::Command::new("ifconfig").arg("-l").output() {
+            Ok(output) => {
+                let ifaces = String::from_utf8_lossy(&output.stdout);
+                let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
+                return ifaces.split_whitespace().any(|iface| {
+                    vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
+                });
+            }
+            Err(_) => return false,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            let vpn_prefixes = ["tun", "tap", "wg", "ppp", "utun", "ipsec"];
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if vpn_prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match std::process::Command::new("ipconfig").output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                let vpn_keywords = [
+                    "tap-windows", "tunnel", "wireguard", "openvpn",
+                    "fortinet", "cisco", "tailscale", "zerotier", "ipsec",
+                ];
+                return vpn_keywords.iter().any(|kw| stdout.contains(kw));
+            }
+            Err(_) => return false,
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        false
+    }
+}
+
 /// Network availability check that respects VPN optimizer settings.
 ///
 /// - Uses the configured timeout multiplier when VPN mode is on
@@ -25,14 +78,13 @@ pub async fn cmd_is_network_available(
     let is_proxy = net_config.is_proxy_active();
     let proxy_addr = net_config.proxy_addr();
     let dc_attempts = {
-        let vpn = net_config.vpn.read().map_err(|e| e.to_string())?;
+        let vpn = net_config.vpn.read().await;
         if vpn.enabled { vpn.dc_fallback_attempts as usize } else { 1 }
     };
 
     tokio::task::spawn_blocking(move || {
         let timeout = Duration::from_secs(timeout_secs);
 
-        // If proxy is active, check proxy reachability
         if is_proxy {
             if let Some(addr) = &proxy_addr {
                 if let Ok(sock_addr) = addr.parse() {
@@ -45,7 +97,6 @@ pub async fn cmd_is_network_available(
             return Ok(false);
         }
 
-        // Try DCs (up to dc_attempts when VPN mode is on)
         let attempts = dc_attempts.min(DC_ADDRESSES.len());
         for dc in &DC_ADDRESSES[..attempts] {
             if let Ok(addr) = dc.parse() {
@@ -73,7 +124,6 @@ pub async fn cmd_check_latency(
     tokio::task::spawn_blocking(move || {
         let timeout = Duration::from_secs(timeout_secs);
 
-        // Target: proxy if active, else DC2
         let target: String = if is_proxy {
             proxy_addr.unwrap_or_else(|| DC_ADDRESSES[0].to_string())
         } else {
@@ -87,10 +137,7 @@ pub async fn cmd_check_latency(
 
         let start = std::time::Instant::now();
         match TcpStream::connect_timeout(&addr, timeout) {
-            Ok(_) => {
-                let ms = start.elapsed().as_millis() as i64;
-                Ok(ms)
-            }
+            Ok(_) => Ok(start.elapsed().as_millis() as i64),
             Err(_) => Ok(-1i64),
         }
     })
@@ -99,74 +146,9 @@ pub async fn cmd_check_latency(
 }
 
 /// Detect VPN network interfaces on the system.
-/// Returns true if common VPN interfaces (tun, utun, wg, ppp, tap) are found.
 #[tauri::command]
 pub async fn cmd_detect_vpn() -> Result<bool, String> {
-    tokio::task::spawn_blocking(|| {
-        #[cfg(target_os = "macos")]
-        {
-            // macOS: check for utun/tun/wg/ppp/tap/ipsec interfaces via ifconfig
-            match std::process::Command::new("ifconfig")
-                .arg("-l")
-                .output()
-            {
-                Ok(output) => {
-                    let ifaces = String::from_utf8_lossy(&output.stdout);
-                    let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
-                    let found = ifaces.split_whitespace().any(|iface| {
-                        vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
-                    });
-                    Ok(found)
-                }
-                Err(_) => Ok(false),
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            // Linux: inspect /sys/class/net to find interface names without executing shell commands
-            if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-                let vpn_prefixes = ["tun", "tap", "wg", "ppp", "utun", "ipsec"];
-                let mut found = false;
-                for entry in entries.flatten() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        if vpn_prefixes.iter().any(|prefix| name.starts_with(prefix)) {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                Ok(found)
-            } else {
-                Ok(false)
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            // Windows: run ipconfig and check output for common VPN adapter keywords
-            match std::process::Command::new("ipconfig")
-                .output()
-            {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
-                    let vpn_keywords = [
-                        "tap-windows", "tunnel", "wireguard", "openvpn",
-                        "fortinet", "cisco", "tailscale", "zerotier", "ipsec"
-                    ];
-                    let found = vpn_keywords.iter().any(|kw| stdout.contains(kw));
-                    Ok(found)
-                }
-                Err(_) => Ok(false),
-            }
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        {
-            // Fallback for other systems
-            Ok(false)
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(detect_vpn_interfaces)
+        .await
+        .map_err(|e| e.to_string())
 }

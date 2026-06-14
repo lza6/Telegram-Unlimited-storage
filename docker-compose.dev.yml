@@ -1,0 +1,51 @@
+# 开发模式叠加：Volume 挂载 + 容器内 cargo watch 自动重编
+# 镜像只在首次（或 Cargo.lock / Dockerfile 变更）时 build 一次
+#
+# 由 .env 的 COMPOSE_FILE 自动叠加；或 dev.bat / docker compose up -d --build
+#
+# 改 deploy/web / docs → 秒级生效（Volume 直读）
+# 改 app/src-tauri/src → cargo watch 自动重编重启（无需 docker build）
+# 改 Cargo.lock / Dockerfile → .\scripts\dev-up.ps1 -Rebuild
+
+services:
+  telegram-drive-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      pull: false
+      cache_from:
+        - telegram-drive-api:dev
+        - telegram-drive-api:builder
+        - telegram-drive-api:local
+    image: telegram-drive-api:dev
+    container_name: telegram-drive-api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-1334}:${PORT:-1334}"
+    volumes:
+      # Rust 源码实时映射（Linux target 用 named volume，避免与 Windows target 混用）
+      - ./app/src-tauri/src:/build/app/src-tauri/src
+      - ./app/src-tauri/build.rs:/build/app/src-tauri/build.rs
+      - ./app/src-tauri/Cargo.toml:/build/app/src-tauri/Cargo.toml
+      - ./app/src-tauri/Cargo.lock:/build/app/src-tauri/Cargo.lock
+      - ./app/src-tauri/tauri.conf.json:/build/app/src-tauri/tauri.conf.json
+      - td-cargo-target:/build/app/src-tauri/target
+      # 静态资源秒级更新
+      - ./deploy/web:/app/deploy/web
+      - ./docs:/app/docs
+      - ./data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /data
+      STATIC_DIR: /app/deploy/web
+      DOCS_DIR: /app/docs
+      BIND_HOST: 0.0.0.0
+      PORT: ${PORT:-1334}
+      CARGO_INCREMENTAL: "1"
+      RUST_LOG: "${RUST_LOG:-info}"
+
+volumes:
+  td-cargo-target:

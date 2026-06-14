@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy } from 'lucide-react';
+import { Eye, HardDrive, Trash2, FolderOpen, Play, FileText, Link, Copy } from 'lucide-react';
 import { TelegramFile, TelegramFolder } from '../../types';
 import { isMediaFile, isPdfFile } from '../../utils';
 import { toast } from 'sonner';
@@ -15,9 +15,29 @@ interface ContextMenuProps {
     onShare?: () => void;
     folders?: TelegramFolder[];
     activeFolderId?: number | null;
+    transferEnabled?: boolean;
+    previewEnabled?: boolean;
+    downloadEnabled?: boolean;
+    shareEnabled?: boolean;
+    deleteEnabled?: boolean;
+    blockedTitle?: string;
+    downloadBlockedTitle?: string;
+    previewBlockedTitle?: string;
+    shareBlockedTitle?: string;
 }
 
-export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, folders, activeFolderId }: ContextMenuProps) {
+export function ContextMenu({
+    x, y, file, onClose, onDownload, onDelete, onPreview, onShare, folders, activeFolderId,
+    transferEnabled = true,
+    previewEnabled = transferEnabled,
+    downloadEnabled = transferEnabled,
+    shareEnabled = transferEnabled,
+    deleteEnabled = transferEnabled,
+    blockedTitle,
+    downloadBlockedTitle,
+    previewBlockedTitle,
+    shareBlockedTitle,
+}: ContextMenuProps) {
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -58,6 +78,8 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
     return (
         <div
             ref={menuRef}
+            role="menu"
+            aria-label={`Actions for ${file.name}`}
             className="fixed z-50 min-w-[200px] bg-telegram-surface/95 backdrop-blur-xl border border-telegram-border rounded-lg shadow-2xl p-1.5 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
             style={{ left: adjustedPos.x, top: adjustedPos.y }}
             onClick={(e) => e.stopPropagation()}
@@ -68,7 +90,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
             </div>
 
             {file.type !== 'folder' && (
-                <button onClick={onPreview} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                <button onClick={() => previewEnabled && onPreview()} disabled={!previewEnabled} title={!previewEnabled ? (previewBlockedTitle || blockedTitle) : undefined} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full disabled:opacity-40 disabled:cursor-not-allowed">
                     {isMediaFile(file.name) ? (
                         <>
                             <Play className="w-4 h-4 text-telegram-primary" />
@@ -95,13 +117,13 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 </button>
             )}
 
-            <button onClick={onDownload} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+            <button onClick={() => downloadEnabled && onDownload()} disabled={!downloadEnabled} title={!downloadEnabled ? (downloadBlockedTitle || blockedTitle) : undefined} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full disabled:opacity-40 disabled:cursor-not-allowed">
                 <HardDrive className="w-4 h-4 text-green-500" />
                 Download
             </button>
 
             {file.type !== 'folder' && onShare && (
-                <button onClick={onShare} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                <button onClick={() => shareEnabled && onShare()} disabled={!shareEnabled} title={!shareEnabled ? (shareBlockedTitle || blockedTitle) : undefined} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full disabled:opacity-40 disabled:cursor-not-allowed">
                     <Link className="w-4 h-4 text-telegram-primary" />
                     Share Link
                 </button>
@@ -117,9 +139,9 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                             const url = `https://t.me/${username}/${file.id}`;
                             try {
                                 await navigator.clipboard.writeText(url);
-                                toast.success("Telegram link copied");
+                                toast.success("Telegram 链接已复制");
                             } catch (e) {
-                                toast.error("Failed to copy link");
+                                toast.error("复制链接失败");
                             }
                             onClose();
                         };
@@ -144,14 +166,9 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 })()
             )}
 
-            <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
-                <Pencil className="w-4 h-4" />
-                Rename
-            </button>
-
             <div className="h-px bg-telegram-border my-1" />
 
-            <button onClick={onDelete} className="flex items-center gap-2 px-2 py-1.5 text-sm text-red-500 hover:bg-red-500/10 rounded transition-colors text-left w-full">
+            <button onClick={() => deleteEnabled && onDelete()} disabled={!deleteEnabled} title={!deleteEnabled ? blockedTitle : undefined} className="flex items-center gap-2 px-2 py-1.5 text-sm text-red-500 hover:bg-red-500/10 rounded transition-colors text-left w-full disabled:opacity-40 disabled:cursor-not-allowed">
                 <Trash2 className="w-4 h-4" />
                 Delete
             </button>

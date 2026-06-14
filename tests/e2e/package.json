@@ -1,0 +1,13 @@
+{
+  "name": "telegram-drive-e2e",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:api": "powershell -NoProfile -Command \"$env:E2E_API='1'; npx playwright test\"",
+    "test:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "serve": "^14.2.4"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "lastUpdated": "2026-06-12",
+  "notes": "仅记录已 mock/E2E 验证通过的模块。改动了 registry 中列出的文件时，重跑对应 vitest/e2e 条目即可，无需全量。",
+  "modules": {
+    "connection-gates": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": ["app/src/types/connection.ts"],
+      "vitest": ["app/src/types/connection.test.ts"],
+      "e2e": []
+    },
+    "bot-preview-r55": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": ["app/src/components/Dashboard.tsx", "app/src/hooks/useKeyboardShortcuts.ts"],
+      "vitest": ["useKeyboardShortcuts.test.ts", "FileCard.test.tsx"],
+      "e2e": []
+    },
+    "bot-share-r56": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": [
+        "app/src/components/dashboard/ShareDialog.tsx",
+        "app/src/components/dashboard/FileCard.tsx"
+      ],
+      "vitest": ["ShareDialog.test.tsx", "connection.test.ts", "FileCard.test.tsx"],
+      "e2e": ["tests/e2e/web-smoke.spec.ts -g share"]
+    },
+    "web-share-scripts": {
+      "status": "pass",
+      "verifiedAt": "2026-06-11",
+      "files": ["deploy/web/assets/files-core.js", "deploy/web/assets/shares-core.js"],
+      "vitest": ["app/src/lib/filesPure.test.ts"],
+      "e2e": ["web-smoke -g share"]
+    },
+    "web-metadata-r57": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": ["deploy/web/*.html", "deploy/web/assets/page-meta.js", "app/src/lib/webMetaPure.ts"],
+      "vitest": ["app/src/lib/webMetaPure.test.ts"],
+      "e2e": ["tests/e2e/web-metadata.spec.ts"]
+    }
+  }
+}

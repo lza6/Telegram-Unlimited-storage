@@ -1,10 +1,13 @@
 use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
 use actix_cors::Cors;
 use crate::commands::TelegramState;
-use crate::commands::utils::resolve_peer;
+use crate::commands::utils::resolve_peer_with_limit;
+use crate::http_middleware::ShareBruteForceLimiter;
+use crate::vpn_optimizer::NetworkConfig;
 use grammers_client::types::Media;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Holds the per-session streaming token for Actix validation
 pub struct StreamTokenData {
@@ -39,6 +42,113 @@ pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64
     }
 }
 
+fn mime_from_filename(filename: &str) -> String {
+    let ext = crate::local_api::extension_from_filename(filename);
+    match ext.as_str() {
+        "mp4" => "video/mp4".into(),
+        "webm" => "video/webm".into(),
+        "mkv" => "video/x-matroska".into(),
+        "mp3" => "audio/mpeg".into(),
+        "wav" => "audio/wav".into(),
+        "pdf" => "application/pdf".into(),
+        "jpg" | "jpeg" => "image/jpeg".into(),
+        "png" => "image/png".into(),
+        "gif" => "image/gif".into(),
+        "webp" => "image/webp".into(),
+        _ => "application/octet-stream".into(),
+    }
+}
+
+#[cfg(not(feature = "headless-server"))]
+async fn stream_via_local_api(
+    req: &actix_web::HttpRequest,
+    message_id: i32,
+    folder_id: Option<i64>,
+    bridge: &crate::local_api::LocalApiBridge,
+    db_pool: &crate::db::DbConnection,
+) -> Option<HttpResponse> {
+    use futures_util::StreamExt;
+
+    if !bridge.is_usable() {
+        return None;
+    }
+
+    let filename = crate::db::get_file_asset(db_pool, message_id)
+        .ok()
+        .flatten()
+        .map(|r| r.file_name)
+        .or_else(|| {
+            crate::db::get_bot_file_map(db_pool, message_id)
+                .ok()
+                .flatten()
+                .map(|r| r.file_name)
+        })
+        .unwrap_or_else(|| format!("file_{message_id}.bin"));
+
+    let mime = mime_from_filename(&filename);
+    let url = crate::local_api::build_download_url(bridge.port, message_id, folder_id);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3600))
+        .build()
+        .ok()?;
+
+    let mut req_builder = client.get(&url).header("X-Access-Pwd", &bridge.access_pwd);
+    if let Some(range) = req.headers().get(actix_web::http::header::RANGE) {
+        if let Ok(s) = range.to_str() {
+            req_builder = req_builder.header(reqwest::header::RANGE, s);
+        }
+    }
+
+    let resp = req_builder.send().await.ok()?;
+    let status = resp.status();
+    if !status.is_success() && status.as_u16() != 206 {
+        log::error!(
+            "Local API stream proxy failed for msg {}: {}",
+            message_id,
+            status
+        );
+        return None;
+    }
+
+    let is_partial = status.as_u16() == 206;
+    let content_length = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let content_range = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let byte_stream = resp.bytes_stream().map(|chunk| {
+        chunk
+            .map(actix_web::web::Bytes::from)
+            .map_err(actix_web::error::ErrorInternalServerError)
+    });
+
+    let mut builder = if is_partial {
+        HttpResponse::PartialContent()
+    } else {
+        HttpResponse::Ok()
+    };
+    if let Some(range) = content_range {
+        builder.insert_header(("Content-Range", range));
+    }
+    if let Some(len) = content_length {
+        builder.insert_header(("Content-Length", len));
+    }
+    Some(
+        builder
+            .insert_header(("Content-Type", mime))
+            .insert_header(("Accept-Ranges", "bytes"))
+            .insert_header(("Cache-Control", "private, max-age=120"))
+            .streaming(byte_stream),
+    )
+}
+
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
     req: actix_web::HttpRequest,
@@ -46,12 +156,17 @@ async fn stream_media(
     query: web::Query<StreamQuery>,
     data: web::Data<Arc<TelegramState>>,
     token_data: web::Data<StreamTokenData>,
+    net_config: web::Data<Arc<NetworkConfig>>,
+    #[allow(unused_variables)]
+    db_data: web::Data<crate::db::DbConnection>,
+    #[allow(unused_variables)]
+    local_bridge: web::Data<crate::local_api::LocalApiBridge>,
 ) -> impl Responder {
     let (folder_id_str, message_id) = path.into_inner();
 
-    // Validate session token
+    // Validate session token (constant-time comparison to prevent timing attacks)
     match &query.token {
-        Some(t) if t == &token_data.token => {
+        Some(t) if crate::http_middleware::constant_time_eq(t, &token_data.token) => {
             log::debug!("Stream request: Token validated successfully for msg {}", message_id);
         },
         _ => {
@@ -83,7 +198,12 @@ async fn stream_media(
 
     if let Some(client) = client_opt {
         log::debug!("Stream request: Client acquired, resolving peer for msg {}...", message_id);
-        match resolve_peer(&client, folder_id, &data.peer_cache).await {
+        match resolve_peer_with_limit(
+            &client,
+            folder_id,
+            &data.peer_cache,
+            net_config.peer_cache_size(),
+        ).await {
             Ok(peer) => {
                 log::debug!("Stream request: Peer resolved, fetching message {}...", message_id);
                 // Try to fetch message efficiently
@@ -134,13 +254,15 @@ async fn stream_media(
 
                                 if start_byte > 0 {
                                     const MIN_CHUNK_SIZE: i32 = 4096;
-                                    const MAX_CHUNK_SIZE: i32 = 512 * 1024;
+                                    let max_chunk = net_config.download_chunk_i32();
                                     let chunk_index = (start_byte / MIN_CHUNK_SIZE as u64) as i32;
                                     download_iter = download_iter
                                         .chunk_size(MIN_CHUNK_SIZE)
                                         .skip_chunks(chunk_index)
-                                        .chunk_size(MAX_CHUNK_SIZE);
+                                        .chunk_size(max_chunk);
                                     bytes_to_skip = (start_byte - (chunk_index as u64 * MIN_CHUNK_SIZE as u64)) as usize;
+                                } else {
+                                    download_iter = download_iter.chunk_size(net_config.download_chunk_i32());
                                 }
 
                                 let stream = async_stream::stream! {
@@ -232,6 +354,24 @@ async fn stream_media(
             },
         }
     } else {
+        #[cfg(not(feature = "headless-server"))]
+        {
+            if let Some(resp) = stream_via_local_api(
+                &req,
+                message_id,
+                folder_id,
+                &local_bridge,
+                &db_data,
+            )
+            .await
+            {
+                log::debug!(
+                    "Stream request: proxied via local API for msg {}",
+                    message_id
+                );
+                return resp;
+            }
+        }
         log::error!("Stream request failed: Telegram client not connected for msg {}", message_id);
         HttpResponse::ServiceUnavailable().body("Telegram client not connected")
     }
@@ -249,13 +389,22 @@ pub async fn start_server(
     port: u16,
     token: String,
     db_pool: crate::db::DbConnection,
+    net_config: Arc<NetworkConfig>,
+    admin_state: crate::admin_routes::AdminState,
+    transport: Arc<crate::telegram_transport::TransportHandle>,
+    local_api_bridge: crate::local_api::LocalApiBridge,
 ) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
     let db_data = web::Data::new(db_pool);
-    
+    let net_data = web::Data::new(net_config);
+    let admin_data = web::Data::new(admin_state);
+    let transport_data = web::Data::new(transport);
+    let share_bf_limiter = web::Data::new(ShareBruteForceLimiter::new(5, 300));
+    let local_bridge_data = web::Data::new(local_api_bridge);
+
     log::info!("Starting Streaming Server on port {}", port);
-    
+
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("tauri://localhost")
@@ -269,13 +418,25 @@ pub async fn start_server(
             .app_data(state_data.clone())
             .app_data(token_data.clone())
             .app_data(db_data.clone())
+            .app_data(net_data.clone())
+            .app_data(admin_data.clone())
+            .app_data(transport_data.clone())
+            .app_data(share_bf_limiter.clone())
+            .app_data(local_bridge_data.clone())
             .service(stream_media)
             .configure(crate::share_routes::configure_share_routes)
     })
+    .keep_alive(Duration::from_secs(5))
+    .client_request_timeout(Duration::from_secs(120))
+    .workers(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
     .bind(("0.0.0.0", port))?
     .run();
 
     log::info!("Streaming Server started successfully on http://0.0.0.0:{}", port);
 
     Ok(server)
+}
+
+pub fn configure_stream(cfg: &mut web::ServiceConfig) {
+    cfg.service(stream_media);
 }

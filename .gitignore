@@ -6,6 +6,7 @@ dist/
 
 # Rust
 /app/src-tauri/target/
+.build-cache/
 /app/src-tauri/gen/
 **/*.rs.bk
 
@@ -13,12 +14,28 @@ dist/
 .vscode/
 .idea/
 
+# AI tool directories (local only)
+.agents/
+.cline/
+.codebuddy/
+.codegraph/
+.continue/
+.cursor/
+.junie/
+.claude/
+
 # Misc
 CompiledApps/
 *.log
 *.key
 Error.html
 **/LatestError.html
+
+# Runtime data (never commit sessions or local DB)
+/data/*.session
+/data/shares.db
+/data/api_settings.json
+/data/network_settings.json
 
 # Android local builds
 /android/

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>上传页 · Telegram Drive API</title>
+  <meta name="description" content="Telegram Drive 公共上传页 — 分片上传、进度轮询与文件夹选择。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="上传页 · Telegram Drive API" />
+  <meta property="og:description" content="Telegram Drive 公共上传页 — 分片上传、进度轮询与文件夹选择。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="上传页 · Telegram Drive API" />
+  <meta name="twitter:description" content="Telegram Drive 公共上传页 — 分片上传、进度轮询与文件夹选择。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/upload.html" />
+  <script src="/assets/page-meta.js"></script>
+  <link rel="stylesheet" href="/assets/admin.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <strong>Telegram Drive</strong>
+      <nav style="margin-top:20px">
+        <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
+        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/shares.html" data-nav="shares">分享管理</a>
+        <a href="/settings.html" data-nav="settings">服务设置</a>
+        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
+        <a href="/docs.html" data-nav="docs">API 文档</a>
+        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+      </nav>
+      <p class="muted" style="margin-top:16px;font-size:0.8rem">tg-disk 兼容上传入口，与 dashboard 共用分片逻辑。</p>
+    </aside>
+    <section class="content">
+      <h2>Telegram Cloud Storage</h2>
+      <p class="muted">tg-disk 兼容上传页 · <code>/upload.html</code></p>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+      <p><span id="tg-dot" class="status-dot bad"></span><span id="tg-status">检测中…</span></p>
+      <p class="muted" id="api-health"></p>
+      <div id="service-banner" hidden role="alert" style="margin:12px 0;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
+
+      <div class="toolbar" style="margin-bottom:12px">
+        <label for="upload-folder" class="muted">目标文件夹</label>
+        <select id="upload-folder" class="toolbar-input" style="max-width:320px;margin-left:8px">
+          <option value="">Saved Messages（默认）</option>
+        </select>
+      </div>
+
+      <div class="drop-zone" id="drop">
+        <p class="drop-title">拖拽文件到此处，或点击选择</p>
+        <p class="drop-hint">支持任意格式，自动分片处理大文件</p>
+      </div>
+      <input type="file" id="file-input" multiple hidden />
+
+      <div class="stats" id="stats" style="display:none">
+        <div class="stat-item"><span class="stat-value" id="file-count">0</span><span class="stat-label">待上传文件</span></div>
+        <div class="stat-item"><span class="stat-value" id="total-size">0</span><span class="stat-label">总大小</span></div>
+      </div>
+
+      <div id="file-list"></div>
+      <button type="button" id="upload-btn" class="upload-btn" disabled>开始上传</button>
+      <p id="retry-status" class="muted hidden" role="status" aria-live="polite"></p>
+    </section>
+  </div>
+
+  <div id="result-modal" class="modal">
+    <div class="modal-content">
+      <h3 class="modal-title">上传成功</h3>
+      <p class="muted">文件已存储到 Telegram，以下是下载链接</p>
+      <div id="result-links"></div>
+      <button type="button" id="close-modal" class="btn-secondary">关闭</button>
+    </div>
+  </div>
+
+  <script src="/assets/api-client.js"></script>
+  <script src="/assets/page-readiness.js"></script>
+  <script src="/assets/share-domain.js"></script>
+  <script src="/assets/web-pure.js"></script>
+  <script src="/assets/upload-folder.js"></script>
+  <script src="/assets/upload-core.js"></script>
+  <script>
+    if (TdApi.requireLogin()) {
+    TdApi.initSidebar('upload');
+    window.showToast = TdApi.showToast;
+
+    async function refreshStatus() {
+      await TdPageReadiness.refreshUploadReadiness({ bannerPrefix: '上传暂不可用：', folderSelectSelector: '#upload-folder' });
+    }
+    refreshStatus();
+    setInterval(refreshStatus, 60000);
+
+    TdUploadFolder.populateFolderSelect(document.getElementById('upload-folder'));
+
+    TdUpload.initChunkedUpload({
+      dropSelector: '#drop',
+      inputSelector: '#file-input',
+      listSelector: '#file-list',
+      uploadBtnSelector: '#upload-btn',
+      folderSelectSelector: '#upload-folder',
+      statsSelector: '#stats',
+      fileCountSelector: '#file-count',
+      totalSizeSelector: '#total-size',
+      modalSelector: '#result-modal',
+      resultLinksSelector: '#result-links',
+      closeModalSelector: '#close-modal',
+      retryStatusSelector: '#retry-status',
+      uploadBtnLabel: '开始上传',
+      loginUrl: '/login.html'
+    });
+    }
+  </script>
+</body>
+</html>

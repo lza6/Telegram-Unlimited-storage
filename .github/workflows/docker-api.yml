@@ -1,0 +1,132 @@
+name: Docker API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/src-tauri/**'
+      - 'app/src/**'
+      - 'deploy/**'
+      - 'docs/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'tests/integration/**'
+      - 'tests/e2e/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/src-tauri/**'
+      - 'app/src/**'
+      - 'deploy/**'
+      - 'docs/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'tests/integration/**'
+      - 'tests/e2e/**'
+
+jobs:
+  rust-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: cargo test (headless lib + integration)
+        working-directory: app/src-tauri
+        run: cargo test --no-default-features --features headless-server --lib --tests
+
+      - name: OpenAPI route contract (PowerShell)
+        run: pwsh -File ./scripts/check-openapi.ps1
+
+      - name: cargo llvm-cov coverage gate
+        working-directory: app/src-tauri
+        run: |
+          cargo install cargo-llvm-cov --locked 2>/dev/null || true
+          cargo llvm-cov --no-default-features --features headless-server --lib --fail-under-lines 88
+
+      - name: Vitest (app)
+        working-directory: app
+        run: |
+          npm install
+          npm run test
+          npm run test:coverage
+
+      - name: cargo audit
+        working-directory: app/src-tauri
+        run: |
+          cargo install cargo-audit --locked 2>/dev/null || true
+          cargo audit || echo "audit warnings (non-blocking in beta)"
+
+  build-and-smoke:
+    needs: rust-test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t telegram-drive-api:ci .
+
+      - name: Start container
+        run: |
+          docker run -d --name td-api -p 11334:1334 \
+            -e TELEGRAM_API_ID=12345 \
+            -e TELEGRAM_API_HASH=ci_dummy_hash_not_for_production \
+            -e ACCESS_PWD=ci-test-pwd \
+            -e API_KEY=ci-test-api-key \
+            -e RATE_LIMIT_RPM=600 \
+            telegram-drive-api:ci
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11334/api/v1/health | grep -q '"status":"ok"'; then
+              curl -fsS http://127.0.0.1:11334/api/v1/health
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs td-api
+          exit 1
+
+      - name: Integration tests (bash)
+        run: |
+          chmod +x tests/integration/test-api.sh
+          tests/integration/test-api.sh http://127.0.0.1:11334 ci-test-pwd ci-test-api-key
+
+      - name: Install PowerShell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https software-properties-common
+          wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo apt-get install -y powershell
+
+      - name: Integration tests (PowerShell)
+        run: |
+          pwsh -File ./tests/integration/test-api.ps1 -BaseUrl http://127.0.0.1:11334 -AccessPwd ci-test-pwd -ApiKey ci-test-api-key
+          pwsh -File ./tests/integration/share-download.ps1 -BaseUrl http://127.0.0.1:11334 -AccessPwd ci-test-pwd -ApiKey ci-test-api-key
+          pwsh -File ./tests/integration/webdav.ps1 -BaseUrl http://127.0.0.1:11334 -AccessPwd ci-test-pwd
+
+      - name: Playwright E2E smoke
+        working-directory: tests/e2e
+        env:
+          E2E_BASE_URL: http://127.0.0.1:11334
+          E2E_ACCESS_PWD: ci-test-pwd
+        run: |
+          npm install
+          npx playwright install chromium --with-deps
+          npm test
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs td-api
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f td-api || true

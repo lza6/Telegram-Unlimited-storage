@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+  <meta charset="UTF-8" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Telegram Drive 管理登录 — 使用 ACCESS_PWD 访问控制台与 API 服务。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="登录 · Telegram Drive API" />
+  <meta property="og:description" content="Telegram Drive 管理登录 — 使用 ACCESS_PWD 访问控制台与 API 服务。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="登录 · Telegram Drive API" />
+  <meta name="twitter:description" content="Telegram Drive 管理登录 — 使用 ACCESS_PWD 访问控制台与 API 服务。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/login.html" />
+  <script src="/assets/page-meta.js"></script>
+  <title>登录 · Telegram Drive API</title>
+
+  <link rel="stylesheet" href="/assets/admin.css" />
+
+</head>
+
+<body class="page-center">
+
+  <a class="skip-link" href="#login-form">跳到登录表单</a>
+
+  <main class="card" role="main">
+
+    <h1>Telegram Drive</h1>
+
+    <p class="muted">API 服务管理台 · <code>http://localhost:1334</code><br>密码 = 项目根目录 <code>.env</code> 中的 <code>ACCESS_PWD</code>（与 Telegram API 无关）</p>
+
+    <form id="login-form" novalidate>
+
+      <label for="username-input" class="sr-only">账号</label>
+
+      <input
+
+        id="username-input"
+
+        type="text"
+
+        name="username"
+
+        value="admin"
+
+        autocomplete="username"
+
+        class="sr-only"
+
+        tabindex="-1"
+
+        aria-hidden="true"
+
+      />
+
+      <label for="pwd-input">管理密码 (ACCESS_PWD)</label>
+
+      <div class="input-row">
+
+        <input
+
+          id="pwd-input"
+
+          type="password"
+
+          name="pwd"
+
+          required
+
+          autocomplete="current-password"
+
+          aria-describedby="err"
+
+          aria-invalid="false"
+
+        />
+
+        <button type="button" id="toggle-pwd" class="btn-icon" aria-label="显示密码" aria-pressed="false">显示</button>
+
+      </div>
+
+      <button type="submit" id="submit-btn">
+
+        <span class="btn-label">进入控制台</span>
+
+        <span class="btn-spinner hidden" aria-hidden="true"></span>
+
+      </button>
+
+    </form>
+
+    <p id="err" class="error hidden" role="alert" aria-live="polite"></p>
+    <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+
+    <nav class="links" aria-label="相关页面">
+
+      <a href="/docs.html">API 文档</a>
+
+      <a href="/login.html?next=/telegram.html">Telegram 账号登录</a>
+
+      <a href="/login.html?next=/upload.html">登录后进入 tg-disk 上传页</a>
+
+    </nav>
+
+  </main>
+
+  <script src="/assets/web-pure.js"></script>
+  <script src="/assets/login.js"></script>
+
+</body>
+
+</html>
+

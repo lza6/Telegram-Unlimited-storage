@@ -9,7 +9,7 @@
     }
   },
   "productName": "Telegram Drive",
-  "version": "1.6.8",
+  "version": "4.0.0-beta",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -39,6 +39,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": [
+      "../../deploy/web/"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

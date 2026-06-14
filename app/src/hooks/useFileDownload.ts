@@ -1,43 +1,53 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DownloadItem, TelegramFile } from '../types';
+import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
+import { isSessionLostError } from '../utils/sessionError';
+import { buildBulkDownloadItems, classifyDownloadFailure } from '../lib/downloadPure';
+import {
+    applyCancelAllTransfers,
+    applyCancelTransferItem,
+    applyRetryTransferItem,
+    computeAvailableSlots,
+    filterClearFinishedTransfers,
+    selectPendingTransfers,
+} from '../lib/queuePure';
+import { useTransferProgress } from './useTransferProgress';
 
-interface ProgressPayload {
-    id: string;
-    percent: number;
-    uploaded_bytes: number;
-    total_bytes: number;
-    speed_bytes_per_sec: number;
-}
-
-export function useFileDownload(store: Store | null) {
+export function useFileDownload(
+    store: Store | null,
+    opts?: {
+        onSessionError?: (message: string) => void;
+        canTransfer?: () => boolean;
+        canDownload?: () => boolean;
+        transferBlockedMessage?: string;
+        downloadBlockedMessage?: string;
+    },
+) {
+    const { settings } = useSettings();
     const [downloadQueue, setDownloadQueue] = useState<DownloadItem[]>([]);
-    const [processing, setProcessing] = useState(false);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
+    const inFlightRef = useRef<Set<string>>(new Set());
 
-    // Listen for progress events from Rust
-    useEffect(() => {
-        let unlisten: UnlistenFn | undefined;
-        listen<ProgressPayload>('download-progress', (event) => {
-            setDownloadQueue(q => q.map(i =>
-                i.id === event.payload.id ? {
-                    ...i,
-                    progress: event.payload.percent,
-                    uploadedBytes: event.payload.uploaded_bytes,
-                    totalBytes: event.payload.total_bytes,
-                    speedBytesPerSec: event.payload.speed_bytes_per_sec,
-                } : i
-            ));
-        }).then(fn => { unlisten = fn; });
-        return () => { unlisten?.(); };
-    }, []);
+    const maxConcurrent = Math.max(1, Math.min(10, settings.maxConcurrentDownloads || 1));
 
-    // Load saved queue on mount
+    // Use shared progress listener
+    useTransferProgress('download-progress', (payload) => {
+        setDownloadQueue(q => q.map(i =>
+            i.id === payload.id ? {
+                ...i,
+                progress: payload.percent,
+                uploadedBytes: payload.uploaded_bytes,
+                totalBytes: payload.total_bytes,
+                speedBytesPerSec: payload.speed_bytes_per_sec,
+            } : i
+        ));
+    });
+
     useEffect(() => {
         if (!store || initialized) return;
         store.get<DownloadItem[]>('downloadQueue').then((saved) => {
@@ -45,38 +55,35 @@ export function useFileDownload(store: Store | null) {
                 const pending = saved.filter(i => i.status === 'pending');
                 if (pending.length > 0) {
                     setDownloadQueue(pending);
-                    toast.info(`Restored ${pending.length} pending downloads`);
+                    toast.info(`已恢复 ${pending.length} 个待下载任务`);
                 }
             }
             setInitialized(true);
         });
     }, [store, initialized]);
 
-    // Save queue when it changes (only pending items)
     useEffect(() => {
         if (!store || !initialized) return;
         const pending = downloadQueue.filter(i => i.status === 'pending');
         store.set('downloadQueue', pending).then(() => store.save());
     }, [store, downloadQueue, initialized]);
 
-    // Queue Processor
-    useEffect(() => {
-        if (processing) return;
-        const nextItem = downloadQueue.find(i => i.status === 'pending');
-        if (nextItem) {
-            processItem(nextItem);
-        }
-    }, [downloadQueue, processing]);
+    const isDownloadAllowed = useCallback((): boolean => {
+        if (opts?.canDownload) return opts.canDownload();
+        if (opts?.canTransfer) return opts.canTransfer();
+        return true;
+    }, [opts]);
 
-    const processItem = async (item: DownloadItem) => {
-        setProcessing(true);
+    const processItem = useCallback(async (item: DownloadItem) => {
+        if (inFlightRef.current.has(item.id)) return;
+        if (!isDownloadAllowed()) return;
+        inFlightRef.current.add(item.id);
         setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'downloading', progress: 0 } : i));
 
         try {
             const savePath = item.savePath || await save({ defaultPath: item.filename });
             if (!savePath) {
                 setDownloadQueue(q => q.filter(i => i.id !== item.id));
-                setProcessing(false);
                 return;
             }
 
@@ -91,26 +98,51 @@ export function useFileDownload(store: Store | null) {
                 cancelledRef.current.delete(item.id);
             } else {
                 setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
-                toast.success(`Downloaded: ${item.filename}`);
+                toast.success(`下载完成: ${item.filename}`);
             }
         } catch (e) {
             if (!cancelledRef.current.has(item.id)) {
                 const errMsg = String(e);
-                if (errMsg.includes('Transfer cancelled')) {
+                const kind = classifyDownloadFailure(errMsg, { isSessionLost: isSessionLostError });
+                if (kind === 'cancelled') {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
                 } else {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
-                    toast.error(`Download failed: ${item.filename}`);
+                    toast.error(`下载失败: ${item.filename}`);
+                    if (kind === 'session_lost' && opts?.onSessionError) {
+                        opts.onSessionError(errMsg);
+                    }
                 }
             } else {
                 cancelledRef.current.delete(item.id);
             }
         } finally {
-            setProcessing(false);
+            inFlightRef.current.delete(item.id);
+            setDownloadQueue(q => [...q]);
         }
+    }, [isDownloadAllowed, opts]);
+
+    useEffect(() => {
+        if (!isDownloadAllowed()) return;
+        const slots = computeAvailableSlots(inFlightRef.current.size, maxConcurrent);
+        const pending = selectPendingTransfers(downloadQueue, inFlightRef.current, slots);
+        pending.forEach(item => {
+            void processItem(item);
+        });
+    }, [downloadQueue, maxConcurrent, isDownloadAllowed, processItem]);
+
+    const guardDownload = (): boolean => {
+        if (isDownloadAllowed()) return true;
+        toast.error(
+            opts?.downloadBlockedMessage
+                || opts?.transferBlockedMessage
+                || '下载不可用 — Telegram 会话或 Bot 服务未就绪',
+        );
+        return false;
     };
 
     const queueDownload = (messageId: number, filename: string, folderId: number | null) => {
+        if (!guardDownload()) return;
         const newItem: DownloadItem = {
             id: Math.random().toString(36).substr(2, 9),
             messageId,
@@ -122,6 +154,7 @@ export function useFileDownload(store: Store | null) {
     };
 
     const queueBulkDownload = async (files: TelegramFile[], folderId: number | null) => {
+        if (!guardDownload()) return;
         const dirPath = await open({
             directory: true,
             multiple: false,
@@ -129,60 +162,46 @@ export function useFileDownload(store: Store | null) {
         });
         if (!dirPath) return;
 
-        const separator = dirPath.includes('\\') ? '\\' : '/';
-        const newItems: DownloadItem[] = files.map(file => ({
+        const newItems: DownloadItem[] = buildBulkDownloadItems(files, dirPath, folderId).map((entry) => ({
+            ...entry,
             id: Math.random().toString(36).substr(2, 9),
-            messageId: file.id,
-            filename: file.name,
-            folderId,
             status: 'pending' as const,
-            savePath: dirPath.endsWith(separator) ? `${dirPath}${file.name}` : `${dirPath}${separator}${file.name}`
         }));
 
         setDownloadQueue(prev => [...prev, ...newItems]);
-
-        toast.info(`Queued ${files.length} files for download`);
+        toast.info(`已加入 ${files.length} 个下载任务`);
     };
 
     const clearFinished = () => {
-        setDownloadQueue(q => q.filter(i => i.status !== 'success'));
+        setDownloadQueue(q => filterClearFinishedTransfers(q));
     };
 
     const cancelAll = () => {
         setDownloadQueue(q => {
-            const downloading = q.find(i => i.status === 'downloading');
-            if (downloading) {
-                cancelledRef.current.add(downloading.id);
-                invoke('cmd_cancel_transfer', { transferId: downloading.id }).catch(() => {});
-            }
-            return q
-                .filter(i => i.status !== 'pending')
-                .map(i => i.status === 'downloading' ? { ...i, status: 'cancelled' as const } : i);
+            const { queue, invokeCancelIds } = applyCancelAllTransfers(q, 'downloading');
+            invokeCancelIds.forEach(id => {
+                cancelledRef.current.add(id);
+                invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
+            });
+            return queue;
         });
-        toast.info('All downloads cancelled');
+        toast.info('所有下载已取消');
     };
 
     const cancelItem = (id: string) => {
         setDownloadQueue(q => {
-            const item = q.find(i => i.id === id);
-            if (item?.status === 'downloading') {
-                cancelledRef.current.add(id);
-                invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
-                return q.map(i => i.id === id ? { ...i, status: 'cancelled' as const } : i);
+            const { queue, invokeCancelId } = applyCancelTransferItem(q, id, 'downloading');
+            if (invokeCancelId) {
+                cancelledRef.current.add(invokeCancelId);
+                invoke('cmd_cancel_transfer', { transferId: invokeCancelId }).catch(() => {});
             }
-            if (item?.status === 'pending') {
-                return q.filter(i => i.id !== id);
-            }
-            return q;
+            return queue;
         });
     };
 
     const retryItem = (id: string) => {
-        setDownloadQueue(q => q.map(i =>
-            i.id === id && (i.status === 'error' || i.status === 'cancelled')
-                ? { ...i, status: 'pending' as const, error: undefined, progress: undefined, uploadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }
-                : i
-        ));
+        if (!guardDownload()) return;
+        setDownloadQueue(q => applyRetryTransferItem(q, id));
     };
 
     return {

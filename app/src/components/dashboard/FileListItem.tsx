@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Folder, Eye, HardDrive, Plus } from 'lucide-react';
+import { useState, memo } from 'react';
+import { Folder, Eye, HardDrive, Plus, Share2 } from 'lucide-react';
 import { TelegramFile } from '../../types';
 import { FileTypeIcon } from '../FileTypeIcon';
 
@@ -14,22 +14,50 @@ interface FileListItemProps {
     onPreview: (file: TelegramFile) => void;
     onDownload: (id: number, name: string) => void;
     onDelete: (id: number) => void;
+    onShare?: (file: TelegramFile) => void;
+    transferEnabled?: boolean;
+    previewEnabled?: boolean;
+    downloadEnabled?: boolean;
+    shareEnabled?: boolean;
+    deleteEnabled?: boolean;
+    blockedTitle?: string;
+    downloadBlockedTitle?: string;
+    previewBlockedTitle?: string;
+    shareBlockedTitle?: string;
 }
 
-export function FileListItem({
+export const FileListItem = memo(function FileListItem({
     file, selectedIds, onFileClick, handleContextMenu,
     onDragStart, onDragEnd, onDrop,
-    onPreview, onDownload, onDelete
+    onPreview, onDownload, onDelete, onShare,
+    transferEnabled = true,
+    previewEnabled = transferEnabled,
+    downloadEnabled = transferEnabled,
+    shareEnabled = transferEnabled,
+    deleteEnabled = transferEnabled,
+    blockedTitle,
+    downloadBlockedTitle,
+    previewBlockedTitle,
+    shareBlockedTitle,
 }: FileListItemProps) {
     const [isDragOver, setIsDragOver] = useState(false);
     const isFolder = file.type === 'folder';
+
+    const guardAction = (action: () => void) => {
+        if (!transferEnabled) return;
+        action();
+    };
 
     return (
         <div
             onClick={(e) => onFileClick(e, file.id)}
             onContextMenu={(e) => handleContextMenu(e, file)}
-            draggable
+            draggable={transferEnabled && !isFolder}
             onDragStart={(e) => {
+                if (!transferEnabled || isFolder) {
+                    e.preventDefault();
+                    return;
+                }
                 if (onDragStart) onDragStart(file.id);
                 e.dataTransfer.setData("application/x-telegram-file-id", file.id.toString());
                 e.dataTransfer.effectAllowed = 'move';
@@ -38,21 +66,21 @@ export function FileListItem({
                 if (onDragEnd) onDragEnd();
             }}
             onDragOver={(e) => {
-                if (isFolder) {
+                if (isFolder && transferEnabled) {
                     e.preventDefault();
                     e.stopPropagation();
                     if (!isDragOver) setIsDragOver(true);
                 }
             }}
             onDragLeave={(e) => {
-                if (isFolder) {
+                if (isFolder && transferEnabled) {
                     e.preventDefault();
                     e.stopPropagation();
                     setIsDragOver(false);
                 }
             }}
             onDrop={(e) => {
-                if (isFolder && onDrop) {
+                if (isFolder && onDrop && transferEnabled) {
                     e.preventDefault();
                     e.stopPropagation();
                     setIsDragOver(false);
@@ -71,13 +99,16 @@ export function FileListItem({
                 {file.name}
                 {/* List Actions */}
                 <div className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 flex items-center bg-telegram-surface border border-telegram-border shadow-lg rounded px-1">
-                    <button onClick={(e) => { e.stopPropagation(); onPreview(file) }} className="p-1 hover:text-telegram-text text-telegram-subtext" title="Preview"><Eye className="w-4 h-4" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); onDownload(file.id, file.name) }} className="p-1 hover:text-telegram-text text-telegram-subtext" title="Download"><HardDrive className="w-4 h-4" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); onDelete(file.id) }} className="p-1 hover:text-red-400 text-telegram-subtext" title="Delete"><Plus className="w-4 h-4 rotate-45" /></button>
+                    {!isFolder && onShare && (
+                        <button onClick={(e) => { e.stopPropagation(); if (shareEnabled) onShare(file); }} disabled={!shareEnabled} title={!shareEnabled ? (shareBlockedTitle || blockedTitle) : 'Share'} className="p-1 hover:text-blue-400 text-telegram-subtext disabled:opacity-40 disabled:cursor-not-allowed"><Share2 className="w-4 h-4" /></button>
+                    )}
+                    <button onClick={(e) => { e.stopPropagation(); if (previewEnabled) onPreview(file); }} disabled={!previewEnabled} title={!previewEnabled ? (previewBlockedTitle || blockedTitle) : (isFolder ? 'Open' : 'Preview')} className="p-1 hover:text-telegram-text text-telegram-subtext disabled:opacity-40 disabled:cursor-not-allowed"><Eye className="w-4 h-4" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); if (downloadEnabled) onDownload(file.id, file.name); }} disabled={!downloadEnabled} title={!downloadEnabled ? (downloadBlockedTitle || blockedTitle) : 'Download'} className="p-1 hover:text-telegram-text text-telegram-subtext disabled:opacity-40 disabled:cursor-not-allowed"><HardDrive className="w-4 h-4" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); if (deleteEnabled) onDelete(file.id); }} disabled={!deleteEnabled} title={!deleteEnabled ? blockedTitle : 'Delete'} className="p-1 hover:text-red-400 text-telegram-subtext disabled:opacity-40 disabled:cursor-not-allowed"><Plus className="w-4 h-4 rotate-45" /></button>
                 </div>
             </div>
             <div className="text-right text-xs text-telegram-subtext truncate">{file.sizeStr}</div>
             <div className="text-right text-xs text-telegram-subtext font-mono opacity-50 truncate">{file.created_at || '-'}</div>
         </div>
     );
-}
+});

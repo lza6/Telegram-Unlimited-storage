@@ -111,12 +111,9 @@ async fn create_share_link(
             .unwrap_or(crate::tenant_auth::CallerIdentity::Tenant {
                 tenant_id: "default".to_string(),
             });
-        if let Err(msg) = crate::file_access::assert_download_allowed(
-            &db,
-            body.message_id,
-            &caller,
-            true,
-        ) {
+        if let Err(msg) =
+            crate::file_access::assert_download_allowed(&db, body.message_id, &caller, true)
+        {
             return HttpResponse::Forbidden().json(serde_json::json!({
                 "error": { "code": "FORBIDDEN", "message": msg }
             }));

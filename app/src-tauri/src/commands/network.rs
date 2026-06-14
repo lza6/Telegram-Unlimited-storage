@@ -1,15 +1,15 @@
+use crate::vpn_optimizer::NetworkConfig;
 use std::net::TcpStream;
 use std::time::Duration;
 use tauri::State;
-use crate::vpn_optimizer::NetworkConfig;
 
 /// Telegram DC addresses for connectivity checks and fallback
 const DC_ADDRESSES: &[&str] = &[
-    "149.154.167.50:443",  // DC2
-    "149.154.175.53:443",  // DC1
-    "149.154.167.51:443",  // DC3
-    "149.154.167.91:443",  // DC4
-    "91.108.56.130:443",   // DC5
+    "149.154.167.50:443", // DC2
+    "149.154.175.53:443", // DC1
+    "149.154.167.51:443", // DC3
+    "149.154.167.91:443", // DC4
+    "91.108.56.130:443",  // DC5
 ];
 
 /// Detect VPN network interfaces on the system (blocking).
@@ -21,9 +21,9 @@ pub fn detect_vpn_interfaces() -> bool {
             Ok(output) => {
                 let ifaces = String::from_utf8_lossy(&output.stdout);
                 let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
-                return ifaces.split_whitespace().any(|iface| {
-                    vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
-                });
+                return ifaces
+                    .split_whitespace()
+                    .any(|iface| vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix)));
             }
             Err(_) => return false,
         }
@@ -50,8 +50,15 @@ pub fn detect_vpn_interfaces() -> bool {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
                 let vpn_keywords = [
-                    "tap-windows", "tunnel", "wireguard", "openvpn",
-                    "fortinet", "cisco", "tailscale", "zerotier", "ipsec",
+                    "tap-windows",
+                    "tunnel",
+                    "wireguard",
+                    "openvpn",
+                    "fortinet",
+                    "cisco",
+                    "tailscale",
+                    "zerotier",
+                    "ipsec",
                 ];
                 return vpn_keywords.iter().any(|kw| stdout.contains(kw));
             }
@@ -79,7 +86,11 @@ pub async fn cmd_is_network_available(
     let proxy_addr = net_config.proxy_addr();
     let dc_attempts = {
         let vpn = net_config.vpn.read().await;
-        if vpn.enabled { vpn.dc_fallback_attempts as usize } else { 1 }
+        if vpn.enabled {
+            vpn.dc_fallback_attempts as usize
+        } else {
+            1
+        }
     };
 
     tokio::task::spawn_blocking(move || {

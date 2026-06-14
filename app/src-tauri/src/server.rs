@@ -1,9 +1,9 @@
-use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
-use actix_cors::Cors;
-use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer_with_limit;
+use crate::commands::TelegramState;
 use crate::http_middleware::ShareBruteForceLimiter;
 use crate::vpn_optimizer::NetworkConfig;
+use actix_cors::Cors;
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use grammers_client::types::Media;
 
 use std::sync::Arc;
@@ -157,24 +157,28 @@ async fn stream_media(
     data: web::Data<Arc<TelegramState>>,
     token_data: web::Data<StreamTokenData>,
     net_config: web::Data<Arc<NetworkConfig>>,
-    #[allow(unused_variables)]
-    db_data: web::Data<crate::db::DbConnection>,
-    #[allow(unused_variables)]
-    local_bridge: web::Data<crate::local_api::LocalApiBridge>,
+    #[allow(unused_variables)] db_data: web::Data<crate::db::DbConnection>,
+    #[allow(unused_variables)] local_bridge: web::Data<crate::local_api::LocalApiBridge>,
 ) -> impl Responder {
     let (folder_id_str, message_id) = path.into_inner();
 
     // Validate session token (constant-time comparison to prevent timing attacks)
     match &query.token {
         Some(t) if crate::http_middleware::constant_time_eq(t, &token_data.token) => {
-            log::debug!("Stream request: Token validated successfully for msg {}", message_id);
-        },
+            log::debug!(
+                "Stream request: Token validated successfully for msg {}",
+                message_id
+            );
+        }
         _ => {
-            log::error!("Stream request failed: Invalid or missing stream token for msg {}", message_id);
-            return HttpResponse::Forbidden().body("Invalid or missing stream token")
-        },
+            log::error!(
+                "Stream request failed: Invalid or missing stream token for msg {}",
+                message_id
+            );
+            return HttpResponse::Forbidden().body("Invalid or missing stream token");
+        }
     }
-    
+
     // Parse folder ID
     let folder_id = if folder_id_str == "me" || folder_id_str == "home" || folder_id_str == "null" {
         log::debug!("Stream request: Using root folder for msg {}", message_id);
@@ -182,53 +186,74 @@ async fn stream_media(
     } else {
         match folder_id_str.parse::<i64>() {
             Ok(id) => {
-                log::debug!("Stream request: Parsed folder ID {} for msg {}", id, message_id);
+                log::debug!(
+                    "Stream request: Parsed folder ID {} for msg {}",
+                    id,
+                    message_id
+                );
                 Some(id)
-            },
+            }
             Err(_) => {
-                log::error!("Stream request failed: Invalid folder ID format '{}' for msg {}", folder_id_str, message_id);
-                return HttpResponse::BadRequest().body("Invalid folder ID")
-            },
+                log::error!(
+                    "Stream request failed: Invalid folder ID format '{}' for msg {}",
+                    folder_id_str,
+                    message_id
+                );
+                return HttpResponse::BadRequest().body("Invalid folder ID");
+            }
         }
     };
 
-    let client_opt = {
-        data.client.lock().await.clone()
-    };
+    let client_opt = { data.client.lock().await.clone() };
 
     if let Some(client) = client_opt {
-        log::debug!("Stream request: Client acquired, resolving peer for msg {}...", message_id);
+        log::debug!(
+            "Stream request: Client acquired, resolving peer for msg {}...",
+            message_id
+        );
         match resolve_peer_with_limit(
             &client,
             folder_id,
             &data.peer_cache,
             net_config.peer_cache_size(),
-        ).await {
+        )
+        .await
+        {
             Ok(peer) => {
-                log::debug!("Stream request: Peer resolved, fetching message {}...", message_id);
+                log::debug!(
+                    "Stream request: Peer resolved, fetching message {}...",
+                    message_id
+                );
                 // Try to fetch message efficiently
-                 match client.get_messages_by_id(peer, &[message_id]).await {
+                match client.get_messages_by_id(peer, &[message_id]).await {
                     Ok(messages) => {
                         if let Some(Some(msg)) = messages.first() {
                             if let Some(media) = msg.media() {
-                                log::debug!("Stream request: Message and media found for msg {}", message_id);
+                                log::debug!(
+                                    "Stream request: Message and media found for msg {}",
+                                    message_id
+                                );
                                 let size = match &media {
                                     Media::Document(d) => d.size() as u64,
-                                    Media::Photo(_) => 0, 
+                                    Media::Photo(_) => 0,
                                     _ => 0,
                                 };
-                                
+
                                 let mime = mime_type_from_media(&media);
-                                
+
                                 // Parse Range header
                                 let mut start_byte = 0;
                                 let mut end_byte = if size > 0 { size - 1 } else { 0 };
                                 let mut is_range = false;
 
                                 if size > 0 {
-                                    if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
+                                    if let Some(range_header) =
+                                        req.headers().get(actix_web::http::header::RANGE)
+                                    {
                                         if let Ok(range_str) = range_header.to_str() {
-                                            if let Some((start, end)) = parse_range_header(range_str, size) {
+                                            if let Some((start, end)) =
+                                                parse_range_header(range_str, size)
+                                            {
                                                 start_byte = start;
                                                 end_byte = end;
                                                 is_range = true;
@@ -247,7 +272,7 @@ async fn stream_media(
                                     "Stream request: Starting download for msg {} (mime: {}, size: {}, range: {}-{}, content_length: {})", 
                                     message_id, mime, size, start_byte, end_byte, content_length
                                 );
-                                
+
                                 // Create chunk-streaming response
                                 let mut download_iter = client.iter_download(&media);
                                 let mut bytes_to_skip = 0;
@@ -260,9 +285,12 @@ async fn stream_media(
                                         .chunk_size(MIN_CHUNK_SIZE)
                                         .skip_chunks(chunk_index)
                                         .chunk_size(max_chunk);
-                                    bytes_to_skip = (start_byte - (chunk_index as u64 * MIN_CHUNK_SIZE as u64)) as usize;
+                                    bytes_to_skip = (start_byte
+                                        - (chunk_index as u64 * MIN_CHUNK_SIZE as u64))
+                                        as usize;
                                 } else {
-                                    download_iter = download_iter.chunk_size(net_config.download_chunk_i32());
+                                    download_iter =
+                                        download_iter.chunk_size(net_config.download_chunk_i32());
                                 }
 
                                 let stream = async_stream::stream! {
@@ -279,7 +307,7 @@ async fn stream_media(
                                                 }
 
                                                 let mut data_slice = data;
-                                                
+
                                                 // Handle skipping of bytes for unaligned start
                                                 if skipped < bytes_to_skip {
                                                     let to_skip = bytes_to_skip - skipped;
@@ -317,53 +345,65 @@ async fn stream_media(
                                     }
                                     log::debug!("Stream request: Stream completed for msg {} (total chunks: {}, yielded: {})", message_id, chunk_count, total_yielded);
                                 };
-                                
+
                                 if is_range {
                                     return HttpResponse::PartialContent()
                                         .insert_header(("Content-Type", mime))
-                                        .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
-                                        .insert_header(("Content-Length", content_length.to_string()))
+                                        .insert_header((
+                                            "Content-Range",
+                                            format!("bytes {}-{}/{}", start_byte, end_byte, size),
+                                        ))
+                                        .insert_header((
+                                            "Content-Length",
+                                            content_length.to_string(),
+                                        ))
                                         .insert_header(("Accept-Ranges", "bytes"))
                                         .insert_header(("Cache-Control", "private, max-age=120"))
                                         .streaming(stream);
                                 } else {
                                     return HttpResponse::Ok()
-                                        .insert_header(("Content-Type", mime)) 
+                                        .insert_header(("Content-Type", mime))
                                         .insert_header(("Content-Length", size.to_string()))
                                         .insert_header(("Accept-Ranges", "bytes"))
                                         .insert_header(("Cache-Control", "private, max-age=120"))
                                         .streaming(stream);
                                 }
                             } else {
-                                log::error!("Stream request failed: Media not found in message {}", message_id);
+                                log::error!(
+                                    "Stream request failed: Media not found in message {}",
+                                    message_id
+                                );
                             }
                         } else {
                             log::error!("Stream request failed: Message {} not found", message_id);
                         }
                         HttpResponse::NotFound().body("Message or media not found")
-                    },
+                    }
                     Err(e) => {
-                        log::error!("Stream request failed: Error fetching message {}: {}", message_id, e);
-                        HttpResponse::InternalServerError().body(format!("Failed to fetch message: {}", e))
-                    },
-                 }
-            },
+                        log::error!(
+                            "Stream request failed: Error fetching message {}: {}",
+                            message_id,
+                            e
+                        );
+                        HttpResponse::InternalServerError()
+                            .body(format!("Failed to fetch message: {}", e))
+                    }
+                }
+            }
             Err(e) => {
-                log::error!("Stream request failed: Peer resolution error for msg {}: {}", message_id, e);
+                log::error!(
+                    "Stream request failed: Peer resolution error for msg {}: {}",
+                    message_id,
+                    e
+                );
                 HttpResponse::BadRequest().body(format!("Peer resolution failed: {}", e))
-            },
+            }
         }
     } else {
         #[cfg(not(feature = "headless-server"))]
         {
-            if let Some(resp) = stream_via_local_api(
-                &req,
-                message_id,
-                folder_id,
-                &local_bridge,
-                &db_data,
-            )
-            .await
+            if let Some(resp) =
+                stream_via_local_api(&req, message_id, folder_id, &local_bridge, &db_data).await
             {
                 log::debug!(
                     "Stream request: proxied via local API for msg {}",
@@ -372,14 +412,20 @@ async fn stream_media(
                 return resp;
             }
         }
-        log::error!("Stream request failed: Telegram client not connected for msg {}", message_id);
+        log::error!(
+            "Stream request failed: Telegram client not connected for msg {}",
+            message_id
+        );
         HttpResponse::ServiceUnavailable().body("Telegram client not connected")
     }
 }
 
 fn mime_type_from_media(media: &Media) -> String {
     match media {
-        Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+        Media::Document(d) => d
+            .mime_type()
+            .unwrap_or("application/octet-stream")
+            .to_string(),
         _ => "application/octet-stream".to_string(),
     }
 }
@@ -428,11 +474,18 @@ pub async fn start_server(
     })
     .keep_alive(Duration::from_secs(5))
     .client_request_timeout(Duration::from_secs(120))
-    .workers(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+    .workers(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+    )
     .bind(("0.0.0.0", port))?
     .run();
 
-    log::info!("Streaming Server started successfully on http://0.0.0.0:{}", port);
+    log::info!(
+        "Streaming Server started successfully on http://0.0.0.0:{}",
+        port
+    );
 
     Ok(server)
 }

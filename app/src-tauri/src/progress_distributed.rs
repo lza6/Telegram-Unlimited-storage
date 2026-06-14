@@ -70,9 +70,9 @@ impl ProgressBackendType {
 /// In-memory progress hub using broadcast channels
 #[derive(Clone)]
 pub struct MemoryProgressHub {
-    inner: Arc<tokio::sync::RwLock<
-        std::collections::HashMap<String, broadcast::Sender<ProgressEvent>>
-    >>,
+    inner: Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, broadcast::Sender<ProgressEvent>>>,
+    >,
 }
 
 impl MemoryProgressHub {
@@ -85,9 +85,7 @@ impl MemoryProgressHub {
     pub async fn emit(&self, event: ProgressEvent) {
         let sid = event.session_id.clone();
         let mut map = self.inner.write().await;
-        let tx = map
-            .entry(sid)
-            .or_insert_with(|| broadcast::channel(64).0);
+        let tx = map.entry(sid).or_insert_with(|| broadcast::channel(64).0);
         let _ = tx.send(event);
     }
 
@@ -125,8 +123,7 @@ pub struct RedisProgressHub {
 
 impl RedisProgressHub {
     pub fn new(redis_url: &str, prefix: &str) -> Result<Arc<Self>, String> {
-        let client = redis::Client::open(redis_url)
-            .map_err(|e| format!("Redis connect: {e}"))?;
+        let client = redis::Client::open(redis_url).map_err(|e| format!("Redis connect: {e}"))?;
 
         // Verify connection
         let mut conn = client
@@ -209,7 +206,6 @@ impl RedisProgressHub {
         let session_id_owned = session_id.to_string();
 
         let result = tokio::task::spawn_blocking(move || {
-            use redis::Commands;
             let mut conn = match client.get_connection() {
                 Ok(c) => c,
                 Err(e) => {
@@ -291,7 +287,9 @@ impl DistributedProgressHub {
                         Self::Redis(hub)
                     }
                     Err(e) => {
-                        log::warn!("Failed to init Redis progress hub, falling back to memory: {e}");
+                        log::warn!(
+                            "Failed to init Redis progress hub, falling back to memory: {e}"
+                        );
                         Self::Memory(MemoryProgressHub::new())
                     }
                 }

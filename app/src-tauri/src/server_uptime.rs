@@ -8,8 +8,5 @@ pub fn mark_started() {
 }
 
 pub fn uptime_secs() -> u64 {
-    START
-        .get()
-        .map(|s| s.elapsed().as_secs())
-        .unwrap_or(0)
+    START.get().map(|s| s.elapsed().as_secs()).unwrap_or(0)
 }

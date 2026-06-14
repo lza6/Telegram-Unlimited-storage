@@ -1,9 +1,9 @@
-use grammers_client::Client;
-use grammers_client::types::Peer;
-use tauri::State;
 use crate::bandwidth::BandwidthManager;
+use grammers_client::types::Peer;
+use grammers_client::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::State;
 use tokio::sync::RwLock;
 
 /// Resolve a folder_id to a Telegram Peer, using the cache for O(1) lookups.
@@ -92,7 +92,9 @@ pub fn cmd_log(message: String) {
 }
 
 #[tauri::command]
-pub async fn cmd_get_bandwidth(bw_state: State<'_, BandwidthManager>) -> Result<crate::bandwidth::BandwidthStats, String> {
+pub async fn cmd_get_bandwidth(
+    bw_state: State<'_, BandwidthManager>,
+) -> Result<crate::bandwidth::BandwidthStats, String> {
     Ok(bw_state.get_stats().await)
 }
 
@@ -126,12 +128,12 @@ pub fn map_error(e: impl std::fmt::Display) -> String {
     if err_str.contains("FLOOD_WAIT") {
         // Expected format: ... (value: 1234)
         if let Some(start) = err_str.find("(value: ") {
-             let rest = &err_str[start + 8..];
-             if let Some(end) = rest.find(')') {
-                 if let Ok(seconds) = rest[..end].parse::<i64>() {
-                     return format!("FLOOD_WAIT_{}", seconds);
-                 }
-             }
+            let rest = &err_str[start + 8..];
+            if let Some(end) = rest.find(')') {
+                if let Ok(seconds) = rest[..end].parse::<i64>() {
+                    return format!("FLOOD_WAIT_{}", seconds);
+                }
+            }
         }
         // Fallback if parsing fails but we know it's a flood wait
         return "FLOOD_WAIT_60".to_string();

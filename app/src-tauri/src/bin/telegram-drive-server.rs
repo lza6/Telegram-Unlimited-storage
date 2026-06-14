@@ -1,9 +1,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use app_lib::commands::TelegramState;
 use app_lib::server_config::ServerConfig;
 use app_lib::server_http::{bootstrap_telegram, start_unified_server, ServerRuntime};
-use app_lib::commands::TelegramState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,10 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     app_lib::server_maintenance::run_maintenance_pass(&db, &config);
-    let _maintenance_task = app_lib::server_maintenance::spawn_periodic_maintenance(
-        db.clone(),
-        config.clone(),
-    );
+    let _maintenance_task =
+        app_lib::server_maintenance::spawn_periodic_maintenance(db.clone(), config.clone());
     let _bot_keepalive = app_lib::server_maintenance::spawn_bot_keepalive(config.clone());
 
     // VPN keep-alive (same as desktop) when configured in network_settings.json
@@ -84,11 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(|_| "149.154.167.50:443".parse().expect("default DC addr"));
                 let _ = tokio::task::spawn_blocking(move || {
                     use std::net::TcpStream;
-                    let _ = TcpStream::connect_timeout(
-                        &dc_addr,
-                        std::time::Duration::from_secs(5),
-                    );
-                }).await;
+                    let _ = TcpStream::connect_timeout(&dc_addr, std::time::Duration::from_secs(5));
+                })
+                .await;
             }
         });
     }

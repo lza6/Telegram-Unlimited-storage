@@ -88,10 +88,7 @@ pub fn build_bot_download_limit_response(
     file_size: u64,
 ) -> HttpResponse {
     let size_mb = file_size as f64 / (1024.0 * 1024.0);
-    let upload_url = format!(
-        "{}/upload.html",
-        config.base_url.trim_end_matches('/')
-    );
+    let upload_url = format!("{}/upload.html", config.base_url.trim_end_matches('/'));
 
     let wants_json = req
         .headers()
@@ -121,8 +118,7 @@ pub fn build_bot_download_limit_response(
                     method: "switch_transport",
                     url: None,
                     hint: Some(
-                        "Set TELEGRAM_TRANSPORT_MODE=user and complete MTProto login"
-                            .into(),
+                        "Set TELEGRAM_TRANSPORT_MODE=user and complete MTProto login".into(),
                     ),
                 },
                 BotDownloadLimitSolution {

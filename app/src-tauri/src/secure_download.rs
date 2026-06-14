@@ -35,14 +35,7 @@ pub fn issue_upload_download_link(
 ) -> Result<SecureDownloadLink, String> {
     let owner = file_access::default_owner_if_missing(owner_id);
     let file_id = message_id.to_string();
-    file_access::record_uploaded_file(
-        db,
-        message_id,
-        folder_id,
-        owner,
-        &file_name,
-        file_size,
-    )?;
+    file_access::record_uploaded_file(db, message_id, folder_id, owner, &file_name, file_size)?;
 
     let now = chrono::Utc::now().timestamp();
     let ttl_secs = config.upload_link_ttl_secs;
@@ -110,9 +103,7 @@ pub fn issue_upload_download_link(
         });
     }
 
-    Err(
-        "No download link mode: set DOWNLOAD_SIGNING_SECRET or UPLOAD_SHARE_TTL_HOURS".to_string(),
-    )
+    Err("No download link mode: set DOWNLOAD_SIGNING_SECRET or UPLOAD_SHARE_TTL_HOURS".to_string())
 }
 
 /// Whether `GET /d?file_id=` is allowed for this request.

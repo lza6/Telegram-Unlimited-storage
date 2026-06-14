@@ -16,7 +16,10 @@ pub struct SettingsRouteState {
 
 fn effective_share_link_base(req: &HttpRequest, state: &SettingsRouteState) -> String {
     if state.use_stream_port_for_shares {
-        crate::ui_settings::share_base_url_from_data_dir(&state.config.data_dir, state.config.stream_port)
+        crate::ui_settings::share_base_url_from_data_dir(
+            &state.config.data_dir,
+            state.config.stream_port,
+        )
     } else {
         crate::ui_settings::effective_base_url(req, &state.config)
     }
@@ -215,10 +218,7 @@ struct VpnPatch {
 }
 
 #[get("/api/v1/settings")]
-async fn get_settings(
-    req: HttpRequest,
-    state: web::Data<SettingsRouteState>,
-) -> impl Responder {
+async fn get_settings(req: HttpRequest, state: web::Data<SettingsRouteState>) -> impl Responder {
     if let Some(resp) = require_admin(&req, &state.config) {
         return resp;
     }

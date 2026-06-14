@@ -1,9 +1,9 @@
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use grammers_client::SignInError;
 use grammers_tl_types as tl;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::commands::TelegramState;
 use crate::server_config::ServerConfig;
@@ -108,9 +108,7 @@ fn normalize_phone(raw: &str) -> Result<String, String> {
     if digits.len() == 13 && digits.starts_with("86") {
         return Ok(format!("+{}", digits));
     }
-    Err(
-        "无法识别手机号：请选择国家/地区并填写号码，或直接输入 +8613800138000 格式".into(),
-    )
+    Err("无法识别手机号：请选择国家/地区并填写号码，或直接输入 +8613800138000 格式".into())
 }
 
 #[cfg(test)]
@@ -124,7 +122,10 @@ mod phone_tests {
 
     #[test]
     fn e164_passthrough() {
-        assert_eq!(normalize_phone("+86 138 0013 8000").unwrap(), "+8613800138000");
+        assert_eq!(
+            normalize_phone("+86 138 0013 8000").unwrap(),
+            "+8613800138000"
+        );
     }
 }
 
@@ -152,9 +153,9 @@ async fn auth_status(
         }
     };
     let hint = match mode {
-        crate::telegram_transport::TelegramTransportMode::Bot if !bot_configured => Some(
-            "机器人模式需要 TG_BOT_TOKEN 与 TG_STORAGE_CHANNEL_ID，并将机器人设为频道管理员。",
-        ),
+        crate::telegram_transport::TelegramTransportMode::Bot if !bot_configured => {
+            Some("机器人模式需要 TG_BOT_TOKEN 与 TG_STORAGE_CHANNEL_ID，并将机器人设为频道管理员。")
+        }
         crate::telegram_transport::TelegramTransportMode::User => {
             auth.config.telegram_credentials_placeholder()
         }
@@ -349,7 +350,10 @@ async fn phone_password(
     let Some(pw_token) = pw_guard.take() else {
         return bad_request("当前没有待提交的两步验证步骤");
     };
-    match client.check_password(pw_token, body.password.as_str()).await {
+    match client
+        .check_password(pw_token, body.password.as_str())
+        .await
+    {
         Ok(_) => {
             *tg_state.api_id.lock().await = Some(api_id);
             HttpResponse::Ok().json(serde_json::json!({ "connected": true }))
@@ -513,12 +517,16 @@ async fn transport_set_mode(
         crate::telegram_transport::TelegramTransportMode::Bot
             if !crate::telegram_transport::TransportHandle::bot_configured(&auth.config) =>
         {
-            return bad_request("Bot mode is not configured (TG_BOT_TOKEN / TG_STORAGE_CHANNEL_ID)");
+            return bad_request(
+                "Bot mode is not configured (TG_BOT_TOKEN / TG_STORAGE_CHANNEL_ID)",
+            );
         }
         crate::telegram_transport::TelegramTransportMode::User
             if !crate::telegram_transport::TransportHandle::user_configured(&auth.config) =>
         {
-            return bad_request("User mode is not configured (TELEGRAM_API_ID / TELEGRAM_API_HASH)");
+            return bad_request(
+                "User mode is not configured (TELEGRAM_API_ID / TELEGRAM_API_HASH)",
+            );
         }
         _ => {}
     }

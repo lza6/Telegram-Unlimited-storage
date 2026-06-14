@@ -33,9 +33,7 @@ impl LocalApiBridge {
 }
 
 pub fn build_download_url(port: u16, message_id: i32, folder_id: Option<i64>) -> String {
-    let mut url = format!(
-        "http://127.0.0.1:{port}/api/v1/files/{message_id}/download"
-    );
+    let mut url = format!("http://127.0.0.1:{port}/api/v1/files/{message_id}/download");
     if let Some(fid) = folder_id {
         url.push_str(&format!("?folder_id={fid}"));
     }
@@ -130,7 +128,11 @@ pub async fn fetch_file_to_path(
         downloaded += bytes.len() as u64;
     }
 
-    let counted = if total_size > 0 { total_size } else { downloaded };
+    let counted = if total_size > 0 {
+        total_size
+    } else {
+        downloaded
+    };
     bw_state.add_down(counted).await;
     Ok(counted)
 }

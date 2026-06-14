@@ -72,7 +72,12 @@ impl AccessLockout {
         }
     }
 
-    pub fn client_key(&self, connection_host: &str, real_ip: Option<&str>, forwarded_for: Option<&str>) -> String {
+    pub fn client_key(
+        &self,
+        connection_host: &str,
+        real_ip: Option<&str>,
+        forwarded_for: Option<&str>,
+    ) -> String {
         if let Some(ip) = real_ip.filter(|s| !s.is_empty()) {
             return ip.to_string();
         }

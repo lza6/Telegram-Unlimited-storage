@@ -29,7 +29,8 @@ pub enum CacheLayer {
 }
 
 pub fn init_schema(conn: &sqlite::Connection) -> Result<(), String> {
-    conn.execute("PRAGMA journal_mode=WAL").map_err(|e| e.to_string())?;
+    conn.execute("PRAGMA journal_mode=WAL")
+        .map_err(|e| e.to_string())?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS metadata_cache (
             cache_key TEXT PRIMARY KEY,
@@ -65,11 +66,7 @@ pub fn put_folders(db: &DbConnection, folders: &[CachedFolder]) -> Result<(), St
     put_payload(db, folders_cache_key(), "folders", folders)
 }
 
-pub fn get_files(
-    db: &DbConnection,
-    key: &str,
-    ttl_secs: u64,
-) -> Option<Vec<CachedFile>> {
+pub fn get_files(db: &DbConnection, key: &str, ttl_secs: u64) -> Option<Vec<CachedFile>> {
     get_payload(db, key, "files", ttl_secs)
 }
 

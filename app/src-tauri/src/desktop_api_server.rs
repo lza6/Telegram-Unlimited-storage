@@ -12,9 +12,9 @@ use actix_web::{web, App, HttpServer};
 #[cfg(not(feature = "headless-server"))]
 use crate::api_routes::{self, ApiState};
 #[cfg(not(feature = "headless-server"))]
-use crate::commands::TelegramState;
-#[cfg(not(feature = "headless-server"))]
 use crate::commands::api_settings::ApiSettingsFile;
+#[cfg(not(feature = "headless-server"))]
+use crate::commands::TelegramState;
 #[cfg(not(feature = "headless-server"))]
 use crate::db::DbConnection;
 #[cfg(not(feature = "headless-server"))]

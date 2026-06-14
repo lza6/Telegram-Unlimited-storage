@@ -188,11 +188,23 @@ mod tests {
         db::upsert_file_asset(&db, 1, None, "admin", "a.bin", 1).expect("asset");
         let mut cfg = (*crate::server_config::test_config()).clone();
         cfg.multi_tenant_enabled = false;
-        assert!(!asset_index_authoritative(TelegramTransportMode::User, &cfg, &db));
+        assert!(!asset_index_authoritative(
+            TelegramTransportMode::User,
+            &cfg,
+            &db
+        ));
         db::set_file_index_complete(&db, true).expect("complete");
-        assert!(asset_index_authoritative(TelegramTransportMode::User, &cfg, &db));
+        assert!(asset_index_authoritative(
+            TelegramTransportMode::User,
+            &cfg,
+            &db
+        ));
         cfg.multi_tenant_enabled = true;
-        assert!(asset_index_authoritative(TelegramTransportMode::User, &cfg, &db));
+        assert!(asset_index_authoritative(
+            TelegramTransportMode::User,
+            &cfg,
+            &db
+        ));
     }
 
     #[test]

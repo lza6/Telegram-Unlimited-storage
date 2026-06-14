@@ -5,7 +5,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-use crate::admin_routes::{check_access_pwd, check_pwd_form, host_base, AdminState, LegacyUploadResult};
+use crate::admin_routes::{
+    check_access_pwd, check_pwd_form, host_base, AdminState, LegacyUploadResult,
+};
 use crate::commands::TelegramState;
 use crate::db;
 
@@ -94,8 +96,10 @@ async fn upload_chunk(
             if let Ok(b) = chunk {
                 bytes.extend_from_slice(&b);
                 if bytes.len() > max_chunk_bytes {
-                    return HttpResponse::PayloadTooLarge()
-                        .body(format!("chunk exceeds {} MB limit", admin.config.chunk_size_mb));
+                    return HttpResponse::PayloadTooLarge().body(format!(
+                        "chunk exceeds {} MB limit",
+                        admin.config.chunk_size_mb
+                    ));
                 }
             }
         }
@@ -165,13 +169,9 @@ async fn upload_chunk(
     {
         Ok(message_id) => {
             let file_id = message_id.to_string();
-            if let Err(e) = db::record_upload_chunk(
-                &admin.db_pool,
-                &session_id,
-                idx,
-                &file_id,
-                &sha256_hash,
-            ) {
+            if let Err(e) =
+                db::record_upload_chunk(&admin.db_pool, &session_id, idx, &file_id, &sha256_hash)
+            {
                 log::error!("Failed to record upload chunk: {}", e);
                 return HttpResponse::InternalServerError().body("failed to record chunk");
             }
@@ -195,10 +195,7 @@ async fn upload_chunk(
 }
 
 #[get("/upload_status")]
-async fn get_upload_status(
-    req: HttpRequest,
-    admin: web::Data<AdminState>,
-) -> impl Responder {
+async fn get_upload_status(req: HttpRequest, admin: web::Data<AdminState>) -> impl Responder {
     if let Some(resp) =
         crate::upload_progress::verify_upload_progress_request(&req, &admin.config.access_pwd)
     {
@@ -246,8 +243,7 @@ async fn get_upload_status(
         {
             if let Ok(mid) = manifest_id.parse::<i32>() {
                 let base = host_base(&req, &admin.config);
-                let owner_id =
-                    crate::tenant_auth::CallerIdentity::Admin.owner_id_for_asset();
+                let owner_id = crate::tenant_auth::CallerIdentity::Admin.owner_id_for_asset();
                 if let Ok(link) = crate::secure_download::issue_upload_download_link(
                     &admin.db_pool,
                     &admin.config,
@@ -314,7 +310,11 @@ async fn merge_chunks(
         _ => return HttpResponse::BadRequest().body("missing filename"),
     };
 
-    let session_id = body.get("session_id").map(|s| s.as_str()).unwrap_or("").to_string();
+    let session_id = body
+        .get("session_id")
+        .map(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
     let folder_id = crate::legacy_form::parse_optional_i64_field(&body, "folder_id");
 
     let chunk_ids: Vec<String> = if let Some(j) = body.get("chunk_ids") {
@@ -324,7 +324,9 @@ async fn merge_chunks(
         if !j.is_empty() {
             match serde_json::from_str(j) {
                 Ok(v) => v,
-                Err(e) => return HttpResponse::BadRequest().body(format!("chunk_ids invalid: {e}")),
+                Err(e) => {
+                    return HttpResponse::BadRequest().body(format!("chunk_ids invalid: {e}"))
+                }
             }
         } else {
             vec![]
@@ -345,18 +347,14 @@ async fn merge_chunks(
         let mut ids = Vec::with_capacity(db_chunks.len());
         for chunk in &db_chunks {
             if chunk.status != "uploaded" {
-                return HttpResponse::BadRequest().body(format!(
-                    "chunk {} not uploaded yet",
-                    chunk.chunk_index
-                ));
+                return HttpResponse::BadRequest()
+                    .body(format!("chunk {} not uploaded yet", chunk.chunk_index));
             }
             if let Some(ref fid) = chunk.file_id {
                 ids.push(fid.clone());
             } else {
-                return HttpResponse::BadRequest().body(format!(
-                    "chunk {} missing file_id",
-                    chunk.chunk_index
-                ));
+                return HttpResponse::BadRequest()
+                    .body(format!("chunk {} missing file_id", chunk.chunk_index));
             }
         }
         if ids.is_empty() {
@@ -398,7 +396,9 @@ async fn merge_chunks(
             // Mark session as completed if session_id was used
             if !session_id.is_empty() {
                 let manifest_file_id = manifest_id.to_string();
-                if let Err(e) = db::complete_upload_session(&admin.db_pool, &session_id, &manifest_file_id) {
+                if let Err(e) =
+                    db::complete_upload_session(&admin.db_pool, &session_id, &manifest_file_id)
+                {
                     log::warn!("Failed to complete upload session {}: {}", session_id, e);
                 }
                 progress_hub
@@ -412,7 +412,8 @@ async fn merge_chunks(
                     .await;
             }
             let base = host_base(&req, &admin.config);
-            let owner_id = crate::tenant_auth::check_pwd_caller(pwd, &admin.config).owner_id_for_asset();
+            let owner_id =
+                crate::tenant_auth::check_pwd_caller(pwd, &admin.config).owner_id_for_asset();
             match crate::secure_download::issue_upload_download_link(
                 &admin.db_pool,
                 &admin.config,
@@ -556,12 +557,9 @@ async fn legacy_download_query(
         } else {
             crate::tenant_auth::CallerIdentity::Anonymous
         };
-        if let Err(msg) = crate::file_access::assert_download_allowed(
-            &admin.db_pool,
-            message_id,
-            &caller,
-            true,
-        ) {
+        if let Err(msg) =
+            crate::file_access::assert_download_allowed(&admin.db_pool, message_id, &caller, true)
+        {
             return HttpResponse::Forbidden().json(serde_json::json!({
                 "error": { "code": "FORBIDDEN", "message": msg }
             }));

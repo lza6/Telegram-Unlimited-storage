@@ -17,7 +17,9 @@ pub enum CallerIdentity {
     /// Web 管理台密码 / X-Access-Pwd
     Admin,
     /// API Key 对应租户
-    Tenant { tenant_id: String },
+    Tenant {
+        tenant_id: String,
+    },
     Anonymous,
 }
 
@@ -33,9 +35,7 @@ impl CallerIdentity {
     pub fn can_access_owner(&self, asset_owner: &str) -> bool {
         match self {
             CallerIdentity::Admin => true,
-            CallerIdentity::Tenant { tenant_id } => {
-                asset_owner == format!("tenant:{tenant_id}")
-            }
+            CallerIdentity::Tenant { tenant_id } => asset_owner == format!("tenant:{tenant_id}"),
             CallerIdentity::Anonymous => false,
         }
     }
@@ -75,12 +75,7 @@ fn load_tenants_file(db: &DbConnection, path: &Path) -> Result<(), String> {
             continue;
         }
         let hash = api_settings::hash_key_public(&entry.api_key);
-        crate::db::upsert_tenant(
-            db,
-            &entry.tenant_id,
-            hash,
-            entry.display_name.as_deref(),
-        )?;
+        crate::db::upsert_tenant(db, &entry.tenant_id, hash, entry.display_name.as_deref())?;
     }
     Ok(())
 }
@@ -169,10 +164,7 @@ mod tests {
     #[test]
     fn caller_from_web_pwd_maps_to_admin() {
         let config = crate::server_config::test_config();
-        assert_eq!(
-            caller_from_web_pwd(true, &config),
-            CallerIdentity::Admin
-        );
+        assert_eq!(caller_from_web_pwd(true, &config), CallerIdentity::Admin);
     }
 
     #[test]

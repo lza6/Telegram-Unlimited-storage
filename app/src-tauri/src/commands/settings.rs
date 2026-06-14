@@ -1,8 +1,8 @@
 //! Tauri commands for applying proxy and VPN optimizer settings.
 //! These are called from the frontend when the user changes network configuration.
 
+use crate::vpn_optimizer::{NetworkConfig, NetworkConfigSnapshot, ProxyConfig, VpnConfig};
 use tauri::{Manager, State};
-use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig, NetworkConfigSnapshot};
 
 /// Apply proxy settings from the frontend.
 /// Stores the config in global state so network operations can read it.
@@ -49,7 +49,10 @@ pub async fn cmd_apply_proxy_settings(
 
     log::info!(
         "Applying proxy settings: enabled={}, type={}, host={}:{}",
-        config.enabled, config.proxy_type, config.host, config.port
+        config.enabled,
+        config.proxy_type,
+        config.host,
+        config.port
     );
 
     *net_config.proxy.write().await = config;
@@ -102,13 +105,20 @@ pub async fn cmd_apply_vpn_settings(
         bandwidth_limit_up_kbs,
         bandwidth_limit_down_kbs,
         chunk_size_kb: chunk_size_kb.clamp(64, 512),
-        keep_alive_interval_sec: if keep_alive_interval_sec == 0 { 0 } else { keep_alive_interval_sec.clamp(30, 120) },
+        keep_alive_interval_sec: if keep_alive_interval_sec == 0 {
+            0
+        } else {
+            keep_alive_interval_sec.clamp(30, 120)
+        },
         auto_detect_vpn,
     };
 
     log::info!(
         "Applying VPN settings: enabled={}, timeout={}x, retries={}, flood_wait={}",
-        config.enabled, config.timeout_multiplier, config.retry_attempts, config.flood_wait_respect
+        config.enabled,
+        config.timeout_multiplier,
+        config.retry_attempts,
+        config.flood_wait_respect
     );
 
     *net_config.vpn.write().await = config;

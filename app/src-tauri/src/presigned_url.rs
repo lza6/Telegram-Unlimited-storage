@@ -16,10 +16,7 @@ pub struct PresignedParams {
 }
 
 fn canonical_payload(p: &PresignedParams) -> String {
-    let folder = p
-        .folder_id
-        .map(|f| f.to_string())
-        .unwrap_or_default();
+    let folder = p.folder_id.map(|f| f.to_string()).unwrap_or_default();
     format!(
         "{}|{}|{}|{}|{}",
         CANONICAL_VERSION, p.message_id, folder, p.expires_at, p.owner_id
@@ -43,7 +40,11 @@ pub fn verify(params: &PresignedParams, secret: &str, sig_hex: &str) -> bool {
     constant_time_eq(expected.as_bytes(), sig_hex.trim().as_bytes())
 }
 
-pub fn build_presigned_url(base_url: &str, params: &PresignedParams, secret: &str) -> Result<String, String> {
+pub fn build_presigned_url(
+    base_url: &str,
+    params: &PresignedParams,
+    secret: &str,
+) -> Result<String, String> {
     let sig = sign(params, secret)?;
     let base = base_url.trim_end_matches('/');
     let folder_q = params

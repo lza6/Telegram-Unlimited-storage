@@ -1,66 +1,67 @@
 pub mod models;
 
-pub mod commands;
 pub mod bandwidth;
+pub mod commands;
 pub mod vpn_optimizer;
 
 #[cfg(not(feature = "headless-server"))]
-use tokio::sync::Mutex;
+use crate::db::DbConnection;
+#[cfg(not(feature = "headless-server"))]
+use commands::streaming::StreamConfig;
+use commands::TelegramState;
+#[cfg(not(feature = "headless-server"))]
+use rand::Rng;
+#[cfg(not(feature = "headless-server"))]
+use std::collections::{HashMap, HashSet};
 #[cfg(not(feature = "headless-server"))]
 use std::sync::Arc;
 #[cfg(not(feature = "headless-server"))]
-use std::collections::{HashMap, HashSet};
-use commands::TelegramState;
-#[cfg(not(feature = "headless-server"))]
-use commands::streaming::StreamConfig;
-#[cfg(not(feature = "headless-server"))]
-use crate::db::DbConnection;
-#[cfg(not(feature = "headless-server"))]
-use rand::Rng;
+use tokio::sync::Mutex;
 
-pub mod server;
+pub mod access_lockout;
+pub mod admin_routes;
 pub mod api_routes;
+pub mod auth_routes;
+pub mod bot_pool;
 pub mod db;
-pub mod share_routes;
+pub mod file_access;
+pub mod http_download;
+pub mod http_middleware;
+pub mod http_upload;
+pub mod legacy_form;
+pub mod legacy_routes;
+pub mod local_api;
+pub mod logging;
+pub mod metadata_cache;
+pub mod metrics;
+pub mod password_kdf;
+pub mod presigned_url;
+pub mod route_registry;
+pub mod secure_download;
+pub mod server;
 pub mod server_config;
 pub mod server_http;
-pub mod admin_routes;
-pub mod auth_routes;
-pub mod share_api_routes;
-pub mod legacy_routes;
-pub mod legacy_form;
-pub mod http_download;
-pub mod sharing_core;
-pub mod http_upload;
-pub mod route_registry;
-pub mod http_middleware;
-pub mod server_uptime;
-pub mod logging;
-pub mod telegram_transport;
-pub mod upload_gate;
-pub mod password_kdf;
-pub mod access_lockout;
-pub mod metadata_cache;
-pub mod secure_download;
-pub mod presigned_url;
-pub mod tenant_auth;
-pub mod file_access;
-pub mod local_api;
-pub mod webdav_routes;
-pub mod metrics;
 pub mod server_maintenance;
+pub mod server_uptime;
+pub mod share_api_routes;
+pub mod share_routes;
+pub mod sharing_core;
 pub mod telegram_error;
-pub mod bot_pool;
+pub mod telegram_transport;
+pub mod tenant_auth;
+pub mod upload_gate;
+pub mod webdav_routes;
 use bot_pool::BotPool;
-pub mod ui_settings;
-pub mod settings_routes;
-pub mod upload_progress;
-pub mod download_degradation;
-pub mod progress_distributed;
-pub mod storage_factory;
 pub mod chunk_index;
 #[cfg(not(feature = "headless-server"))]
 pub mod desktop_api_server;
+pub mod download_degradation;
+pub mod progress_distributed;
+pub mod session_backup;
+pub mod settings_routes;
+pub mod storage_factory;
+pub mod ui_settings;
+pub mod upload_progress;
 
 #[cfg(not(feature = "headless-server"))]
 use tauri::Manager;
@@ -113,7 +114,10 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
 
     let tg_state = Arc::new(app.state::<TelegramState>().inner().clone());
     let db = app.state::<DbConnection>().inner().clone();
-    let net_config = app.state::<Arc<vpn_optimizer::NetworkConfig>>().inner().clone();
+    let net_config = app
+        .state::<Arc<vpn_optimizer::NetworkConfig>>()
+        .inner()
+        .clone();
     let data_dir = app
         .path()
         .app_data_dir()
@@ -178,14 +182,19 @@ pub fn run() {
                 bot_pool: bot_pool.clone(),
             });
             app.manage(bandwidth::BandwidthManager::new(app.handle()));
-            app.manage(StreamConfig { token: stream_token.clone(), port: STREAM_PORT });
+            app.manage(StreamConfig {
+                token: stream_token.clone(),
+                port: STREAM_PORT,
+            });
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
-            app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            app.manage(ApiServerRunning(Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            )));
             let loaded_config = vpn_optimizer::load_network_config(app.handle());
             let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
             app.manage(net_config.clone());
-            
+
             // Initialize SQLite Database
             let db_pool = db::init_db(app.handle()).map_err(|e| {
                 log::error!("Failed to initialize SQLite database: {}", e);
@@ -206,6 +215,16 @@ pub fn run() {
             // Clean up stale upload sessions on startup
             if let Err(e) = db::cleanup_stale_uploads(&db_pool) {
                 log::warn!("Failed to clean up stale uploads: {}", e);
+            }
+
+            // Start periodic session backup for User mode resilience
+            {
+                let backup_data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::env::temp_dir().join("telegram-drive-data"));
+                let backup_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                crate::session_backup::spawn_periodic_backup(backup_data_dir, backup_running);
             }
 
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
@@ -251,8 +270,7 @@ pub fn run() {
                         db_pool: db_pool_for_server.clone(),
                         access_lockout: Arc::new(access_lockout::AccessLockout::new(8, 300)),
                     };
-                    let local_bridge =
-                        crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
+                    let local_bridge = crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
                     match server::start_server(
                         state,
                         STREAM_PORT,
@@ -262,7 +280,9 @@ pub fn run() {
                         admin_state,
                         transport,
                         local_bridge,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(server) => {
                             // Store the handle so RunEvent::Exit can stop it
                             *handle_for_thread.lock().unwrap() = Some(server.handle());
@@ -293,14 +313,17 @@ pub fn run() {
                         let dc_addr: std::net::SocketAddr = std::env::var("TG_DC_ADDR")
                             .unwrap_or_else(|_| "149.154.167.50:443".to_string())
                             .parse()
-                            .unwrap_or_else(|_| "149.154.167.50:443".parse().expect("default DC addr"));
+                            .unwrap_or_else(|_| {
+                                "149.154.167.50:443".parse().expect("default DC addr")
+                            });
                         let _ = tauri::async_runtime::spawn_blocking(move || {
                             use std::net::TcpStream;
                             let _ = TcpStream::connect_timeout(
                                 &dc_addr,
                                 std::time::Duration::from_secs(5),
                             );
-                        }).await;
+                        })
+                        .await;
                     }
                 });
             }
@@ -321,7 +344,7 @@ pub fn run() {
                     .await;
                 });
             }
-            
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

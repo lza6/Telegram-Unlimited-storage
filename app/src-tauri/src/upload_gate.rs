@@ -217,7 +217,9 @@ pub fn build_upload_gate(config: &crate::server_config::ServerConfig) -> UploadG
                 }
             }
         } else {
-            log::warn!("UPLOAD_QUEUE_BACKEND=redis but REDIS_URL unset — falling back to memory gate");
+            log::warn!(
+                "UPLOAD_QUEUE_BACKEND=redis but REDIS_URL unset — falling back to memory gate"
+            );
         }
     }
     UploadGate::new_memory(config.chunk_concurrent, config.files_concurrent)
@@ -261,26 +263,22 @@ impl UploadGate {
     /// Fast reject when saturated (load balancer / many clients).
     pub fn try_acquire_chunk(&self) -> Option<ChunkPermit> {
         match &self.inner {
-            GateBackend::Memory { chunk, .. } => chunk
-                .clone()
-                .try_acquire_owned()
-                .ok()
-                .map(|p| ChunkPermit {
+            GateBackend::Memory { chunk, .. } => {
+                chunk.clone().try_acquire_owned().ok().map(|p| ChunkPermit {
                     _inner: PermitInner::MemoryChunk(p),
-                }),
+                })
+            }
             GateBackend::Redis(g) => g.try_acquire_chunk(),
         }
     }
 
     pub fn try_acquire_file(&self) -> Option<FilePermit> {
         match &self.inner {
-            GateBackend::Memory { file, .. } => file
-                .clone()
-                .try_acquire_owned()
-                .ok()
-                .map(|p| FilePermit {
+            GateBackend::Memory { file, .. } => {
+                file.clone().try_acquire_owned().ok().map(|p| FilePermit {
                     _inner: PermitInner::MemoryFile(p),
-                }),
+                })
+            }
             GateBackend::Redis(g) => g.try_acquire_file(),
         }
     }
@@ -381,7 +379,11 @@ mod tests {
             Err(_) => return,
         };
         let test_key = format!("td:test:gate:{}", uuid::Uuid::new_v4());
-        let _: () = redis::cmd("DEL").arg(&test_key).query(&mut conn).ok().unwrap_or(());
+        let _: () = redis::cmd("DEL")
+            .arg(&test_key)
+            .query(&mut conn)
+            .ok()
+            .unwrap_or(());
 
         let ok: i32 = redis::Script::new(REDIS_ACQUIRE_LUA)
             .key(&test_key)
@@ -409,6 +411,10 @@ mod tests {
             .invoke(&mut conn)
             .unwrap();
 
-        let _: () = redis::cmd("DEL").arg(&test_key).query(&mut conn).ok().unwrap_or(());
+        let _: () = redis::cmd("DEL")
+            .arg(&test_key)
+            .query(&mut conn)
+            .ok()
+            .unwrap_or(());
     }
 }

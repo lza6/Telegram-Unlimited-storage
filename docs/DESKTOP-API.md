@@ -12,7 +12,9 @@
 
 ## 已挂载路由（桌面 REST）
 
-- `/api/v1/health`
+- `/health/live`（仅进程存活，依赖故障不应触发进程重启）
+- `/health/ready`（严格流量就绪；Telegram 未连接时返回 503）
+- `/api/v1/health`（兼容快照，始终返回 200；必须读取 `ready`）
 - `/api/v1/files`、`/search`、`/folders`、上传相关 REST
 - `/api/v1/shares`
 - `/api/v1/settings`、`/api/v1/network`
@@ -64,6 +66,13 @@ Tailscale/LAN：在分享域名填 `100.x.x.x:14201`，或反代 `/d/*` 到 1420
 - 流媒体 Transport 配置与上述目录一致（第八轮起默认 `app_data_dir`；可选 `DATA_DIR` 覆盖）
 - 已启用 API 但缺少 `local_access_pwd` 的旧配置：应用启动/重启 API 时自动补全（第十轮）
 
+## Bot 模式（桌面 + Headless）
+
+- **列表/搜索/删除索引**：走 `file_assets`；Bot 删除仅移除本地索引，**不会**删除 Telegram 频道内消息。
+- **下载/预览/分享下载**：需要 `bot_file_map`（含 Telegram `file_id`）。创建分享前会校验该映射存在；删除时会同时清除 `file_assets` 与 `bot_file_map`，并**自动撤销**该 `message_id` 的全部活跃分享链接。
+- **批量移动**：需要 User 模式（GramJS `forward_messages`）。Bot 模式下 REST 返回 `NOT_SUPPORTED`；桌面 `cmd_move_files` 返回明确错误文案。
+- **桌面 Bot 下载**：需启用本地 REST API 且配置 **Local Access Password**（`local_api` 回环调用 `/api/v1/files/{id}/download`）。未启用 API 时 Bot 下载/预览不可用。
+
 ## 桌面 UI 连接态
 
 侧栏状态点：
@@ -75,3 +84,11 @@ Tailscale/LAN：在分享域名填 `100.x.x.x:14201`，或反代 `/d/*` 到 1420
 | 红 · No network connection | 无法连接 Telegram DC / 代理不可达 |
 
 会话失效时上传/下载/删除/移动/搜索/分享/预览会禁用或触发自动登出（第十～十二轮）。
+
+## PostgreSQL upload Saga (N-2C)
+
+When `SAAS_DATABASE_MODE=postgres`, `POST /api/v1/files` requires a non-empty `Idempotency-Key` header. The same key and the same semantic upload request returns the persisted result without a second normal transport call. Reusing the key for different content, transport mode or target returns `409 IDEMPOTENCY_CONFLICT`.
+
+Relevant conflict/recovery responses include `UPLOAD_IN_PROGRESS`, `UPLOAD_RECONCILIATION_REQUIRED`, `UPLOAD_COMPENSATION_PENDING`, `UPLOAD_TERMINAL` and `UPLOAD_LEASE_LOST`. Upload bytes are staged under `<DATA_DIR>/saga-staging/`; receipt and compensation records are append-only under `<DATA_DIR>/saga-recovery/`. `POSTGRES_APP_USER` is also the authenticated recovery node identity; deployments must use a distinct database role per recovery node.
+
+This implementation does not claim atomic Telegram/PostgreSQL exactly-once behavior. Real Telegram acceptance and ambiguous-response reconciliation remain separate gates.

@@ -42,7 +42,7 @@ flowchart TB
 | 多 Bot | `TG_BOT_TOKENS` + bot_pool | Pentaract worker 池 |
 | 错误分类 | `telegram_error.rs` retriable/fatal | K-Vault classifyStorageError |
 | Bot 大文件下载 | **新增** HTML/JSON 降级页 | tg-disk 引导页 |
-| 健康检查 | `/api/v1/health` + Docker HEALTHCHECK | K-Vault compose depends_on |
+| 健康检查 | `/health/live` 存活 + `/health/ready` 流量就绪；旧 `/api/v1/health` 仅兼容 | K-Vault compose depends_on |
 | 生产栈 | `docker-compose.prod.yml` + Redis | K-Vault 全栈 compose |
 
 ---
@@ -119,7 +119,7 @@ docker compose up -d --build
 
 - UploadGate：`memory`
 - 数据：`./data` 持久化（session、SQLite、transport_mode.json）
-- 监控：`GET /metrics` + `/api/v1/health`
+- 监控：`GET /metrics` + `/health/live`；流量准入使用 `/health/ready`
 
 ### 档 B — 单机 + Redis 门控（为水平扩展做准备）
 
@@ -197,7 +197,7 @@ server {
 }
 ```
 
-健康检查路径：`/api/v1/health`（`ready=false` 表示 Telegram 未就绪，可按需从 LB 摘除）。
+容器/进程存活检查使用 `/health/live`；负载均衡流量准入使用 `/health/ready`。后者在 Telegram 未连接时返回 HTTP 503、`status=not_ready`、`ready=false`。旧 `/api/v1/health` 为兼容快照并始终返回 HTTP 200，不得再作为流量准入条件。
 
 ---
 
@@ -205,7 +205,8 @@ server {
 
 ### 每日
 
-- [ ] `GET /api/v1/health` → `status=ok`，`telegram_connected=true`
+- [ ] `GET /health/live` → HTTP 200、`status=alive`
+- [ ] `GET /health/ready` → HTTP 200、`status=ok`、`ready=true`；503 时先排查 Telegram 连接，不要重启仍存活的进程
 - [ ] `upload_queue.chunk_slots_available` 不应长期为 0（`/metrics`）
 - [ ] 磁盘：`./data` 与 Docker 日志轮转（prod compose 已设 50m×5）
 
@@ -264,8 +265,9 @@ server {
 copy .env.prod.example .env
 docker compose up -d --build
 
-# 健康
-curl http://localhost:1334/api/v1/health
+# 存活与流量就绪（职责不同）
+curl http://localhost:1334/health/live
+curl -i http://localhost:1334/health/ready
 
 # 存储回归
 .\scripts\storage-regression.ps1 -BaseUrl http://localhost:1334

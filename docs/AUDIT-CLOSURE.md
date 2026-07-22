@@ -1,6 +1,101 @@
+## 第六十三轮修复（多租户授权、Headless 默认收口与交付证据）
+
+> 详表：[FINAL-AUDIT-R63.md](FINAL-AUDIT-R63.md)
+
+- Bulk Telegram 副作用先做逐资源租户授权；HTTP 辅助上传显式携带 owner。
+- Headless API_KEY fail-closed，默认 loopback，Compose 仅发布到 loopback；SQLite 生产副本固定为 1。
+- 异步上传落盘、令牌日志脱敏、Web/桌面 in-flight 锁、A11y 与小屏布局完成复验。
+
 # 闭环审计与修复记录
 
 > 2026-06-08 深度审查：对照参考项目与用户「一次调用不出逻辑错误」要求。
+
+## 第六十二轮修复（shares_revoked 精确反馈 + 桌面删除中文确认）
+
+> 详表：[FINAL-AUDIT-R62.md](FINAL-AUDIT-R62.md)
+
+| 项 | 落地 |
+|----|------|
+| `PurgeIndexResult` | 删除返回 `shares_revoked` 计数 |
+| `BulkResponse.shares_revoked` | REST bulk delete JSON |
+| `DeleteFileResult` | 桌面 `cmd_delete_file` 结构化返回 |
+| 删除 toast/confirm | Web/桌面精确「已撤销 N 条」+ 中文确认框 |
+
+### 测试
+
+- `npm test` → **296 passed**
+- `cargo test --features headless-server --lib` → **140 passed**
+- Playwright → **52 passed**（2 skipped）
+
+## 第六十一轮修复（删除→分享列表跨页闭环 + 删除 UX）
+
+> 详表：[FINAL-AUDIT-R61.md](FINAL-AUDIT-R61.md)
+
+| 项 | 落地 |
+|----|------|
+| `bumpSharesInvalidateStorage` | Web 删除后 bump localStorage，跨 Tab 通知 |
+| `shares-core` 监听 | `storage` / `td-shares-invalidate` / `visibilitychange` |
+| 桌面 Sharing 刷新 | `Dashboard` 派发事件 · `SettingsModal` 监听 |
+| 删除 toast/confirm | 明确「相关分享链接已一并撤销」 |
+
+### 测试
+
+- `npm test` → **295 passed**
+- `cargo test --features headless-server --lib` → **139 passed**
+- Playwright smoke+metadata → **51 passed**（2 skipped）
+
+## 第六十轮修复（删除撤销分享 + 分享错误 UX）
+
+> 详表：[FINAL-AUDIT-R60.md](FINAL-AUDIT-R60.md)
+
+| 项 | 落地 |
+|----|------|
+| `revoke_shares_for_message_id` | 删除/清索引时自动撤销活跃分享 |
+| User delete/bulk | 统一 `purge_file_index_entry`（双表 + 撤分享） |
+| `sharePure.ts` / `share-pure.js` | Bot 缺映射等错误的可行动中文 |
+| Web HTML | `files.html` / `shares.html` 加载 `share-pure.js` |
+
+### 测试
+
+- `npm test` → **292 passed**
+- `cargo test --features headless-server --lib` → **140 passed**
+- Playwright smoke+metadata → **49 passed**（2 skipped）
+
+## 第五十九轮修复（Bot 双索引一致性 + 分享校验 + 上传中止）
+
+> 详表：[FINAL-AUDIT-R59.md](FINAL-AUDIT-R59.md)
+
+| 项 | 落地 |
+|----|------|
+| `purge_file_index_entry` | Bot 删除同时清除 `file_assets` + `bot_file_map` |
+| `assert_bot_downloadable` | 分享创建/下载校验 Bot 映射 |
+| `cmd_move_files` | Bot 模式显式错误（非 "client not connected"） |
+| `upload-core.js` | SSE `failed` 时 `AbortController` 中止分片 |
+| `DESKTOP-API.md` | Bot 模式限制与 Local API 前提 |
+
+### 测试
+
+- `npm test` → **288 passed**
+- `cargo test --features headless-server --lib` → **138 passed**
+- Playwright smoke+metadata → **46 passed**（2 skipped）
+
+## 第五十八轮修复（Web readiness 分离 + 终局审计）
+
+> 详表：[FINAL-AUDIT-R58.md](FINAL-AUDIT-R58.md)
+
+| 项 | 落地 |
+|----|------|
+| `ensureApiAvailable` / `ensureTransportReady` | DB 变更 vs 传输操作分离 |
+| `webPure` readiness 纯函数 | 5 tests；镜像 `web-pure.js` |
+| `files-core` | Bot 删除/行内分享不绑传输；下载仍绑传输 |
+| `shares-core` | 创建/撤销仅 API gate |
+| `page-readiness` | 状态点与 `isWebTransportReady` 一致 |
+
+### 测试
+
+- `npm test` → **288 passed**
+- coverage → **96.92% stmts / 86.51% branch**
+- Playwright smoke+metadata → **49 passed**（2 skipped）
 
 ## 第五十七轮修复（Web 元数据 + Share effect + E2E 登记）
 

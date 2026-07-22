@@ -148,6 +148,10 @@
             "type": "array",
             "items": { "type": "integer" },
             "description": "Message IDs successfully processed in this batch (Bot partial delete returns subset)"
+          },
+          "shares_revoked": {
+            "type": "integer",
+            "description": "Active share links revoked while deleting indexed files (omit when zero)"
           }
         }
       }
@@ -157,10 +161,50 @@
     "/api/v1/health": {
       "get": {
         "tags": ["System"],
-        "summary": "Health check",
+        "summary": "Compatibility health snapshot (always HTTP 200; inspect ready)",
         "responses": {
           "200": {
             "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } }
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Process liveness probe",
+        "responses": {
+          "200": {
+            "description": "The API process is alive; dependency readiness is intentionally not checked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status", "uptime_secs", "version"],
+                  "properties": {
+                    "status": { "type": "string", "enum": ["alive"] },
+                    "uptime_secs": { "type": "integer", "format": "int64" },
+                    "version": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Traffic readiness probe",
+        "responses": {
+          "200": {
+            "description": "Telegram transport is ready for upload/download traffic",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } }
+          },
+          "503": {
+            "description": "Process is alive, but Telegram transport is not ready; body status is not_ready and ready is false",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } }
           }
         }

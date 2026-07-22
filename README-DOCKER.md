@@ -2,12 +2,14 @@
 
 面向 **7×24 服务器部署** 的无头 API 网关：业务系统用 HTTP 上传/下载/列举文件，无需阿里云 OSS。架构基于 **Telegram 用户 API（grammers）**，容量与单文件大小优于 Bot API 方案（如 [tg-disk](https://github.com/Yohann0617/tg-disk)）。
 
-**v4.0.0-beta 更新**：
+**当前交付线：Web UI + Headless API**。Tauri 桌面壳仅保留为历史兼容代码，不作为本发布线的交付目标；其自动更新器尚未随本发布线验证或发布 `latest.json`，不得将其作为更新渠道依赖。
+
+**当前版本更新**：
 - Docker 镜像瘦身至 <400MB（UPX 压缩、移除桌面依赖、非 root 运行）
 - SQLite 连接池化（r2d2），支持更高并发
 - API Key 自动升级为 Argon2id
 - CSP nonce 安全策略
-- CI/CD 自动构建并推送 `ghcr.io/caamer20/telegram-drive`（linux/amd64, linux/arm64）
+- CI/CD 按 GitHub 仓库名构建镜像；发布前请以 Actions 产物中的实际镜像地址为准。
 
 **生产 / 500 并发 / 降级方案**：详见 [docs/DEPLOYMENT-PRODUCTION.md](docs/DEPLOYMENT-PRODUCTION.md)（含 Redis 多副本、容量规划、Nginx、运维清单）。
 
@@ -24,7 +26,7 @@ docker run -d \
   -e TELEGRAM_API_HASH=... \
   -e ACCESS_PWD=... \
   -e API_KEY=... \
-  ghcr.io/caamer20/telegram-drive:v4.0.0-beta
+  ghcr.io/lza6/telegram-unlimited-storage:<release-tag>
 
 # 自行构建（多阶段、UPX 压缩）
 docker build -t telegram-drive-server:4.0 .
@@ -89,6 +91,7 @@ docker build -t telegram-drive-server:4.0 .
 
 copy .env.example .env
 
+# 首次配置清单、Bot/User 两种模式说明见 docs/ENVIRONMENT-SETUP.md
 # 编辑 .env：TELEGRAM_API_ID、TELEGRAM_API_HASH、ACCESS_PWD、API_KEY
 
 # 可选 PORT=1334（默认已是 1334）
@@ -145,7 +148,11 @@ docker compose up -d --build     # 全量更新（= .\up.bat）
 
 - API 文档：`http://localhost:1334/docs.html`
 
-- 健康检查：`http://localhost:1334/api/v1/health`
+- 进程存活：`http://localhost:1334/health/live`
+
+- 流量就绪：`http://localhost:1334/health/ready`（Telegram 可用时 200；未连接时 503）
+
+- 兼容快照：`http://localhost:1334/api/v1/health`（始终 200，调用方必须读取 `ready`）
 
 
 

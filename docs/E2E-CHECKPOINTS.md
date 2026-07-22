@@ -17,6 +17,7 @@
 | Bot preview UI | 2026-06-12 | `FileCard.test.tsx` | — | previewEnabled |
 | Bot share UI | 2026-06-12 | `ShareDialog.test.ts`, `FileCard` share | `web-smoke -g share` | R56 |
 | **web metadata** | 2026-06-12 | `webMetaPure.test.ts` | `web-metadata.spec.ts` | R57 |
+| **web readiness split** | 2026-06-12 | `webPure.test.ts` readiness | `web-smoke` + metadata | R58 |
 | Share dialog effect | 2026-06-12 | — | — | shareReady 清 shareFile |
 
 **机器可读登记**：[`tests/mocks/pass-registry.json`](../tests/mocks/pass-registry.json) — 改动 `files` 列时只重跑对应 vitest/e2e。

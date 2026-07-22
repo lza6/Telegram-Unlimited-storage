@@ -1,15 +1,17 @@
 # Telegram Drive
 
-**Telegram Drive** is an open-source, cross-platform desktop application that turns
-your Telegram account into an unlimited, secure cloud storage drive. Built with
-**Tauri**, **Rust**, and **React**.
+**Telegram Drive** is an open-source Web UI + Headless API service that turns your
+Telegram account into an unlimited, secure storage drive. The current delivery
+surface is the browser console and Rust headless server; the historical Tauri
+desktop shell remains in the repository for compatibility and is not the release
+target for this line.
 
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)]()
-[![Downloads](https://img.shields.io/github/downloads/caamer20/telegram-drive/total)](https://github.com/caamer20/telegram-drive/releases)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](ghcr.io/caamer20/telegram-drive)
+[![Downloads](https://img.shields.io/github/downloads/lza6/Telegram-Unlimited-storage/total)](https://github.com/lza6/Telegram-Unlimited-storage/releases)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/lza6/Telegram-Unlimited-storage/pkgs/container/telegram-unlimited-storage)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-green)]()
 
 </div>
@@ -64,12 +66,12 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 - 快速开始：[README-DOCKER.md](README-DOCKER.md)
 - 生产 / 高并发：[docs/DEPLOYMENT-PRODUCTION.md](docs/DEPLOYMENT-PRODUCTION.md)
 - 闭环审计记录：[docs/AUDIT-CLOSURE.md](docs/AUDIT-CLOSURE.md)（第三十九轮：Connection Hook 测试 + E2E API 管线）
-- 深度审查（R56）：[docs/ROUND-56-AUDIT.md](docs/ROUND-56-AUDIT.md) ·（R55）：[docs/ROUND-55-AUDIT.md](docs/ROUND-55-AUDIT.md) · E2E 增量登记：[docs/E2E-CHECKPOINTS.md](docs/E2E-CHECKPOINTS.md) · 扩展：[docs/PRODUCT-EXTENSION-IDEAS.md](docs/PRODUCT-EXTENSION-IDEAS.md)
+- 深度审查（R62 终局）：[docs/FINAL-AUDIT-R62.md](docs/FINAL-AUDIT-R62.md) ·（R61）：[docs/FINAL-AUDIT-R61.md](docs/FINAL-AUDIT-R61.md) ·（R60）：[docs/FINAL-AUDIT-R60.md](docs/FINAL-AUDIT-R60.md) · E2E 增量：[docs/E2E-CHECKPOINTS.md](docs/E2E-CHECKPOINTS.md)
 - 扩展建议：[docs/EXTENSION-UX-R37.md](docs/EXTENSION-UX-R37.md)
 - TDD 计划：[docs/ROUND-25-TDD.md](docs/ROUND-25-TDD.md) · [docs/ROUND-16-TDD.md](docs/ROUND-16-TDD.md)
 - 桌面 REST 与 Headless 差异：[docs/DESKTOP-API.md](docs/DESKTOP-API.md)
 
-Web 控制台（`deploy/web`）提供**上传、文件列表（下载/分享）、分享管理、传输模式、分享域名与 Headless 网络开关**；深度文件操作请用**桌面端**或 **REST API**（`/api/v1/*`）。Web 与后端统一通过 `TdApi.ensureServiceReady()` 校验 Telegram 就绪（User 模式含 `auth/status.connected`）；`dashboard.html` 与 `upload.html` 共用 `page-readiness.js`；登录页与 Telegram 登录均用 `safeNext()` 防开放重定向。桌面端启动时 `connectionStatus=checking`，首检通过前禁止传输；8550/14201 传输模式通过 `transport_mode.json` 同步。`GET /api/v1/settings` 返回 `effective_share_link_base`（Headless 与 API 同端口；桌面 REST 为流媒体 **14201**）；另含 `effective_share_base_url` 供桌面流媒体参考。
+Web 控制台（`deploy/web`）提供**上传、文件列表（下载/分享）、分享管理、传输模式、分享域名与 Headless 网络开关**。**Bot 模式**：下载/上传需传输就绪；**分享创建/撤销与 Bot 批量删除**仅需 API 可达（DB 操作，R58）。Bot 删除会同时清除 `file_assets` 与 `bot_file_map`，并撤销该文件的全部活跃分享（R60）；删除 API/桌面命令返回 `shares_revoked`，Web/桌面 toast 会显示精确撤销条数（R62）。删除成功后 Web 分享管理页会通过 storage/visibility 事件自动刷新（R61）。分享创建在 Bot 模式下要求 `bot_file_map` 存在，失败时 Web/桌面会给出可行动中文提示（R59–R60）。深度文件操作请用**桌面端**或 **REST API**。Web 与后端：**上传/下载**经 `ensureTransportReady()`（原 `ensureServiceReady`）；**分享 CRUD / Bot 批量删除**经 `ensureApiAvailable()`（R58）。`dashboard.html` 与 `upload.html` 共用 `page-readiness.js`；登录页与 Telegram 登录均用 `safeNext()` 防开放重定向。桌面端启动时 `connectionStatus=checking`，首检通过前禁止传输；8550/14201 传输模式通过 `transport_mode.json` 同步。`GET /api/v1/settings` 返回 `effective_share_link_base`（Headless 与 API 同端口；桌面 REST 为流媒体 **14201**）；另含 `effective_share_base_url` 供桌面流媒体参考。
 
 | 页面 | 说明 |
 |------|------|
@@ -143,8 +145,8 @@ Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头（OpenAPI 中 a
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/caamer20/Telegram-Drive.git
-    cd Telegram-Drive
+    git clone https://github.com/lza6/Telegram-Unlimited-storage.git
+    cd Telegram-Unlimited-storage
     ```
 
 2.  **Install Dependencies**
@@ -172,8 +174,9 @@ Licensed under the **MIT License**.
 ---
 *Disclaimer: This application is not affiliated with Telegram FZ-LLC. Use responsibly and in accordance with Telegram's Terms of Service.*
 
-If you're looking for a version of this app that's optimized for VPNs check out this repo:
-https://github.com/caamer20/Telegram-Drive-ForVPNs
+The browser console is served from `deploy/web`; see `README-DOCKER.md` for the
+supported headless deployment path. No separate desktop release is promised by
+the current roadmap.
 
 <div align="center">
   <!-- PayPal -->
@@ -204,3 +207,7 @@ https://github.com/caamer20/Telegram-Drive-ForVPNs
     </div>
   </div>
 </div>
+
+### PostgreSQL upload idempotency
+
+PostgreSQL control-plane mode requires `Idempotency-Key` for REST uploads. Upload Saga migrations currently run through `009_bind_recovery_claim_to_role`; run `scripts\native\migrate-postgres.bat` before starting the native Headless server. Durable staging and recovery data live below `DATA_DIR`. Use one distinct `POSTGRES_APP_USER` per recovery node. Real Telegram fault-injection acceptance is not implied by local Saga tests.

@@ -4,26 +4,70 @@ pub mod commands;
 pub mod bandwidth;
 pub mod vpn_optimizer;
 
-use tauri::Manager;
+#[cfg(not(feature = "headless-server"))]
 use tokio::sync::Mutex;
+#[cfg(not(feature = "headless-server"))]
 use std::sync::Arc;
+#[cfg(not(feature = "headless-server"))]
 use std::collections::{HashMap, HashSet};
 use commands::TelegramState;
+#[cfg(not(feature = "headless-server"))]
 use commands::streaming::StreamConfig;
+#[cfg(not(feature = "headless-server"))]
+use crate::db::DbConnection;
+#[cfg(not(feature = "headless-server"))]
 use rand::Rng;
 
 pub mod server;
 pub mod api_routes;
 pub mod db;
 pub mod share_routes;
+pub mod server_config;
+pub mod server_http;
+pub mod admin_routes;
+pub mod auth_routes;
+pub mod share_api_routes;
+pub mod legacy_routes;
+pub mod legacy_form;
+pub mod http_download;
+pub mod sharing_core;
+pub mod http_upload;
+pub mod route_registry;
+pub mod http_middleware;
+pub mod server_uptime;
+pub mod logging;
+pub mod telegram_transport;
+pub mod upload_gate;
+pub mod password_kdf;
+pub mod access_lockout;
+pub mod metadata_cache;
+pub mod secure_download;
+pub mod presigned_url;
+pub mod tenant_auth;
+pub mod file_access;
+pub mod local_api;
+pub mod webdav_routes;
+pub mod metrics;
+pub mod server_maintenance;
+pub mod telegram_error;
+pub mod bot_pool;
+use bot_pool::BotPool;
+pub mod ui_settings;
+pub mod settings_routes;
+pub mod upload_progress;
+pub mod download_degradation;
+#[cfg(not(feature = "headless-server"))]
+pub mod desktop_api_server;
 
-
+#[cfg(not(feature = "headless-server"))]
+use tauri::Manager;
 /// Single source of truth for the Actix streaming server port.
 /// Referenced in lib.rs (server startup) and exposed to the frontend
 /// via cmd_get_stream_info so no component ever hardcodes the port.
 pub const STREAM_PORT: u16 = 14201;
 
 /// Generate a random 32-character hex token for streaming server auth
+#[cfg(not(feature = "headless-server"))]
 fn generate_stream_token() -> String {
     let mut rng = rand::thread_rng();
     let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
@@ -32,28 +76,30 @@ fn generate_stream_token() -> String {
 
 /// Holds the Actix-web server stop handle so we can shut it down
 /// from the RunEvent::Exit handler for graceful Ctrl+C termination.
+#[cfg(not(feature = "headless-server"))]
 pub struct ActixServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
 /// Tracks whether the API server is currently running (for the frontend status dot)
+#[cfg(not(feature = "headless-server"))]
 pub struct ApiServerRunning(pub Arc<std::sync::atomic::AtomicBool>);
 
 /// Holds the API server stop handle separately so we can restart it independently
+#[cfg(not(feature = "headless-server"))]
 pub struct ApiServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
 /// Restart (or stop) the API server based on current settings.
 /// Called from Tauri commands when the user changes API settings.
+#[cfg(not(feature = "headless-server"))]
 pub fn restart_api_server(app: &tauri::AppHandle) {
-    // Stop existing API server if running
     let api_handle_arc = app.state::<ApiServerHandle>().0.clone();
     let old_handle = api_handle_arc.lock().ok().and_then(|mut g| g.take());
     if let Some(handle) = old_handle {
         log::info!("Stopping existing API server...");
         drop(handle.stop(true));
-        // Give it a moment to release the port
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    let settings = commands::api_settings::load_settings(app);
+    let settings = commands::api_settings::prepare_settings_for_runtime(app);
     let running_flag = app.state::<ApiServerRunning>().0.clone();
 
     if !settings.enabled {
@@ -62,54 +108,32 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
         return;
     }
 
-    // Need TelegramState to share with the API server
     let tg_state = Arc::new(app.state::<TelegramState>().inner().clone());
-    let api_port = settings.port;
-    let key_hash = settings.key_hash.clone();
-    let handle_for_thread = api_handle_arc.clone();
+    let db = app.state::<DbConnection>().inner().clone();
+    let net_config = app.state::<Arc<vpn_optimizer::NetworkConfig>>().inner().clone();
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("telegram-drive-data"));
+    let resource_dir = app.path().resource_dir().ok();
 
-    std::thread::spawn(move || {
-        let sys = actix_rt::System::new();
-        sys.block_on(async move {
-            let api_state_data = actix_web::web::Data::new(tg_state);
-            let api_state = actix_web::web::Data::new(api_routes::ApiState {
-                key_hash,
-            });
-
-            log::info!("Starting REST API server on port {}", api_port);
-
-            match actix_web::HttpServer::new(move || {
-                let cors = actix_cors::Cors::default()
-                    .allow_any_origin()
-                    .allow_any_method()
-                    .allow_any_header();
-
-                actix_web::App::new()
-                    .wrap(cors)
-                    .app_data(api_state_data.clone())
-                    .app_data(api_state.clone())
-                    .configure(api_routes::configure_api)
-            })
-            .bind(("127.0.0.1", api_port)) {
-                Ok(bound) => {
-                    let server = bound.run();
-                    *handle_for_thread.lock().unwrap() = Some(server.handle());
-                    running_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                    log::info!("REST API server started on http://127.0.0.1:{}", api_port);
-                    server.await.ok();
-                }
-                Err(e) => {
-                    running_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                    log::error!("Failed to start API server on port {}: {}", api_port, e);
-                }
-            }
-        });
-    });
+    crate::desktop_api_server::start_desktop_api_server(
+        settings,
+        tg_state,
+        db,
+        net_config,
+        data_dir,
+        resource_dir,
+        api_handle_arc,
+        running_flag,
+    );
 }
 
+#[cfg(not(feature = "headless-server"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
+    crate::server_uptime::mark_started();
 
     let stream_token = generate_stream_token();
 
@@ -134,6 +158,11 @@ pub fn run() {
 
     let app = builder
         .setup(move |app| {
+            let initial_bot_pool = server_config::ServerConfig::from_env()
+                .map(|cfg| cfg.all_bot_tokens())
+                .unwrap_or_default();
+            let bot_pool = Arc::new(BotPool::new(initial_bot_pool));
+
             app.manage(TelegramState {
                 client: Arc::new(Mutex::new(None)),
                 login_token: Arc::new(Mutex::new(None)),
@@ -143,6 +172,7 @@ pub fn run() {
                 runner_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 cancelled_transfers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+                bot_pool: bot_pool.clone(),
             });
             app.manage(bandwidth::BandwidthManager::new(app.handle()));
             app.manage(StreamConfig { token: stream_token.clone(), port: STREAM_PORT });
@@ -159,16 +189,77 @@ pub fn run() {
                 e
             })?;
             app.manage(db_pool.clone());
-            
+
+            if let Ok(cfg) = server_config::ServerConfig::from_env() {
+                if let Err(e) = tenant_auth::bootstrap_tenants(&db_pool, &cfg) {
+                    log::warn!("tenant bootstrap: {e}");
+                }
+            }
+
+            // Clean up expired shares on startup
+            if let Err(e) = db::cleanup_expired_shares(&db_pool) {
+                log::warn!("Failed to clean up expired shares: {}", e);
+            }
+            // Clean up stale upload sessions on startup
+            if let Err(e) = db::cleanup_stale_uploads(&db_pool) {
+                log::warn!("Failed to clean up stale uploads: {}", e);
+            }
+
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
             let state = Arc::new(app.state::<TelegramState>().inner().clone());
             let token_for_server = stream_token.clone();
             let handle_for_thread = server_handle_for_setup.clone();
+            let net_config_for_stream = net_config.clone();
             let db_pool_for_server = db_pool.clone();
+            let desktop_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("telegram-drive-data"));
+            let stream_data_dir = std::env::var("DATA_DIR")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .unwrap_or(desktop_data_dir);
             std::thread::spawn(move || {
                 let sys = actix_rt::System::new();
                 sys.block_on(async move {
-                    match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
+                    let data_dir = stream_data_dir;
+                    let stream_config = match server_config::ServerConfig::from_env() {
+                        Ok(c) => {
+                            let mut cfg = c.clone();
+                            if std::env::var("DATA_DIR").is_err() {
+                                cfg.data_dir = data_dir.clone();
+                            }
+                            Arc::new(cfg)
+                        }
+                        Err(_) => server_config::for_desktop_api(
+                            data_dir.clone(),
+                            STREAM_PORT,
+                            None,
+                            STREAM_PORT,
+                            None,
+                        ),
+                    };
+                    let transport = Arc::new(telegram_transport::TransportHandle::new(
+                        &data_dir,
+                        stream_config.default_transport_mode,
+                    ));
+                    let admin_state = admin_routes::AdminState {
+                        config: stream_config.clone(),
+                        db_pool: db_pool_for_server.clone(),
+                        access_lockout: Arc::new(access_lockout::AccessLockout::new(8, 300)),
+                    };
+                    let local_bridge =
+                        crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
+                    match server::start_server(
+                        state,
+                        STREAM_PORT,
+                        token_for_server,
+                        db_pool_for_server,
+                        net_config_for_stream,
+                        admin_state,
+                        transport,
+                        local_bridge,
+                    ).await {
                         Ok(server) => {
                             // Store the handle so RunEvent::Exit can stop it
                             *handle_for_thread.lock().unwrap() = Some(server.handle());
@@ -196,14 +287,35 @@ pub fn run() {
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
                         // TCP ping to Telegram DC2 (best-effort)
-                        let _ = tauri::async_runtime::spawn_blocking(|| {
+                        let dc_addr: std::net::SocketAddr = std::env::var("TG_DC_ADDR")
+                            .unwrap_or_else(|_| "149.154.167.50:443".to_string())
+                            .parse()
+                            .unwrap_or_else(|_| "149.154.167.50:443".parse().expect("default DC addr"));
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
                             use std::net::TcpStream;
                             let _ = TcpStream::connect_timeout(
-                                &"149.154.167.50:443".parse().unwrap(),
+                                &dc_addr,
                                 std::time::Duration::from_secs(5),
                             );
                         }).await;
                     }
+                });
+            }
+
+            // Auto-enable VPN optimizer when auto_detect_vpn is on and VPN interface is present
+            {
+                let detect_config = net_config.clone();
+                let detect_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let data_dir = detect_app
+                        .path()
+                        .app_data_dir()
+                        .unwrap_or_else(|_| std::env::temp_dir());
+                    crate::settings_routes::maybe_auto_enable_vpn_on_startup(
+                        &detect_config,
+                        &data_dir,
+                    )
+                    .await;
                 });
             }
             
@@ -214,6 +326,8 @@ pub fn run() {
             commands::cmd_auth_sign_in,
             commands::cmd_auth_check_password,
             commands::cmd_get_files,
+            commands::cmd_rebuild_file_index,
+            commands::cmd_invalidate_file_index,
             commands::cmd_upload_file,
             commands::cmd_connect,
             commands::cmd_log,
@@ -228,6 +342,7 @@ pub fn run() {
             commands::cmd_scan_folders,
             commands::cmd_search_global,
             commands::cmd_check_connection,
+            commands::cmd_reconnect_telegram,
             commands::cmd_is_network_available,
             commands::cmd_clean_cache,
             commands::cmd_get_thumbnail,
@@ -236,14 +351,19 @@ pub fn run() {
             commands::cmd_auth_qr_login,
             commands::cmd_auth_qr_poll,
             commands::cmd_get_api_settings,
+            commands::cmd_get_api_health,
             commands::cmd_update_api_settings,
             commands::cmd_regenerate_api_key,
+            commands::cmd_regenerate_local_access_pwd,
             commands::cmd_delete_image_thumbnail,
             commands::cmd_zip_folder,
             commands::cmd_delete_temp_zip,
             commands::cmd_apply_proxy_settings,
             commands::cmd_apply_vpn_settings,
             commands::cmd_get_network_config,
+            commands::cmd_get_ui_share_domain,
+            commands::cmd_set_ui_share_domain,
+            commands::cmd_get_polling_interval_ms,
             commands::cmd_check_latency,
             commands::cmd_detect_vpn,
             commands::cmd_create_share,
@@ -259,10 +379,8 @@ pub fn run() {
 
             // 1. Shutdown the grammers network runner
             let shutdown_arc = app_handle.state::<TelegramState>().runner_shutdown.clone();
-            let runner_tx = shutdown_arc.lock().ok().and_then(|mut g| g.take());
-            if let Some(tx) = runner_tx {
+            if crate::commands::signal_runner_shutdown(&shutdown_arc) {
                 log::info!("Signaling network runner shutdown...");
-                let _ = tx.send(());
             }
 
             // 2. Stop the Actix streaming server (graceful)

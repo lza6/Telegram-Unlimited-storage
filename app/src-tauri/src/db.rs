@@ -14,7 +14,12 @@ impl r2d2::ManageConnection for SqliteConnectionManager {
     type Error = sqlite::Error;
 
     fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        sqlite::open(&self.db_path)
+        let conn = sqlite::open(&self.db_path)?;
+        // C5: applied per-connection so every pooled connection honors busy
+        // waiting + WAL. Without this, only the migration connection had them.
+        let _ = conn.execute("PRAGMA journal_mode = WAL;");
+        let _ = conn.execute("PRAGMA busy_timeout = 5000;");
+        Ok(conn)
     }
 
     fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
@@ -42,15 +47,18 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
 fn init_pool(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
     let manager = SqliteConnectionManager { db_path };
     let pool = r2d2::Pool::builder()
-        .max_size(8)
-        .min_idle(Some(2))
-        .connection_timeout(Duration::from_secs(5))
+        .max_size(32)
+        .min_idle(Some(4))
+        .connection_timeout(Duration::from_secs(30))
         .build(manager)
         .map_err(|e| e.to_string())?;
 
     // Run schema migrations on one pool connection.
     let conn = pool.get().map_err(|e| e.to_string())?;
     let _ = conn.execute("PRAGMA journal_mode = WAL;");
+    // C5: raise SQLite busy_timeout so concurrent writers wait (up to 5s)
+    // for a lock instead of failing fast with SQLITE_BUSY under high load.
+    let _ = conn.execute("PRAGMA busy_timeout = 5000;");
 
     // Shared links table
     conn.execute(
@@ -136,6 +144,7 @@ fn init_pool(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
 
     init_tenant_tables(&conn)?;
     init_file_asset_tables(&conn)?;
+    crate::asset_locator::init_asset_locator_table(&conn)?;
     init_app_meta_table(&conn)?;
 
     log::info!("SQLite connection pool initialized (size 8) using sqlite crate.");
@@ -318,7 +327,8 @@ pub fn upsert_file_assets_batch(
     let now = chrono::Utc::now().timestamp();
 
     // Begin transaction
-    conn.execute("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+    conn.execute("BEGIN TRANSACTION")
+        .map_err(|e| e.to_string())?;
 
     let mut stmt = conn
         .prepare(
@@ -334,8 +344,9 @@ pub fn upsert_file_assets_batch(
 
     let mut count = 0;
     for (message_id, folder_id, owner_id, file_name, file_size) in assets {
-        stmt.reset();
-        stmt.bind((1, *message_id as i64)).map_err(|e| e.to_string())?;
+        stmt.reset().map_err(|e| e.to_string())?;
+        stmt.bind((1, *message_id as i64))
+            .map_err(|e| e.to_string())?;
         stmt.bind((2, *folder_id)).map_err(|e| e.to_string())?;
         stmt.bind((3, *owner_id)).map_err(|e| e.to_string())?;
         stmt.bind((4, *file_name)).map_err(|e| e.to_string())?;
@@ -861,28 +872,44 @@ pub fn create_upload_session(
     let now = chrono::Utc::now().timestamp();
     let expires = now + 86400 * 7; // 7 days
 
-    let mut stmt = conn
-        .prepare("INSERT OR IGNORE INTO upload_sessions (session_id, filename, total_chunks, status, created_at, expires_at) VALUES (?, ?, ?, 'active', ?, ?)")
-        .map_err(|e| e.to_string())?;
-    stmt.bind((1, session_id)).map_err(|e| e.to_string())?;
-    stmt.bind((2, filename)).map_err(|e| e.to_string())?;
-    stmt.bind((3, total_chunks as i64))
-        .map_err(|e| e.to_string())?;
-    stmt.bind((4, now)).map_err(|e| e.to_string())?;
-    stmt.bind((5, expires)).map_err(|e| e.to_string())?;
-    stmt.next().map_err(|e| e.to_string())?;
-
-    // Pre-create chunk rows for fast status queries
-    for i in 0..total_chunks {
-        let mut c = conn
-            .prepare("INSERT OR IGNORE INTO upload_chunks (session_id, chunk_index, status, created_at) VALUES (?, ?, 'pending', ?)")
+    // Wrap session + chunk inserts in a single transaction so a crash mid-way
+    // cannot leave a session row with a partial set of chunk rows.
+    conn.execute("BEGIN").map_err(|e| e.to_string())?;
+    let result = (|| -> Result<(), String> {
+        let mut stmt = conn
+            .prepare("INSERT OR IGNORE INTO upload_sessions (session_id, filename, total_chunks, status, created_at, expires_at) VALUES (?, ?, ?, 'active', ?, ?)")
             .map_err(|e| e.to_string())?;
-        c.bind((1, session_id)).map_err(|e| e.to_string())?;
-        c.bind((2, i as i64)).map_err(|e| e.to_string())?;
-        c.bind((3, now)).map_err(|e| e.to_string())?;
-        c.next().map_err(|e| e.to_string())?;
+        stmt.bind((1, session_id)).map_err(|e| e.to_string())?;
+        stmt.bind((2, filename)).map_err(|e| e.to_string())?;
+        stmt.bind((3, total_chunks as i64))
+            .map_err(|e| e.to_string())?;
+        stmt.bind((4, now)).map_err(|e| e.to_string())?;
+        stmt.bind((5, expires)).map_err(|e| e.to_string())?;
+        stmt.next().map_err(|e| e.to_string())?;
+
+        // Pre-create chunk rows for fast status queries
+        for i in 0..total_chunks {
+            let mut c = conn
+                .prepare("INSERT OR IGNORE INTO upload_chunks (session_id, chunk_index, status, created_at) VALUES (?, ?, 'pending', ?)")
+                .map_err(|e| e.to_string())?;
+            c.bind((1, session_id)).map_err(|e| e.to_string())?;
+            c.bind((2, i as i64)).map_err(|e| e.to_string())?;
+            c.bind((3, now)).map_err(|e| e.to_string())?;
+            c.next().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute("COMMIT").map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK");
+            Err(e)
+        }
     }
-    Ok(())
 }
 
 pub fn record_upload_chunk(
@@ -994,9 +1021,31 @@ pub fn complete_upload_session(
 }
 
 /// Clean up stale upload sessions older than expiry.
-pub fn cleanup_stale_uploads(db_pool: &DbConnection) -> Result<usize, String> {
+/// Returns the deleted session count plus any orphaned Telegram message IDs
+/// (chunk `file_id`s) that still live in the storage channel and should be
+/// purged by the caller via the bot/user transport (H6).
+pub fn cleanup_stale_uploads(db_pool: &DbConnection) -> Result<StaleUploadCleanup, String> {
     let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // Collect orphan chunk file_ids BEFORE deleting, so the caller can purge
+    // the corresponding Telegram channel messages.
+    let mut orphan_file_ids: Vec<String> = Vec::new();
+    {
+        let mut sel = conn
+            .prepare(
+                "SELECT uc.file_id FROM upload_chunks uc \
+                 JOIN upload_sessions us ON us.session_id = uc.session_id \
+                 WHERE us.expires_at < ? AND uc.file_id IS NOT NULL AND uc.file_id != ''",
+            )
+            .map_err(|e| e.to_string())?;
+        sel.bind((1, now)).map_err(|e| e.to_string())?;
+        while let sqlite::State::Row = sel.next().map_err(|e| e.to_string())? {
+            if let Some(id) = sel.read::<Option<String>, _>(0).ok().flatten() {
+                orphan_file_ids.push(id);
+            }
+        }
+    }
 
     // Delete chunks first (foreign key constraint)
     let mut del_chunks = conn
@@ -1019,12 +1068,25 @@ pub fn cleanup_stale_uploads(db_pool: &DbConnection) -> Result<usize, String> {
 
     if session_count > 0 {
         log::info!(
-            "Cleaned up {} stale upload session(s) with {} chunk(s)",
+            "Cleaned up {} stale upload session(s) with {} chunk(s); {} orphan TG message(s) pending purge",
             session_count,
-            chunk_count
+            chunk_count,
+            orphan_file_ids.len()
         );
     }
-    Ok(session_count)
+    Ok(StaleUploadCleanup {
+        sessions_removed: session_count,
+        orphan_file_ids,
+    })
+}
+
+/// Result of a stale-upload cleanup pass.
+#[derive(Debug, Default, Clone)]
+pub struct StaleUploadCleanup {
+    pub sessions_removed: usize,
+    /// Telegram message IDs (as stored in chunk `file_id`) that were orphaned
+    /// and still need deletion from the storage channel.
+    pub orphan_file_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1074,6 +1136,18 @@ pub fn upsert_bot_file_map(
         .map_err(|e| e.to_string())?;
     stmt.next().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Remove Bot download mapping row (Telegram file_id lookup).
+pub fn delete_bot_file_map(db_pool: &DbConnection, message_id: i32) -> Result<bool, String> {
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("DELETE FROM bot_file_map WHERE message_id = ?")
+        .map_err(|e| e.to_string())?;
+    stmt.bind((1, message_id as i64))
+        .map_err(|e| e.to_string())?;
+    stmt.next().map_err(|e| e.to_string())?;
+    Ok(conn.change_count() > 0)
 }
 
 pub fn get_bot_file_map(

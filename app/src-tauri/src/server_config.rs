@@ -125,19 +125,14 @@ impl ServerConfig {
             .trim()
             .to_string();
 
-        let api_key = match std::env::var("API_KEY") {
-            Ok(k) if !k.is_empty() => Some(k),
-            _ => {
-                let generated: String = (0..32)
-                    .map(|_| format!("{:02x}", rand::random::<u8>()))
-                    .collect();
-                log::warn!(
-                    "API_KEY not set — generated one-time key (save to .env): {}",
-                    generated
-                );
-                Some(generated)
-            }
-        };
+        let api_key = std::env::var("API_KEY")
+            .map_err(|_| "API_KEY is required for the headless API".to_string())?
+            .trim()
+            .to_string();
+        if api_key.is_empty() {
+            return Err("API_KEY is required for the headless API".to_string());
+        }
+        let api_key = Some(api_key);
         let api_key_hash = api_key
             .as_ref()
             .map(|k| crate::commands::api_settings::hash_key_public(k));
@@ -159,7 +154,7 @@ impl ServerConfig {
         let cors_origins = parse_cors_origins();
 
         Ok(Self {
-            bind_host: std::env::var("BIND_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            bind_host: std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
             port,
             stream_port,
             data_dir,

@@ -503,6 +503,12 @@ pub async fn cmd_upload_file(
     Ok("File uploaded successfully".to_string())
 }
 
+#[derive(serde::Serialize)]
+pub struct DeleteFileResult {
+    pub deleted: bool,
+    pub shares_revoked: usize,
+}
+
 #[tauri::command]
 pub async fn cmd_delete_file(
     message_id: i32,
@@ -511,11 +517,15 @@ pub async fn cmd_delete_file(
     state: State<'_, TelegramState>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
-) -> Result<bool, String> {
+) -> Result<DeleteFileResult, String> {
     #[cfg(not(feature = "headless-server"))]
     {
         if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
-            return Ok(crate::db::delete_file_asset(&db_pool, message_id, None).unwrap_or(false));
+            let result = crate::file_access::purge_file_index_entry(&db_pool, message_id, None);
+            return Ok(DeleteFileResult {
+                deleted: result.purged,
+                shares_revoked: result.shares_revoked,
+            });
         }
     }
 
@@ -549,9 +559,12 @@ pub async fn cmd_delete_file(
     )
     .await?;
 
-    let _ = crate::db::delete_file_asset(&db_pool, message_id, None);
+    let result = crate::file_access::purge_file_index_entry(&db_pool, message_id, None);
 
-    Ok(true)
+    Ok(DeleteFileResult {
+        deleted: true,
+        shares_revoked: result.shares_revoked,
+    })
 }
 
 #[tauri::command]
@@ -776,6 +789,7 @@ pub async fn cmd_move_files(
     message_ids: Vec<i32>,
     source_folder_id: Option<i64>,
     target_folder_id: Option<i64>,
+    #[cfg(not(feature = "headless-server"))] app: tauri::AppHandle,
     state: State<'_, TelegramState>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
@@ -788,6 +802,17 @@ pub async fn cmd_move_files(
             target_folder_id,
         });
     }
+
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_is_bot_mode(&app, &db_pool).await? {
+            return Err(
+                "Bulk move requires User mode (GramJS session). Switch transport mode in Settings."
+                    .to_string(),
+            );
+        }
+    }
+
     let client_opt = { state.client.lock().await.clone() };
     let client = require_client(client_opt)?;
 

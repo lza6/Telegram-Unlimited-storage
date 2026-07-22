@@ -140,6 +140,22 @@ mod tests {
     }
 
     #[test]
+    fn signature_binds_owner_and_cannot_cross_tenant() {
+        let secret = "b".repeat(32);
+        let original = PresignedParams {
+            message_id: 7,
+            folder_id: Some(-1007),
+            expires_at: 4_102_444_800,
+            owner_id: "tenant:alpha".to_string(),
+            max_downloads: Some(1),
+        };
+        let signature = sign(&original, &secret).expect("signature");
+        let mut tampered = original.clone();
+        tampered.owner_id = "tenant:beta".to_string();
+        assert!(!verify(&tampered, &secret, &signature));
+    }
+
+    #[test]
     fn exp_zero_never_expires() {
         assert!(!is_expired(0));
         assert!(!is_expired(-1));

@@ -323,7 +323,7 @@ fn client_ip(req: &ServiceRequest) -> String {
 }
 
 fn is_health_path(path: &str) -> bool {
-    path == "/api/v1/health"
+    matches!(path, "/api/v1/health" | "/health/live" | "/health/ready")
 }
 
 impl<S, B> Service<ServiceRequest> for RateLimitMiddleware<S>
@@ -547,6 +547,14 @@ mod tests {
         assert!(limiter.check_ip("1.2.3.4").is_ok());
         assert!(limiter.check_ip("1.2.3.4").is_ok());
         assert!(limiter.check_ip("1.2.3.4").is_err());
+    }
+
+    #[test]
+    fn all_health_probes_bypass_rate_limiting() {
+        assert!(is_health_path("/api/v1/health"));
+        assert!(is_health_path("/health/live"));
+        assert!(is_health_path("/health/ready"));
+        assert!(!is_health_path("/api/v1/files"));
     }
 
     #[test]

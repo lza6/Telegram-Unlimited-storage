@@ -2,6 +2,7 @@
 
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::admin_routes::AdminState;
@@ -10,7 +11,17 @@ use crate::db;
 use crate::server_config::ServerConfig;
 use crate::tenant_auth;
 
-fn webdav_auth(req: &HttpRequest, config: &ServerConfig, db: &db::DbConnection) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WebdavPrincipal {
+    Admin,
+    Tenant(String),
+}
+
+fn webdav_auth(
+    req: &HttpRequest,
+    config: &ServerConfig,
+    db: &db::DbConnection,
+) -> Option<WebdavPrincipal> {
     if let Some(auth) = req
         .headers()
         .get("Authorization")
@@ -20,29 +31,34 @@ fn webdav_auth(req: &HttpRequest, config: &ServerConfig, db: &db::DbConnection) 
             if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
                 if let Ok(pair) = String::from_utf8(decoded) {
                     let (_user, pass) = pair.split_once(':').unwrap_or(("", &pair));
-                    if let Some(t) = tenant_auth::resolve_tenant_from_api_key(db, config, pass) {
-                        return Some(t);
+                    if let Some(tenant_id) =
+                        tenant_auth::resolve_tenant_from_api_key(db, config, pass)
+                    {
+                        return Some(WebdavPrincipal::Tenant(tenant_id));
                     }
                     if !config.access_pwd.is_empty()
                         && crate::http_middleware::constant_time_eq(pass, &config.access_pwd)
                     {
-                        return Some("admin".to_string());
+                        return Some(WebdavPrincipal::Admin);
                     }
                 }
             }
         }
     }
-    if let Some(key) = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()) {
-        return tenant_auth::resolve_tenant_from_api_key(db, config, key);
-    }
-    None
+    req.headers()
+        .get("X-API-Key")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|key| tenant_auth::resolve_tenant_from_api_key(db, config, key))
+        .map(WebdavPrincipal::Tenant)
 }
 
-fn owner_scope(tenant_id: Option<&str>, config: &ServerConfig) -> Option<String> {
-    if config.multi_tenant_enabled {
-        tenant_id.map(|t| format!("tenant:{t}"))
-    } else {
-        None
+fn owner_scope(principal: Option<&WebdavPrincipal>, config: &ServerConfig) -> Option<String> {
+    if !config.multi_tenant_enabled {
+        return None;
+    }
+    match principal {
+        Some(WebdavPrincipal::Tenant(tenant_id)) => Some(format!("tenant:{tenant_id}")),
+        Some(WebdavPrincipal::Admin) | None => None,
     }
 }
 
@@ -68,7 +84,7 @@ async fn webdav_propfind(
             .insert_header(("WWW-Authenticate", r#"Basic realm="Telegram Drive WebDAV""#))
             .finish();
     }
-    let owner = owner_scope(tenant.as_deref(), &admin.config);
+    let owner = owner_scope(tenant.as_ref(), &admin.config);
     let rel = path.into_inner();
     let href = format!(
         "/{}{}",
@@ -136,7 +152,7 @@ async fn webdav_delete(
     if name.is_empty() || name.contains('/') {
         return HttpResponse::BadRequest().body("DELETE expects a single filename segment");
     }
-    let owner = owner_scope(tenant.as_deref(), &admin.config)
+    let owner = owner_scope(tenant.as_ref(), &admin.config)
         .unwrap_or_else(|| crate::tenant_auth::OWNER_WEB.to_string());
     match db::delete_file_asset_by_name(&admin.db_pool, &owner, &name) {
         Ok(true) => HttpResponse::NoContent().finish(),
@@ -193,7 +209,7 @@ async fn webdav_get(
         return HttpResponse::Unauthorized().finish();
     }
     let name = path.into_inner();
-    let owner = owner_scope(tenant.as_deref(), &admin.config);
+    let owner = owner_scope(tenant.as_ref(), &admin.config);
     let records = if let Some(ref o) = owner {
         db::list_file_assets_by_owner(&admin.db_pool, o, 500, 0).unwrap_or_default()
     } else {
@@ -202,21 +218,79 @@ async fn webdav_get(
     let Some(asset) = records.into_iter().find(|r| r.file_name == name) else {
         return HttpResponse::NotFound().finish();
     };
-    match crate::http_download::download_message_stream(
+    let scope_digest = Sha256::digest(format!("{}:{name}", asset.owner_id).as_bytes());
+    let digest_prefix = scope_digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let request_namespace = format!("webdav:{digest_prefix}");
+    let prepared = match crate::secure_download::prepare_canonical_download(
         &req,
+        &admin.db_pool,
         asset.message_id,
         asset.folder_id,
-        &tg_state,
-        false,
-        &admin.config,
-        &admin.db_pool,
-        &transport,
-        &net_config,
+        Some(&asset.owner_id),
+        &request_namespace,
     )
     .await
     {
-        Ok(r) => r,
-        Err(r) => r,
+        Ok(prepared) => prepared,
+        Err(crate::secure_download::DownloadPreflightError::Forbidden(_)) => {
+            return HttpResponse::Forbidden().finish()
+        }
+        Err(crate::secure_download::DownloadPreflightError::Ambiguous) => {
+            return HttpResponse::Conflict().body("Ambiguous canonical asset")
+        }
+        Err(crate::secure_download::DownloadPreflightError::Locator(error)) => {
+            log::error!("WebDAV canonical locator failed: {error}");
+            return HttpResponse::InternalServerError().finish();
+        }
+        Err(crate::secure_download::DownloadPreflightError::ControlPlane(error)) => {
+            log::error!("WebDAV download preflight failed: {error}");
+            return HttpResponse::ServiceUnavailable().finish();
+        }
+    };
+
+    let result = if let Some(prepared) = prepared {
+        let accounting_on_setup_error = prepared.accounting.clone();
+        let result = crate::http_download::download_asset_locator_stream(
+            &req,
+            &prepared.locator,
+            &tg_state,
+            false,
+            &admin.config,
+            &admin.db_pool,
+            &transport,
+            &net_config,
+            prepared.accounting,
+            prepared.scheduler,
+        )
+        .await;
+        if result.is_err() {
+            if let Some((control_plane, context)) = accounting_on_setup_error {
+                let _ = control_plane
+                    .finish_download(&context, Some("DOWNLOAD_STREAM_SETUP_FAILED"))
+                    .await;
+            }
+        }
+        result
+    } else {
+        crate::http_download::download_message_stream(
+            &req,
+            asset.message_id,
+            asset.folder_id,
+            &tg_state,
+            false,
+            &admin.config,
+            &admin.db_pool,
+            &transport,
+            &net_config,
+        )
+        .await
+    };
+    match result {
+        Ok(response) => response,
+        Err(response) => response,
     }
 }
 
@@ -239,7 +313,7 @@ async fn webdav_put(
             .insert_header(("WWW-Authenticate", r#"Basic realm="Telegram Drive WebDAV""#))
             .finish();
     }
-    let _file_slot = match upload_gate.try_acquire_file() {
+    let _file_slot = match upload_gate.acquire_file().await {
         Some(g) => g,
         None => {
             return HttpResponse::ServiceUnavailable()
@@ -259,10 +333,11 @@ async fn webdav_put(
     if let Err(e) = tokio::fs::write(&tmp, &body).await {
         return HttpResponse::InternalServerError().body(e.to_string());
     }
-    let owner_id = owner_scope(tenant.as_deref(), &admin.config)
+    let owner_id = owner_scope(tenant.as_ref(), &admin.config)
         .unwrap_or_else(|| crate::tenant_auth::OWNER_WEB.to_string());
     let path_str = tmp.to_string_lossy().to_string();
-    match crate::http_upload::upload_file_path(
+    let display_name = crate::http_upload::sanitize_upload_filename(&name);
+    match crate::http_upload::upload_file_path_named(
         path_str,
         None,
         &tg_state,
@@ -270,24 +345,12 @@ async fn webdav_put(
         &admin.config,
         &admin.db_pool,
         &transport,
+        &owner_id,
+        Some(display_name),
     )
     .await
     {
-        Ok((message_id, saved_name)) => {
-            let display = if saved_name.is_empty() {
-                name.clone()
-            } else {
-                saved_name
-            };
-            let size = body.len() as i64;
-            let _ = crate::file_access::record_uploaded_file(
-                &admin.db_pool,
-                message_id,
-                None,
-                &owner_id,
-                &display,
-                size,
-            );
+        Ok((_message_id, _saved_name)) => {
             let _ = tokio::fs::remove_file(&tmp).await;
             HttpResponse::Created()
                 .insert_header((
@@ -350,5 +413,16 @@ mod tests {
     fn xml_escape_escapes_specials() {
         assert_eq!(xml_escape("a&b"), "a&amp;b");
         assert!(!xml_escape("<x>").contains('<'));
+    }
+
+    #[test]
+    fn multi_tenant_owner_scope_distinguishes_admin_from_tenant_named_admin() {
+        let mut config = (*crate::server_config::test_config()).clone();
+        config.multi_tenant_enabled = true;
+        assert_eq!(owner_scope(Some(&WebdavPrincipal::Admin), &config), None);
+        assert_eq!(
+            owner_scope(Some(&WebdavPrincipal::Tenant("admin".to_string())), &config),
+            Some("tenant:admin".to_string())
+        );
     }
 }

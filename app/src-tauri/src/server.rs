@@ -3,8 +3,8 @@ use crate::commands::TelegramState;
 use crate::http_middleware::ShareBruteForceLimiter;
 use crate::vpn_optimizer::NetworkConfig;
 use actix_cors::Cors;
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use actix_web::middleware::Compress;
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use grammers_client::types::Media;
 
 use std::sync::Arc;

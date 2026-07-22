@@ -3,7 +3,7 @@ use crate::db::DbConnection;
 use actix_web::{cookie::Cookie, get, post, web, HttpRequest, HttpResponse, Responder};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -215,7 +215,7 @@ async fn get_shared_file(
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
-            log::error!("DB error resolving token {}: {}", token, e);
+            log::error!("DB error resolving share link: {}", e);
             return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
@@ -247,31 +247,95 @@ async fn get_shared_file(
         }
     }
 
+    let mode = transport.effective_mode(&admin.config).await;
+    let bot_mode = mode == crate::telegram_transport::TelegramTransportMode::Bot;
+
     if let Err(msg) = crate::file_access::assert_share_download_allowed(
         &db_conn,
         row.message_id,
         row.folder_id,
         row.owner_id.as_deref(),
         admin.config.multi_tenant_enabled,
+        bot_mode,
     ) {
         return HttpResponse::Forbidden().body(msg);
     }
 
-    match crate::http_download::download_message_stream(
+    let token_digest = Sha256::digest(token.as_bytes());
+    let digest_prefix = token_digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let request_namespace = format!("share:{digest_prefix}");
+    let prepared = match crate::secure_download::prepare_canonical_download(
         &req,
+        &db_conn,
         row.message_id,
         row.folder_id,
-        &tg_state,
-        false,
-        &admin.config,
-        &db_conn,
-        &transport,
-        &net_config,
+        row.owner_id.as_deref(),
+        &request_namespace,
     )
     .await
     {
-        Ok(r) => r,
-        Err(r) => r,
+        Ok(prepared) => prepared,
+        Err(crate::secure_download::DownloadPreflightError::Forbidden(message)) => {
+            return HttpResponse::Forbidden().body(message)
+        }
+        Err(crate::secure_download::DownloadPreflightError::Ambiguous) => {
+            return HttpResponse::Conflict().body(
+                "message_id resolves to multiple storage peers; the share must identify one asset",
+            )
+        }
+        Err(crate::secure_download::DownloadPreflightError::Locator(error)) => {
+            log::error!("Share canonical locator failed: {error}");
+            return HttpResponse::InternalServerError().body("Asset lookup failed");
+        }
+        Err(crate::secure_download::DownloadPreflightError::ControlPlane(error)) => {
+            log::error!("Share download preflight failed: {error}");
+            return HttpResponse::ServiceUnavailable().body("Download accounting unavailable");
+        }
+    };
+
+    let result = if let Some(prepared) = prepared {
+        let accounting_on_setup_error = prepared.accounting.clone();
+        let result = crate::http_download::download_asset_locator_stream(
+            &req,
+            &prepared.locator,
+            &tg_state,
+            false,
+            &admin.config,
+            &db_conn,
+            &transport,
+            &net_config,
+            prepared.accounting,
+            prepared.scheduler,
+        )
+        .await;
+        if result.is_err() {
+            if let Some((control_plane, context)) = accounting_on_setup_error {
+                let _ = control_plane
+                    .finish_download(&context, Some("DOWNLOAD_STREAM_SETUP_FAILED"))
+                    .await;
+            }
+        }
+        result
+    } else {
+        crate::http_download::download_message_stream(
+            &req,
+            row.message_id,
+            row.folder_id,
+            &tg_state,
+            false,
+            &admin.config,
+            &db_conn,
+            &transport,
+            &net_config,
+        )
+        .await
+    };
+    match result {
+        Ok(response) => response,
+        Err(response) => response,
     }
 }
 
@@ -289,7 +353,7 @@ async fn verify_shared_file_password(
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
-            log::error!("DB error resolving token {}: {}", token, e);
+            log::error!("DB error resolving share link: {}", e);
             return HttpResponse::InternalServerError().body("Internal server error");
         }
     };

@@ -21,6 +21,7 @@ pub struct ServerRuntime {
     pub transport: Arc<crate::telegram_transport::TransportHandle>,
     pub upload_gate: Arc<crate::upload_gate::UploadGate>,
     pub upload_progress: Arc<crate::upload_progress::UploadProgressHub>,
+    pub download_counter: Arc<crate::download_counter::DownloadCounter>,
     pub stream_token: String,
     pub api_running: Arc<AtomicBool>,
 }
@@ -52,6 +53,7 @@ pub async fn start_unified_server(
     let transport_data = web::Data::new(runtime.transport.clone());
     let upload_gate = web::Data::new(runtime.upload_gate.clone());
     let upload_progress = web::Data::new(runtime.upload_progress.clone());
+    let download_counter = web::Data::new(runtime.download_counter.clone());
     let bot_pool_data = web::Data::new(runtime.tg_state.bot_pool.clone());
     let access_lockout = Arc::new(crate::access_lockout::AccessLockout::new(
         std::env::var("ACCESS_LOCKOUT_MAX")
@@ -108,6 +110,7 @@ pub async fn start_unified_server(
             .app_data(transport_data.clone())
             .app_data(upload_gate.clone())
             .app_data(upload_progress.clone())
+            .app_data(download_counter.clone())
             .app_data(bot_pool_data.clone())
             .app_data(share_bf_limiter.clone())
             .app_data(web::Data::new(crate::share_api_routes::ShareApiState {

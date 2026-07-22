@@ -61,7 +61,8 @@ impl SessionBackup {
     }
 
     pub fn backup_path(&self) -> PathBuf {
-        self.data_dir.join(format!("telegram.session{}", BACKUP_SUFFIX))
+        self.data_dir
+            .join(format!("telegram.session{}", BACKUP_SUFFIX))
     }
 
     /// Create a backup of the current session file.
@@ -235,7 +236,6 @@ pub fn has_backup() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn valid_sqlite_header() -> Vec<u8> {
         let mut buf = vec![0u8; 256];

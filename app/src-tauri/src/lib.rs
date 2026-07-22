@@ -55,6 +55,7 @@ use bot_pool::BotPool;
 pub mod chunk_index;
 #[cfg(not(feature = "headless-server"))]
 pub mod desktop_api_server;
+pub mod download_counter;
 pub mod download_degradation;
 pub mod progress_distributed;
 pub mod session_backup;

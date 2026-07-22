@@ -49,49 +49,77 @@
   var selectAll = document.getElementById('select-all');
 
   var serviceBanner = document.getElementById('service-banner');
-  var serviceReady = true;
+  var transportReady = false;
+  var apiReady = false;
   var serviceHint = '';
-  var transportMode = 'user';
+  var transportMode = 'unknown';
   var downloadingIds = new Set();
 
   async function refreshServiceStatus() {
     try {
       var hv = await TdApi.fetchHealth();
-      transportMode = hv.transport_mode || 'user';
-      await TdApi.ensureServiceReady();
-      serviceReady = true;
+      transportMode = hv.transport_mode || 'unknown';
+      var st = null;
+      try {
+        st = await TdApi.fetchAuthStatus();
+      } catch (ignore) {
+        st = null;
+      }
+      apiReady = TdWebPure.isWebDbMutationReady(hv);
+      transportReady = TdWebPure.isWebTransportReady(hv, st);
       serviceHint = '';
       if (serviceBanner) {
-        serviceBanner.hidden = true;
-        serviceBanner.textContent = '';
+        if (!apiReady) {
+          serviceBanner.hidden = false;
+          serviceBanner.textContent = 'API 服务不可用，请确认 Docker/进程已启动';
+        } else if (!transportReady) {
+          serviceBanner.hidden = false;
+          serviceBanner.textContent =
+            '传输未就绪：下载需 Telegram 就绪；Bot 模式仍可删除索引与创建分享链接';
+        } else {
+          serviceBanner.hidden = true;
+          serviceBanner.textContent = '';
+        }
       }
     } catch (e) {
-      serviceReady = false;
+      apiReady = false;
+      transportReady = false;
       serviceHint = String(e.message || e);
-      try {
-        var hvFail = await TdApi.fetchHealth();
-        transportMode = hvFail.transport_mode || 'bot';
-      } catch (ignore) {
-        transportMode = 'bot';
-      }
+      transportMode = 'unknown';
       if (serviceBanner) {
         serviceBanner.hidden = false;
         serviceBanner.textContent = '服务未就绪：' + serviceHint;
       }
     }
     updateBulkUi();
-    tbody.querySelectorAll('.btn-dl, .btn-share').forEach(function (btn) {
-      btn.disabled = !serviceReady;
-      btn.title = serviceReady ? '' : '服务未就绪';
+    tbody.querySelectorAll('.btn-dl').forEach(function (btn) {
+      btn.disabled = !transportReady;
+      btn.title = transportReady ? '' : '传输未就绪';
+    });
+    tbody.querySelectorAll('.btn-share').forEach(function (btn) {
+      btn.disabled = !apiReady;
+      btn.title = apiReady ? '' : 'API 不可用';
     });
   }
 
-  async function ensureReadyForAction() {
+  async function ensureReadyForTransport() {
     await refreshServiceStatus();
-    if (!serviceReady) {
-      TdApi.showToast('服务未就绪：' + serviceHint, 'err');
-      throw new Error(serviceHint);
+    if (!transportReady) {
+      TdApi.showToast('传输未就绪：' + (serviceHint || '请检查 Telegram 配置'), 'err');
+      throw new Error(serviceHint || 'transport not ready');
     }
+  }
+
+  async function ensureReadyForDbMutation() {
+    await refreshServiceStatus();
+    if (!apiReady) {
+      TdApi.showToast('API 不可用：' + (serviceHint || '请确认服务已启动'), 'err');
+      throw new Error(serviceHint || 'api not ready');
+    }
+  }
+
+  async function ensureReadyForAction() {
+    return ensureReadyForTransport();
   }
 
   function renderRows(files) {
@@ -100,7 +128,7 @@
       var emptyMsg = state.search.trim()
         ? '未找到匹配「' + escapeHtml(state.search.trim()) + '」的文件，请尝试更短或不同的关键词'
         : '暂无文件（Bot 模式请先上传；User 模式需 Telegram 已连接）';
-      tbody.innerHTML = '<tr><td colspan="7" class="muted center">' + emptyMsg + '</td></tr>';
+      tbody.innerHTML = '<tr class="table-state"><td colspan="7" class="muted center table-message">' + emptyMsg + '</td></tr>';
       return;
     }
     tbody.innerHTML = files
@@ -112,12 +140,16 @@
         }
         var checked = state.selected.has(id) ? ' checked' : '';
         var name = f.name || f.filename || '—';
-        var actionDisabled = serviceReady ? '' : ' disabled';
-        var actionTitle = serviceReady ? '' : ' title="服务未就绪"';
+        var actionDisabled = transportReady ? '' : ' disabled';
+        var actionTitle = transportReady ? '' : ' title="传输未就绪"';
+        var shareDisabled = apiReady ? '' : ' disabled';
+        var shareTitle = apiReady ? '' : ' title="API 不可用"';
         return (
           '<tr>' +
           '<td><input type="checkbox" class="row-check" data-id="' +
           id +
+          '" aria-label="选择文件 ' +
+          escapeHtml(name) +
           '"' +
           checked +
           ' /></td>' +
@@ -148,8 +180,8 @@
           '<button type="button" class="btn-secondary btn-sm btn-share" data-id="' +
           id +
           '"' +
-          actionDisabled +
-          actionTitle +
+          shareDisabled +
+          shareTitle +
           '>分享</button>' +
           '</td>' +
           '</tr>'
@@ -204,7 +236,7 @@
       return;
     }
     try {
-      await ensureReadyForAction();
+      await ensureReadyForTransport();
     } catch (e) {
       return;
     }
@@ -237,7 +269,7 @@
       downloadingIds.delete(sid);
       if (dlBtn) {
         var idle = TdDownloadPure.deriveWebDownloadButtonState(false);
-        dlBtn.disabled = !serviceReady;
+        dlBtn.disabled = !transportReady;
         dlBtn.textContent = idle.label;
       }
     }
@@ -250,7 +282,7 @@
       return;
     }
     try {
-      await ensureReadyForAction();
+      await ensureReadyForDbMutation();
     } catch (e) {
       return;
     }
@@ -274,35 +306,48 @@
       var link = TdShareDomain.applyShareDomain(info.link);
       await TdApi.copyToClipboard(link, '分享链接已复制');
     } catch (e) {
-      TdApi.showToast(String(e.message || e), 'err');
+      TdApi.showToast(
+        typeof TdSharePure !== 'undefined'
+          ? TdSharePure.formatShareCreateErrorMessage(e)
+          : String(e.message || e),
+        'err',
+      );
     }
   }
 
   function updateBulkUi() {
     var hasSelection = state.selected.size > 0;
-    var moveAllowed = serviceReady && TdFilesPure.canBulkMoveInTransportMode(transportMode);
-    deleteBtn.disabled = !hasSelection;
+    var moveAllowed = transportReady && TdFilesPure.canBulkMoveInTransportMode(transportMode);
+    var deleteBlocked =
+      !apiReady ||
+      (TdWebPure.bulkDeleteRequiresTransport(transportMode) && !transportReady);
+    deleteBtn.disabled = !hasSelection || deleteBlocked;
     deleteBtn.textContent = hasSelection
       ? '删除选中 (' + state.selected.size + ')'
       : '删除选中';
-    deleteBtn.title = !serviceReady && hasSelection ? '服务未就绪：' + serviceHint : '';
+    deleteBtn.title =
+      deleteBlocked && hasSelection
+        ? !apiReady
+          ? 'API 不可用'
+          : '传输未就绪：' + serviceHint
+        : '';
     if (moveBtn) {
-      moveBtn.disabled = !hasSelection;
+      moveBtn.disabled = !hasSelection || !moveAllowed;
       moveBtn.textContent = hasSelection
         ? '移动选中 (' + state.selected.size + ')'
         : '移动选中';
       moveBtn.title = !TdFilesPure.canBulkMoveInTransportMode(transportMode)
         ? TdFilesPure.bulkMoveBlockedMessage(transportMode)
-        : serviceReady
-          ? ''
-          : '服务未就绪：' + serviceHint;
+        : !transportReady
+          ? '传输未就绪：' + serviceHint
+          : '';
     }
     if (moveFolderSelect) {
       moveFolderSelect.disabled = !moveAllowed;
       moveFolderSelect.title = moveBtn ? moveBtn.title : '';
     }
     if (refreshBtn) {
-      refreshBtn.title = serviceReady ? '' : '服务未就绪：' + serviceHint;
+      refreshBtn.title = apiReady ? '' : 'API 不可用';
     }
   }
 
@@ -356,7 +401,8 @@
   }
 
   async function loadFiles() {
-    tbody.innerHTML = '<tr><td colspan="7" class="muted center">加载中…</td></tr>';
+    tbody.setAttribute('aria-busy', 'true');
+    tbody.innerHTML = '<tr class="table-state"><td colspan="7" class="muted center table-message">正在加载文件…</td></tr>';
     try {
       if (state.search.trim()) {
         var url = '/api/v1/files/search?q=' + encodeURIComponent(state.search.trim());
@@ -379,8 +425,10 @@
       updateBulkUi();
     } catch (e) {
       tbody.innerHTML =
-        '<tr><td colspan="7" class="err center">' + escapeHtml(e.message || e) + '</td></tr>';
+        '<tr class="table-state"><td colspan="7" class="err center table-message">加载失败：' + escapeHtml(e.message || e) + '</td></tr>';
       TdApi.showToast(String(e.message || e), 'err');
+    } finally {
+      tbody.removeAttribute('aria-busy');
     }
   }
 
@@ -470,6 +518,7 @@
     });
     var payloads = TdFilesPure.buildBulkDeletePayloads(ids, files);
     var total = 0;
+    var sharesRevoked = 0;
     var failures = [];
     var succeededIds = [];
     var partialBatches = 0;
@@ -481,6 +530,9 @@
         });
         var batchCount = res.count || 0;
         total += batchCount;
+        if (typeof res.shares_revoked === 'number') {
+          sharesRevoked += res.shares_revoked;
+        }
         var batchResult = TdFilesPure.pickBulkSucceededIds(
           payloads[i].file_ids,
           batchCount,
@@ -510,7 +562,7 @@
         'err',
       );
     }
-    return { total: total, failures: failures, succeededIds: succeededIds };
+    return { total: total, failures: failures, succeededIds: succeededIds, sharesRevoked: sharesRevoked };
   }
 
   function parseMoveTargetFolderId(raw) {
@@ -608,7 +660,7 @@
         return;
       }
       try {
-        await ensureReadyForAction();
+        await ensureReadyForTransport();
       } catch (e) {
         return;
       }
@@ -646,12 +698,18 @@
       hv = { transport_mode: 'bot' };
     }
     var confirmMsg =
-      hv.transport_mode === 'user'
-        ? '确定删除选中的 ' + state.selected.size + ' 个文件？User 模式下将同时删除 Telegram 消息。'
-        : '确定删除选中的 ' + state.selected.size + ' 条索引？Bot 模式下 Telegram 消息不会被删除。';
+      typeof TdWebPure !== 'undefined' && TdWebPure.formatBulkDeleteConfirmMessage
+        ? TdWebPure.formatBulkDeleteConfirmMessage(state.selected.size, hv.transport_mode)
+        : hv.transport_mode === 'user'
+          ? '确定删除选中的 ' + state.selected.size + ' 个文件？User 模式下将同时删除 Telegram 消息。'
+          : '确定删除选中的 ' + state.selected.size + ' 条索引？Bot 模式下 Telegram 消息不会被删除。';
     if (!confirm(confirmMsg)) return;
     try {
-      await ensureReadyForAction();
+      if (TdWebPure.bulkDeleteRequiresTransport(hv.transport_mode)) {
+        await ensureReadyForTransport();
+      } else {
+        await ensureReadyForDbMutation();
+      }
     } catch (e) {
       return;
     }
@@ -666,7 +724,14 @@
           forgetFileMeta(id);
           state.selected.delete(String(id));
         });
-        TdApi.showToast('已删除 ' + deleteResult.total + ' 条');
+        TdApi.showToast(
+          typeof TdWebPure !== 'undefined' && TdWebPure.formatDeleteSuccessToast
+            ? TdWebPure.formatDeleteSuccessToast(deleteResult.total, deleteResult.sharesRevoked)
+            : '已删除 ' + deleteResult.total + ' 条',
+        );
+        if (typeof TdWebPure !== 'undefined' && TdWebPure.bumpSharesInvalidateStorage) {
+          TdWebPure.bumpSharesInvalidateStorage();
+        }
         updateBulkUi();
         loadFiles();
       } else if (!deleteResult.failures.length) {

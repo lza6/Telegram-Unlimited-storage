@@ -18,6 +18,8 @@
     }
   }
 
+  var authInFlight = false;
+
   function afterAuthSuccess() {
     location.href = safeNext(new URLSearchParams(location.search).get('next'));
   }
@@ -41,6 +43,18 @@
   let userLoginAvailable = false;
   let qrPollTimer = null;
 
+  function setMessage(text, tone) {
+    msg.textContent = text || '';
+    msg.classList.toggle('is-error', tone === 'error');
+    msg.classList.toggle('is-success', tone === 'success');
+    msg.setAttribute('aria-live', tone === 'error' ? 'assertive' : 'polite');
+  }
+
+  function setPanelVisibility(panel, hidden) {
+    panel.hidden = hidden;
+    panel.classList.toggle('hidden', hidden);
+  }
+
   async function readResponse(res) {
     const text = await res.text();
     if (!text) return { data: null, text: '' };
@@ -54,8 +68,7 @@
   function showError(res, parsed) {
     const err =
       (parsed.data && (parsed.data.error || parsed.data.message)) || parsed.text;
-    msg.textContent = err || '请求失败 (' + res.status + ')';
-    msg.style.color = 'var(--err)';
+    setMessage(err || '请求失败 (' + res.status + ')', 'error');
   }
 
   function buildPhone() {
@@ -79,11 +92,13 @@
 
   function setUserLoginState(ok, hint, transportMode) {
     userLoginAvailable = ok;
-    tabPhone.style.display = ok ? '' : 'none';
-    tabQr.style.display = ok ? '' : 'none';
+    tabPhone.hidden = !ok;
+    tabQr.hidden = !ok;
+    tabPhone.setAttribute('aria-selected', ok ? 'true' : 'false');
+    tabQr.setAttribute('aria-selected', 'false');
     if (!ok) {
-      panelPhone.classList.add('hidden');
-      panelQr.classList.add('hidden');
+      setPanelVisibility(panelPhone, true);
+      setPanelVisibility(panelQr, true);
       adminAlert.classList.remove('hidden');
       if (transportMode === 'bot') {
         adminAlert.innerHTML =
@@ -106,8 +121,10 @@
     qrStart.disabled = false;
     tabPhone.classList.add('active');
     tabQr.classList.remove('active');
-    panelPhone.classList.remove('hidden');
-    panelQr.classList.add('hidden');
+    tabPhone.setAttribute('aria-selected', 'true');
+    tabQr.setAttribute('aria-selected', 'false');
+    setPanelVisibility(panelPhone, false);
+    setPanelVisibility(panelQr, true);
   }
 
   function updatePhoneHint() {
@@ -166,8 +183,7 @@
     document.getElementById('code-form').classList.add('hidden');
     document.getElementById('password-form').classList.add('hidden');
     document.getElementById('code-form').reset();
-    msg.textContent = '验证码错误或会话已过期，请重新发送验证码';
-    msg.style.color = 'var(--err)';
+    setMessage('验证码错误或会话已过期，请重新发送验证码', 'error');
   }
 
   dialSelect.addEventListener('change', updatePhoneHint);
@@ -176,57 +192,75 @@
   TdApi.fetchAuthStatus()
     .then(function (s) {
       if (s.transport_mode === 'bot' && s.connected) {
-        msg.textContent = '机器人模式已就绪：' + (s.user || '');
-        msg.style.color = '';
+        setMessage('机器人模式已就绪：' + (s.user || ''), 'success');
         setUserLoginState(false, s.hint, 'bot');
         adminAlert.innerHTML +=
-          '<p style="margin-top:12px"><a href="/dashboard.html">返回控制台</a> · ' +
+          '<p class="button--top-gap"><a href="/dashboard.html">返回控制台</a> · ' +
           '<a href="/settings.html">传输模式设置</a></p>';
         return;
       }
       if (s.connected && s.user && s.transport_mode === 'user') {
-        msg.textContent = '已登录：' + s.user + '，正在跳转…';
+        setMessage('已登录：' + s.user + '，正在跳转…', 'success');
         setTimeout(afterAuthSuccess, 800);
         return;
       }
       setUserLoginState(s.user_configured === true, s.hint, s.transport_mode);
       if (s.user_configured) {
-        msg.textContent = '请绑定 Telegram 用户账号（User 模式）';
+        setMessage('请绑定 Telegram 用户账号（User 模式）');
       }
     })
     .catch(function () {
-      msg.textContent = '无法读取服务状态，请检查 API 是否在运行';
-      msg.style.color = 'var(--err)';
+      setMessage('无法读取服务状态，请检查 API 是否在运行', 'error');
     });
 
+  function activateTab(which) {
+    var phoneActive = which === 'phone';
+    tabPhone.classList.toggle('active', phoneActive);
+    tabQr.classList.toggle('active', !phoneActive);
+    tabPhone.setAttribute('aria-selected', phoneActive ? 'true' : 'false');
+    tabQr.setAttribute('aria-selected', phoneActive ? 'false' : 'true');
+    tabPhone.tabIndex = phoneActive ? 0 : -1;
+    tabQr.tabIndex = phoneActive ? -1 : 0;
+    setPanelVisibility(panelPhone, !phoneActive);
+    setPanelVisibility(panelQr, phoneActive);
+    if (!phoneActive) {
+      stopQrPoll();
+    }
+  }
+
   tabPhone.onclick = function () {
-    tabPhone.classList.add('active');
-    tabQr.classList.remove('active');
-    panelPhone.classList.remove('hidden');
-    panelQr.classList.add('hidden');
-    stopQrPoll();
+    activateTab('phone');
   };
   tabQr.onclick = function () {
-    tabQr.classList.add('active');
-    tabPhone.classList.remove('active');
-    panelQr.classList.remove('hidden');
-    panelPhone.classList.add('hidden');
+    activateTab('qr');
   };
+  [tabPhone, tabQr].forEach(function (tab) {
+    tab.addEventListener('keydown', function (event) {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      var next = tab === tabPhone ? tabQr : tabPhone;
+      next.focus();
+      next.click();
+    });
+  });
+
+  /* Keep the initial phone panel activation in one place for mouse and
+     keyboard users. */
+  activateTab('phone');
 
   document.getElementById('phone-form').onsubmit = async function (e) {
     e.preventDefault();
-    if (!userLoginAvailable) return;
+    if (!userLoginAvailable || authInFlight) return;
     var phone;
     try {
       phone = buildPhone();
     } catch (err) {
-      msg.textContent = err.message;
-      msg.style.color = 'var(--err)';
+      setMessage(err.message, 'error');
       return;
     }
+    authInFlight = true;
     btnSendCode.disabled = true;
-    msg.textContent = '正在向 ' + phone + ' 发送验证码…';
-    msg.style.color = '';
+    setMessage('正在向 ' + phone + ' 发送验证码…');
     try {
       var res = await authFetch('/api/v1/auth/phone/request', {
         method: 'POST',
@@ -235,22 +269,26 @@
       });
       var parsed = await readResponse(res);
       if (res.ok) {
-        msg.textContent = '验证码已发送，请在 Telegram 查看';
+        setMessage('验证码已发送，请在 Telegram 查看', 'success');
         document.getElementById('phone-form').classList.add('hidden');
         document.getElementById('code-form').classList.remove('hidden');
       } else {
         showError(res, parsed);
       }
     } catch (err) {
-      msg.textContent = String(err.message || err);
-      msg.style.color = 'var(--err)';
+      setMessage(String(err.message || err), 'error');
     } finally {
+      authInFlight = false;
       btnSendCode.disabled = false;
     }
   };
 
   document.getElementById('code-form').onsubmit = async function (e) {
     e.preventDefault();
+    if (authInFlight) return;
+    authInFlight = true;
+    var submitter = e.target.querySelector('button[type=submit]');
+    if (submitter) submitter.disabled = true;
     var code = new FormData(e.target).get('code');
     try {
       var res = await authFetch('/api/v1/auth/phone/sign-in', {
@@ -265,7 +303,7 @@
       } else if (data.next_step === 'password') {
         document.getElementById('code-form').classList.add('hidden');
         document.getElementById('password-form').classList.remove('hidden');
-        msg.textContent = '请输入两步验证密码';
+        setMessage('请输入两步验证密码');
       } else {
         showError(res, parsed);
         var errText = (parsed.data && (parsed.data.error || parsed.data.message)) || parsed.text || '';
@@ -274,13 +312,19 @@
         }
       }
     } catch (err) {
-      msg.textContent = String(err.message || err);
-      msg.style.color = 'var(--err)';
+      setMessage(String(err.message || err), 'error');
+    } finally {
+      authInFlight = false;
+      if (submitter) submitter.disabled = false;
     }
   };
 
   document.getElementById('password-form').onsubmit = async function (e) {
     e.preventDefault();
+    if (authInFlight) return;
+    authInFlight = true;
+    var submitter = e.target.querySelector('button[type=submit]');
+    if (submitter) submitter.disabled = true;
     var password = new FormData(e.target).get('password');
     try {
       var res = await authFetch('/api/v1/auth/phone/password', {
@@ -292,15 +336,19 @@
       if (res.ok) afterAuthSuccess();
       else showError(res, parsed);
     } catch (err) {
-      msg.textContent = String(err.message || err);
-      msg.style.color = 'var(--err)';
+      setMessage(String(err.message || err), 'error');
+    } finally {
+      authInFlight = false;
+      if (submitter) submitter.disabled = false;
     }
   };
 
   qrStart.onclick = async function () {
-    if (!userLoginAvailable) return;
+    if (!userLoginAvailable || authInFlight) return;
+    authInFlight = true;
+    qrStart.disabled = true;
     stopQrPoll();
-    msg.textContent = '正在生成二维码…';
+    setMessage('正在生成二维码…');
     try {
       var res = await authFetch('/api/v1/auth/qr/start', { method: 'POST' });
       var parsed = await readResponse(res);
@@ -314,33 +362,32 @@
         return;
       }
       if (!data.url) {
-        msg.textContent = '未返回二维码链接';
+        setMessage('未返回二维码链接', 'error');
         return;
       }
       renderQr(data.url);
-      msg.textContent = '请用 Telegram App 扫描二维码';
+      setMessage('请用 Telegram App 扫描二维码');
       qrPollTimer = setInterval(function () {
         pollQrOnce().catch(function (err) {
-          msg.textContent = String(err.message || err);
-          msg.style.color = 'var(--err)';
+          setMessage(String(err.message || err), 'error');
           stopQrPoll();
         });
       }, 2500);
       pollQrOnce().catch(function (err) {
-        msg.textContent = String(err.message || err);
-        msg.style.color = 'var(--err)';
+        setMessage(String(err.message || err), 'error');
         stopQrPoll();
       });
     } catch (err) {
-      msg.textContent = String(err.message || err);
-      msg.style.color = 'var(--err)';
+      setMessage(String(err.message || err), 'error');
+    } finally {
+      authInFlight = false;
+      qrStart.disabled = false;
     }
   };
 
   document.getElementById('qr-poll').onclick = function () {
     pollQrOnce().catch(function (err) {
-      msg.textContent = String(err.message || err);
-      msg.style.color = 'var(--err)';
+      setMessage(String(err.message || err), 'error');
       stopQrPoll();
     });
   };

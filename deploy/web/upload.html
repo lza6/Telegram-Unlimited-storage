@@ -23,10 +23,13 @@
   <link rel="stylesheet" href="/assets/admin.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar">
-      <strong>Telegram Drive</strong>
-      <nav style="margin-top:20px">
+      <a class="brand-lockup" href="/dashboard.html" aria-label="Telegram Drive 控制台首页">
+        <span>Telegram Drive</span>
+      </a>
+      <nav class="sidebar-nav sidebar-nav-spaced" aria-label="主导航">
         <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
         <a href="/files.html" data-nav="files">文件列表</a>
         <a href="/shares.html" data-nav="shares">分享管理</a>
@@ -34,57 +37,61 @@
         <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
         <a href="/docs.html" data-nav="docs">API 文档</a>
         <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
       </nav>
-      <p class="muted" style="margin-top:16px;font-size:0.8rem">tg-disk 兼容上传入口，与 dashboard 共用分片逻辑。</p>
+      <p class="muted sidebar-footnote">tg-disk 兼容上传入口，与控制台共用分片逻辑。</p>
     </aside>
-    <section class="content">
-      <h2>Telegram Cloud Storage</h2>
-      <p class="muted">tg-disk 兼容上传页 · <code>/upload.html</code></p>
+    <main id="main-content" class="content" tabindex="-1">
+      <header class="page-header page-header--compact">
+        <div class="page-header-copy">
+          <p class="eyebrow">Compatible transfer</p>
+          <h2>Telegram Cloud Storage</h2>
+          <p class="page-subtitle">兼容 tg-disk 的分片上传入口，适合脚本与临时传输任务。</p>
+        </div>
+      </header>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-      <p><span id="tg-dot" class="status-dot bad"></span><span id="tg-status">检测中…</span></p>
-      <p class="muted" id="api-health"></p>
-      <div id="service-banner" hidden role="alert" style="margin:12px 0;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
+      <div class="status-rail"><span id="tg-dot" class="status-dot bad" aria-hidden="true"></span><strong id="tg-status">检测中…</strong><span class="muted" id="api-health"></span></div>
+      <div id="service-banner" class="service-banner service-banner--upload" hidden role="alert" aria-live="assertive"></div>
 
-      <div class="toolbar" style="margin-bottom:12px">
-        <label for="upload-folder" class="muted">目标文件夹</label>
-        <select id="upload-folder" class="toolbar-input" style="max-width:320px;margin-left:8px">
+      <div class="toolbar upload-toolbar">
+        <label for="upload-folder" class="toolbar-label">目标文件夹</label>
+        <select id="upload-folder" class="toolbar-input toolbar-select">
           <option value="">Saved Messages（默认）</option>
         </select>
       </div>
 
-      <div class="drop-zone" id="drop">
+      <button type="button" class="drop-zone drop-zone--compact" id="drop" aria-controls="file-input" aria-describedby="upload-hint">
         <p class="drop-title">拖拽文件到此处，或点击选择</p>
-        <p class="drop-hint">支持任意格式，自动分片处理大文件</p>
-      </div>
+        <p class="drop-hint" id="upload-hint">支持任意格式，自动分片处理大文件</p>
+      </button>
       <input type="file" id="file-input" multiple hidden />
 
-      <div class="stats" id="stats" style="display:none">
+      <div class="stats" id="stats" hidden aria-live="polite">
         <div class="stat-item"><span class="stat-value" id="file-count">0</span><span class="stat-label">待上传文件</span></div>
         <div class="stat-item"><span class="stat-value" id="total-size">0</span><span class="stat-label">总大小</span></div>
         <div class="stat-item"><span class="stat-value conn-status conn-disconnected" id="conn-status">未连接</span><span class="stat-label">进度连接</span></div>
       </div>
 
-      <div id="file-list"></div>
+      <div id="file-list" aria-live="polite" aria-relevant="additions text"></div>
       <button type="button" id="upload-btn" class="upload-btn" disabled>开始上传</button>
       <p id="retry-status" class="muted hidden" role="status" aria-live="polite"></p>
-    </section>
+    </main>
   </div>
 
-  <div id="result-modal" class="modal">
+  <div id="result-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="result-modal-title" aria-hidden="true" hidden>
     <div class="modal-content">
-      <h3 class="modal-title">上传成功</h3>
+      <h3 class="modal-title" id="result-modal-title">上传成功</h3>
       <p class="muted">文件已存储到 Telegram，以下是下载链接</p>
-      <div id="result-links"></div>
+      <div id="result-links" role="status" aria-live="polite"></div>
       <button type="button" id="close-modal" class="btn-secondary">关闭</button>
     </div>
   </div>
 
   <script src="/assets/api-client.js"></script>
+  <script src="/assets/web-pure.js"></script>
   <script src="/assets/page-readiness.js"></script>
   <script src="/assets/share-domain.js"></script>
-  <script src="/assets/web-pure.js"></script>
   <script src="/assets/upload-folder.js"></script>
   <script src="/assets/upload-core.js"></script>
   <script>

@@ -20,19 +20,16 @@
   <link rel="canonical" href="" data-td-canonical data-td-path="/docs.html" />
   <script src="/assets/page-meta.js"></script>
   <title>API 文档 · Telegram Drive</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
   <link rel="stylesheet" href="/assets/admin.css" />
-  <style>
-    #swagger-ui { background: #fff; border-radius: 12px; margin-top: 16px; }
-    .top-bar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
-    .top-bar button { width: auto; padding: 8px 16px; margin: 0; }
-  </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar">
-      <strong>Telegram Drive</strong>
-      <nav style="margin-top:20px">
+      <a class="brand-lockup" href="/dashboard.html" aria-label="Telegram Drive 控制台首页">
+        <span>Telegram Drive</span>
+      </a>
+      <nav class="sidebar-nav sidebar-nav-spaced" aria-label="主导航">
         <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
         <a href="/files.html" data-nav="files">文件列表</a>
         <a href="/shares.html" data-nav="shares">分享管理</a>
@@ -40,23 +37,35 @@
         <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
         <a href="/docs.html" data-nav="docs">API 文档</a>
         <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
       </nav>
-      <p class="muted" style="margin-top:16px;font-size:0.8rem">OpenAPI 可公开浏览；调用 API 需 <code>X-API-Key</code> 或控制台密码。</p>
+      <p class="muted sidebar-footnote">OpenAPI 可公开浏览；调用 API 需 <code>X-API-Key</code> 或控制台密码。</p>
     </aside>
-    <section class="content">
-      <h2>REST API 文档 <span id="api-version" class="badge">OpenAPI …</span></h2>
-      <p class="muted">OpenAPI 3 · Headless 全量 API；桌面可选 REST 子集见仓库 <code>docs/DESKTOP-API.md</code></p>
-      <div class="top-bar">
-        <button type="button" onclick="window.open('/docs/openapi.json','_blank')">下载 openapi.json</button>
-        <button type="button" id="copy-health">复制健康检查 curl</button>
+    <main id="main-content" class="content" tabindex="-1">
+      <header class="page-header page-header--compact">
+        <div class="page-header-copy">
+          <p class="eyebrow">Contract surface</p>
+          <h2>REST API 文档 <span id="api-version" class="badge">加载中</span></h2>
+          <p class="page-subtitle">OpenAPI 3 · Headless 全量 API；桌面可选 REST 子集见仓库 <code>docs/DESKTOP-API.md</code>。</p>
+        </div>
+        <div class="page-actions docs-toolbar">
+          <a class="btn-secondary btn-sm" href="/docs/openapi.json" target="_blank" rel="noopener">下载 openapi.json</a>
+          <button type="button" id="copy-health" class="btn-secondary btn-sm">复制健康检查 curl</button>
+        </div>
+      </header>
+      <div id="docs-panel" class="docs-panel" aria-live="polite">
+        <div id="docs-loading" class="docs-loading">正在读取 OpenAPI 契约…</div>
+        <div id="docs-error" class="notice notice-err docs-error" hidden role="alert">
+          <strong>OpenAPI 暂时不可用</strong>
+          <p id="docs-error-text">请确认服务端已挂载 docs 目录。</p>
+          <button type="button" id="retry-docs" class="btn-secondary btn-sm">重新读取</button>
+        </div>
+        <div id="docs-content" hidden></div>
       </div>
-      <div id="swagger-ui"></div>
-    </section>
+    </main>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/assets/api-client.js"></script>
-  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
   <script>
     TdApi.initSidebar('docs');
     document.getElementById('copy-health').onclick = async function () {
@@ -68,24 +77,80 @@
         TdApi.showToast(String(e.message || e), 'err');
       }
     };
-    fetch('/docs/openapi.json')
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        var el = document.getElementById('api-version');
-        if (el && j.info) el.textContent = 'OpenAPI ' + (j.info.version || '');
-      })
-      .catch(function () {
-        var el = document.getElementById('api-version');
-        if (el) el.textContent = 'OpenAPI 版本加载失败';
-        TdApi.showToast('无法加载 OpenAPI 版本信息', 'info');
+    var docsContent = document.getElementById('docs-content');
+    var docsLoading = document.getElementById('docs-loading');
+    var docsError = document.getElementById('docs-error');
+    var docsErrorText = document.getElementById('docs-error-text');
+    var apiVersion = document.getElementById('api-version');
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderDocs(spec) {
+      var paths = spec && spec.paths ? spec.paths : {};
+      var entries = [];
+      Object.keys(paths).sort().forEach(function (path) {
+        Object.keys(paths[path] || {}).sort().forEach(function (method) {
+          var operation = paths[path][method];
+          if (!operation || typeof operation !== 'object') return;
+          entries.push({ path: path, method: method.toUpperCase(), operation: operation });
+        });
       });
-    window.ui = SwaggerUIBundle({
-      url: '/docs/openapi.json',
-      dom_id: '#swagger-ui',
-      deepLinking: true,
-      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-      layout: 'BaseLayout',
-    });
+      var title = spec.info && spec.info.title ? spec.info.title : 'Telegram Drive API';
+      var version = spec.info && spec.info.version ? spec.info.version : '未知';
+      apiVersion.textContent = 'OpenAPI ' + version;
+      var html = '<div class="docs-summary" aria-label="API 摘要">' +
+        '<div class="docs-summary-item"><span class="docs-summary-label">契约</span><span class="docs-summary-value">' + escapeHtml(spec.openapi || 'OpenAPI') + '</span></div>' +
+        '<div class="docs-summary-item"><span class="docs-summary-label">接口数量</span><span class="docs-summary-value">' + entries.length + '</span></div>' +
+        '<div class="docs-summary-item"><span class="docs-summary-label">服务</span><span class="docs-summary-value">' + escapeHtml(title) + '</span></div>' +
+        '</div><div class="docs-endpoints"><h3>接口目录</h3>';
+      if (!entries.length) {
+        html += '<p class="muted">当前契约没有可展示的路径。</p>';
+      }
+      entries.forEach(function (entry, index) {
+        var op = entry.operation;
+        var methodClass = entry.method.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        var description = op.summary || op.description || '未提供描述';
+        html += '<details class="api-endpoint"' + (index === 0 ? ' open' : '') + '>' +
+          '<summary><span class="api-method api-method--' + methodClass + '">' + entry.method + '</span><span class="api-path">' + escapeHtml(entry.path) + '</span></summary>' +
+          '<div class="api-endpoint-body"><p class="api-description">' + escapeHtml(description) + '</p>';
+        if (op.operationId) html += '<p class="muted">operationId：<code>' + escapeHtml(op.operationId) + '</code></p>';
+        if (op.tags && op.tags.length) html += '<p class="muted">标签：' + escapeHtml(op.tags.join('、')) + '</p>';
+        html += '</div></details>';
+      });
+      html += '</div>';
+      docsContent.innerHTML = html;
+      docsLoading.hidden = true;
+      docsError.hidden = true;
+      docsContent.hidden = false;
+    }
+
+    function loadDocs() {
+      docsLoading.hidden = false;
+      docsError.hidden = true;
+      docsContent.hidden = true;
+      fetch('/docs/openapi.json', { headers: { Accept: 'application/json' } })
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(renderDocs)
+        .catch(function (error) {
+          docsLoading.hidden = true;
+          docsError.hidden = false;
+          apiVersion.textContent = 'OpenAPI 不可用';
+          docsErrorText.textContent = '无法加载契约（' + String(error.message || error) + '）。可下载链接稍后重试。';
+        });
+    }
+
+    document.getElementById('retry-docs').addEventListener('click', loadDocs);
+    loadDocs();
   </script>
 </body>
 </html>

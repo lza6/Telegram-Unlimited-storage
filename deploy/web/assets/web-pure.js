@@ -65,5 +65,70 @@
     shouldShowUserOnboarding: function (transportMode, connected, dismissed) {
       return transportMode === 'user' && !connected && !dismissed;
     },
+    isWebApiReachable: function (health) {
+      return !!health && typeof health.version === 'string';
+    },
+    isWebTransportReady: function (health, auth) {
+      if (!health || !health.ready) return false;
+      if ((health.transport_mode || '').toLowerCase() === 'user') {
+        return !!(auth && auth.connected);
+      }
+      return true;
+    },
+    isWebDbMutationReady: function (health) {
+      return global.TdWebPure.isWebApiReachable(health);
+    },
+    bulkDeleteRequiresTransport: function (transportMode) {
+      return (transportMode || '').toLowerCase() === 'user';
+    },
+    SHARES_INVALIDATE_STORAGE_KEY: 'td-shares-invalidate',
+    bumpSharesInvalidateStorage: function () {
+      try {
+        localStorage.setItem(
+          global.TdWebPure.SHARES_INVALIDATE_STORAGE_KEY,
+          String(Date.now()),
+        );
+      } catch (e) {
+        /* private mode / quota */
+      }
+    },
+    formatBulkDeleteConfirmMessage: function (count, transportMode) {
+      var mode = (transportMode || 'bot').toLowerCase();
+      var shareNote = '相关分享链接将一并撤销。';
+      if (mode === 'user') {
+        return (
+          '确定删除选中的 ' +
+          count +
+          ' 个文件？User 模式下将同时删除 Telegram 消息，' +
+          shareNote
+        );
+      }
+      return (
+        '确定删除选中的 ' +
+        count +
+        ' 条索引？Bot 模式下 Telegram 消息不会被删除，' +
+        shareNote
+      );
+    },
+    formatSingleDeleteConfirmMessage: function (transportMode) {
+      var mode = (transportMode || 'user').toLowerCase();
+      var shareNote = '相关分享链接将一并撤销。';
+      if (mode === 'bot') {
+        return '确定删除此文件索引？Telegram 消息不会被删除，' + shareNote;
+      }
+      return '确定删除此文件？将同时删除 Telegram 消息，' + shareNote;
+    },
+    formatDeleteSuccessToast: function (count, sharesRevoked) {
+      if (count <= 0) return '没有可删除的条目';
+      var sharePart;
+      if (sharesRevoked != null) {
+        sharePart =
+          sharesRevoked > 0 ? '，已撤销 ' + sharesRevoked + ' 条分享链接' : '';
+      } else {
+        sharePart = '，相关分享链接已一并撤销';
+      }
+      if (count === 1) return '已删除 1 条' + sharePart;
+      return '已删除 ' + count + ' 条' + sharePart;
+    },
   };
 })(typeof window !== 'undefined' ? window : globalThis);

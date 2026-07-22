@@ -1,5 +1,7 @@
 /* tg-disk compatible chunked upload — shared by dashboard.html & upload.html */
 (function (global) {
+  var PROGRESS_TOKEN_TIMEOUT_MS = 5000;
+
   function getAccessPwd() {
     if (typeof TdApi !== 'undefined' && TdApi.getAccessPwd) {
       return TdApi.getAccessPwd();
@@ -67,6 +69,33 @@
     return 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
   }
 
+  function stableUploadIdempotencyKey(fileItem) {
+    if (fileItem.idempotencyKey) return fileItem.idempotencyKey;
+    var fingerprint = [fileItem.file.name, fileItem.file.size, fileItem.file.lastModified].join(':');
+    var storageKey = 'td-upload-idempotency:' + fingerprint;
+    var existing = null;
+    try { existing = sessionStorage.getItem(storageKey); } catch (ignore) { existing = null; }
+    fileItem.idempotencyKey = existing || ('web-upload-' + newUploadSessionId());
+    try { sessionStorage.setItem(storageKey, fileItem.idempotencyKey); } catch (ignore) { /* best effort */ }
+    return fileItem.idempotencyKey;
+  }
+
+  function clearStableUploadIdempotencyKey(fileItem) {
+    var fingerprint = [fileItem.file.name, fileItem.file.size, fileItem.file.lastModified].join(':');
+    try { sessionStorage.removeItem('td-upload-idempotency:' + fingerprint); } catch (ignore) { /* best effort */ }
+  }
+  function uploadStateMessage(raw, retryAfter) {
+    var text = String(raw || '上传失败');
+    if (text.indexOf('UPLOAD_IN_PROGRESS') >= 0) return '同一上传正在处理中；请等待后使用原任务重试，不会重复上传。';
+    if (text.indexOf('UPLOAD_RECONCILIATION_REQUIRED') >= 0) return 'Telegram 已接收文件，数据库正在对账；请稍后重试查询，不要重新选择文件。';
+    if (text.indexOf('UPLOAD_COMPENSATION_PENDING') >= 0) return '上传未能落账，系统正在执行补偿；请等待处理完成后再重试。';
+    if (text.indexOf('MANUAL_REVIEW') >= 0 || text.indexOf('manual_review') >= 0) return '任务需要人工审查；请保留任务标识并联系管理员。';
+    if (text.indexOf('SCHEDULER') >= 0 || text.indexOf('scheduler') >= 0 || text.indexOf('COOLDOWN') >= 0 || text.indexOf('FloodWait') >= 0) {
+      return '任务正在调度或限流冷却' + (retryAfter ? '，约 ' + retryAfter + ' 秒后自动重试。' : '，请稍后重试。');
+    }
+    return text;
+  }
+
   function parseUploadFolderId(raw) {
     if (!raw || !String(raw).trim()) return null;
     var n = parseInt(String(raw).trim(), 10);
@@ -86,16 +115,29 @@
 
   async function fetchUploadProgressAuthQuery(sessionId, pwd) {
     var accessPwd = pwd || getAccessPwd();
-    if (!accessPwd || !sessionId) return '';
+    if (!accessPwd || !sessionId) return null;
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timeoutId = null;
     try {
-      var res = await fetch('/upload_progress_token', {
+      var requestOptions = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Access-Pwd': accessPwd,
         },
         body: JSON.stringify({ session_id: sessionId }),
+      };
+      if (controller) requestOptions.signal = controller.signal;
+      var timeoutPromise = new Promise(function (_resolve, reject) {
+        timeoutId = setTimeout(function () {
+          if (controller) controller.abort();
+          reject(new Error('upload progress token request timed out'));
+        }, PROGRESS_TOKEN_TIMEOUT_MS);
       });
+      var res = await Promise.race([
+        fetch('/upload_progress_token', requestOptions),
+        timeoutPromise,
+      ]);
       if (res.ok) {
         var data = await res.json();
         if (data.token && data.expires_at) {
@@ -107,21 +149,29 @@
           );
         }
       }
+      console.warn('upload progress token request rejected', res.status);
     } catch (e) {
       console.warn('upload progress token failed', e);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
-    return '&pwd=' + encodeURIComponent(accessPwd);
+    return null;
   }
 
   async function subscribeUploadProgress(sessionId, onProgress, pwd, onStatusChange) {
     if (!sessionId) return null;
-    var authQ = await fetchUploadProgressAuthQuery(sessionId, pwd);
 
     // Connection status indicator support
     function notifyStatus(status, detail) {
       if (typeof onStatusChange === 'function') {
         onStatusChange({ status: status, detail: detail || '' });
       }
+    }
+
+    var authQ = await fetchUploadProgressAuthQuery(sessionId, pwd);
+    if (!authQ) {
+      notifyStatus('error', '无法获取上传进度令牌；上传仍会继续，请查看文件行状态。');
+      return null;
     }
 
     if (typeof EventSource !== 'undefined') {
@@ -155,7 +205,7 @@
       source.onerror = function () {
         notifyStatus('error', 'SSE disconnected, falling back to polling');
         source.close();
-        if (!pollTimer && authQ && (authQ.indexOf('token=') >= 0 || authQ.indexOf('pwd=') >= 0)) {
+        if (!pollTimer) {
           notifyStatus('reconnecting', 'polling fallback');
           var pollFailCount = 0;
           pollTimer = setInterval(function () {
@@ -219,7 +269,7 @@
       };
 
       function beginWsStatusPoll() {
-        if (wsPollTimer || !authQ || (authQ.indexOf('token=') < 0 && authQ.indexOf('pwd=') < 0)) return;
+        if (wsPollTimer) return;
         notifyStatus('reconnecting', 'polling fallback');
         var pollFailCount = 0;
         wsPollTimer = setInterval(function () {
@@ -297,6 +347,9 @@
   async function fetchWithRetry(url, options, maxAttempts, on503Wait) {
     const attempts = maxAttempts || 8;
     for (let i = 0; i < attempts; i++) {
+      if (options && options.signal && options.signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const response = await fetch(url, options);
       if (response.status !== 503) return response;
       const retryAfter = parseInt(response.headers.get('Retry-After') || '2', 10);
@@ -360,6 +413,7 @@
     let CHUNK_SIZE = 20 * 1024 * 1024;
     let CONCURRENT_UPLOADS = 4;
     let CONCURRENT_FILES = 3;
+    let previousModalFocus = null;
 
     if (typeof TdShareDomain !== 'undefined') {
       TdShareDomain.loadShareDomainFromServer();
@@ -383,6 +437,14 @@
     })();
 
     dropZone.addEventListener('click', () => fileInput.click());
+    if (dropZone.tagName !== 'BUTTON' && dropZone.getAttribute('role') === 'button') {
+      dropZone.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          fileInput.click();
+        }
+      });
+    }
     dropZone.addEventListener('dragover', (e) => {
       e.preventDefault();
       dropZone.classList.add('dragover');
@@ -401,9 +463,10 @@
         file,
         uploading: false,
         uploaded: false,
+        idempotencyKey: null,
       }));
       selectedFiles = selectedFiles.concat(newFiles);
-      if (statsEl) statsEl.style.display = 'flex';
+      if (statsEl) statsEl.hidden = false;
       if (fileCountEl) fileCountEl.textContent = String(selectedFiles.length);
       if (totalSizeEl) {
         const totalBytes = selectedFiles.reduce((sum, item) => sum + item.file.size, 0);
@@ -415,12 +478,14 @@
         div.id = 'file-item-' + fileItem.id;
         div.innerHTML =
           '<div class="file-info">' +
-          '<div class="file-name">' + fileItem.file.name + '</div>' +
+          '<div class="file-name">' + escapeHtml(fileItem.file.name) + '</div>' +
           '<div class="file-size">' + formatSize(fileItem.file.size) + '</div>' +
           '</div>' +
-          '<div class="progress-bar"><div id="bar-' +
+          '<progress id="bar-' +
           fileItem.id +
-          '" class="progress-bar-inner"></div></div>' +
+          '" class="progress-meter" max="100" value="0" aria-label="' +
+          escapeHtml(fileItem.file.name) +
+          ' 上传进度"></progress>' +
           '<div id="status-' +
           fileItem.id +
           '" class="file-status">等待上传…</div>';
@@ -428,7 +493,7 @@
       });
     }
 
-    async function uploadSingleFile(file, fileId, pwd) {
+    async function uploadSingleFile(file, fileId, pwd, idempotencyKey) {
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
       const statusEl = document.getElementById('status-' + fileId);
       const progressBar = document.getElementById('bar-' + fileId);
@@ -469,9 +534,12 @@
         formData.append('pwd', pwd);
         formData.append('file', file);
         appendFolderId(formData, folderId);
-        const response = await fetchWithRetry('/upload', { method: 'POST', body: formData }, undefined, on503Wait);
-        if (!response.ok) throw new Error(await response.text());
-        progressBar.style.width = '100%';
+        const response = await fetchWithRetry('/upload', { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: formData }, undefined, on503Wait);
+        if (!response.ok) {
+          const rawError = await response.text();
+          throw new Error(uploadStateMessage(rawError, response.headers.get('Retry-After')));
+        }
+        progressBar.value = 100;
         statusEl.textContent = '完成';
         return response.json();
       }
@@ -483,15 +551,17 @@
       const queue = new UploadQueue(CONCURRENT_UPLOADS);
       const uploadTasks = [];
       let progressFailed = null;
+      const chunkAbort = new AbortController();
       const progressSource = await subscribeUploadProgress(sessionId, function (ev) {
         if (ev.status === 'failed') {
           progressFailed = ev.message || '上传失败';
           statusEl.textContent = progressFailed;
+          chunkAbort.abort();
           return;
         }
         if (ev.uploaded_chunks != null && ev.total_chunks > 0) {
           const percent = (ev.uploaded_chunks / ev.total_chunks) * 100;
-          progressBar.style.width = percent + '%';
+          progressBar.value = Math.max(0, Math.min(100, percent));
           const elapsed = (Date.now() - startTime) / 1000;
           const bytesUploaded = ev.uploaded_chunks * CHUNK_SIZE;
           const speed = elapsed > 0 ? bytesUploaded / elapsed : 0;
@@ -508,6 +578,9 @@
       try {
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
           const task = queue.add(async () => {
+            if (progressFailed || chunkAbort.signal.aborted) {
+              throw new Error(progressFailed || '上传已取消');
+            }
             const start = chunkIndex * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
             const chunk = file.slice(start, end);
@@ -518,7 +591,15 @@
             formData.append('chunk_index', String(chunkIndex));
             formData.append('total_chunks', String(totalChunks));
             formData.append('filename', file.name);
-            const response = await fetchWithRetry('/upload_chunk', { method: 'POST', body: formData }, undefined, on503Wait);
+            const response = await fetchWithRetry(
+              '/upload_chunk',
+              { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: formData, signal: chunkAbort.signal },
+              undefined,
+              on503Wait,
+            );
+            if (progressFailed || chunkAbort.signal.aborted) {
+              throw new Error(progressFailed || '上传已取消');
+            }
             if (!response.ok) {
               throw new Error('分片 ' + (chunkIndex + 1) + ' 失败: ' + (await response.text()));
             }
@@ -526,7 +607,7 @@
             chunkIds[chunkIndex] = data.file_id;
             uploadedChunks++;
             const percent = (uploadedChunks / totalChunks) * 100;
-            progressBar.style.width = percent + '%';
+            progressBar.value = Math.max(0, Math.min(100, percent));
             const elapsed = (Date.now() - startTime) / 1000;
             const bytesUploaded = uploadedChunks * CHUNK_SIZE;
             const speed = elapsed > 0 ? bytesUploaded / elapsed : 0;
@@ -550,8 +631,11 @@
         mergeFormData.append('session_id', sessionId);
         mergeFormData.append('chunk_ids', JSON.stringify(chunkIds));
         appendFolderId(mergeFormData, folderId);
-        const mergeResponse = await fetchWithRetry('/merge_chunks', { method: 'POST', body: mergeFormData }, undefined, on503Wait);
-        if (!mergeResponse.ok) throw new Error('合并失败: ' + (await mergeResponse.text()));
+        const mergeResponse = await fetchWithRetry('/merge_chunks', { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: mergeFormData }, undefined, on503Wait);
+        if (!mergeResponse.ok) {
+          const rawError = await mergeResponse.text();
+          throw new Error(uploadStateMessage(rawError, mergeResponse.headers.get('Retry-After')));
+        }
         statusEl.textContent = '完成';
         return mergeResponse.json();
       } finally {
@@ -569,6 +653,14 @@
       resultLinks.innerHTML = '';
       list.forEach((file) => {
         var downloadUrl = file.download_url;
+        if (!downloadUrl) {
+          var missing = document.createElement('div');
+          missing.className = 'result-item';
+          missing.setAttribute('role', 'alert');
+          missing.textContent = (file.filename || '文件') + ' 已上传，但服务未返回可用直链；请在文件列表重试生成。';
+          resultLinks.appendChild(missing);
+          return;
+        }
         if (typeof TdShareDomain !== 'undefined') {
           downloadUrl = TdShareDomain.applyShareDomain(downloadUrl);
         }
@@ -622,7 +714,21 @@
           }
         });
       });
-      modal.style.display = 'flex';
+      previousModalFocus = document.activeElement;
+      modal.hidden = false;
+      modal.setAttribute('aria-hidden', 'false');
+      var firstCopy = resultLinks.querySelector('.copy-btn');
+      var closeButton = options.closeModalSelector
+        ? document.querySelector(options.closeModalSelector)
+        : null;
+      if (firstCopy) {
+        firstCopy.focus();
+      } else if (closeButton) {
+        closeButton.focus();
+      } else {
+        modal.setAttribute('tabindex', '-1');
+        modal.focus();
+      }
     }
 
     uploadBtn.addEventListener('click', async () => {
@@ -665,13 +771,21 @@
         uploadTasks.push(
           fileQueue.add(async () => {
             try {
-              const result = await uploadSingleFile(fileItem.file, fileItem.id, pwd);
+              const result = await uploadSingleFile(fileItem.file, fileItem.id, pwd, stableUploadIdempotencyKey(fileItem));
               uploadResponses.push(result);
               fileItem.uploaded = true;
+              clearStableUploadIdempotencyKey(fileItem);
             } catch (e) {
               uploadFailCount += 1;
               showUploadError('文件 ' + fileItem.file.name + ' 上传失败: ' + (e.message || e));
               fileItem.uploading = false;
+              var statusEl = document.getElementById('status-' + fileItem.id);
+              if (statusEl) {
+                statusEl.textContent = uploadStateMessage(e.message || e);
+                statusEl.setAttribute('role', 'alert');
+                statusEl.setAttribute('tabindex', '-1');
+                statusEl.focus();
+              }
             }
           })
         );
@@ -691,7 +805,38 @@
 
     if (options.closeModalSelector) {
       document.querySelector(options.closeModalSelector)?.addEventListener('click', () => {
-        modal.style.display = 'none';
+        modal.hidden = true;
+        modal.setAttribute('aria-hidden', 'true');
+        if (previousModalFocus && typeof previousModalFocus.focus === 'function') {
+          previousModalFocus.focus();
+        } else {
+          uploadBtn.focus();
+        }
+      });
+    }
+
+    if (modal) {
+      modal.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          var close = options.closeModalSelector ? document.querySelector(options.closeModalSelector) : null;
+          if (close) close.click();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        var focusable = Array.from(modal.querySelectorAll('button, a[href], textarea, input, select, [tabindex]:not([tabindex="-1"])')).filter(function (el) {
+          return !el.disabled && !el.hidden && el.offsetParent !== null;
+        });
+        if (!focusable.length) return;
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       });
     }
   }
@@ -716,6 +861,9 @@
     formatSize,
     computeChunkPlan,
     newUploadSessionId,
+    stableUploadIdempotencyKey,
+    clearStableUploadIdempotencyKey,
+    uploadStateMessage,
     parseUploadFolderId,
     subscribeUploadProgress,
     fetchWithRetry,

@@ -21,41 +21,42 @@
   <link rel="canonical" href="" data-td-canonical data-td-path="/telegram.html" />
   <script src="/assets/page-meta.js"></script>
   <link rel="stylesheet" href="/assets/admin.css" />
-  <style>
-    .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
-    .tabs button { width: auto; flex: 1; margin: 0; background: #243044; }
-    .tabs button.active { background: var(--accent); }
-    #qr-box { word-break: break-all; font-size: 0.85rem; background: #0f1419; padding: 12px; border-radius: 8px; }
-    .auth-panel { max-width: 520px; }
-  </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar">
-      <strong>Telegram Drive</strong>
-      <nav style="margin-top:20px">
+      <a class="brand-lockup" href="/dashboard.html" aria-label="Telegram Drive 控制台首页">
+        <span>Telegram Drive</span>
+      </a>
+      <nav class="sidebar-nav sidebar-nav-spaced" aria-label="主导航">
         <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
         <a href="/files.html" data-nav="files">文件列表</a>
         <a href="/shares.html" data-nav="shares">分享管理</a>
         <a href="/settings.html" data-nav="settings">服务设置</a>
         <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
         <a href="/docs.html" data-nav="docs">API 文档</a>
-        <a href="/telegram.html" data-nav="telegram" class="active">Telegram 登录</a>
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
       </nav>
     </aside>
-    <section class="content auth-panel">
-      <h2>绑定 Telegram 账号</h2>
-      <p class="muted">User 模式需绑定 Telegram 用户；Bot 模式无需此步骤。</p>
+    <main id="main-content" class="content auth-panel" tabindex="-1">
+      <header class="page-header page-header--compact">
+        <div class="page-header-copy">
+          <p class="eyebrow">User transport</p>
+          <h2>绑定 Telegram 账号</h2>
+          <p class="page-subtitle">User 模式需要绑定 Telegram 用户；Bot 模式无需此步骤。</p>
+        </div>
+      </header>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
       <div id="admin-alert" class="notice notice-err hidden" role="alert"></div>
 
-      <div class="tabs">
-        <button type="button" id="tab-phone" class="active">手机验证码</button>
-        <button type="button" id="tab-qr">二维码</button>
+      <div class="tabs tab-list" role="tablist" aria-label="Telegram 登录方式">
+        <button type="button" id="tab-phone" class="active" role="tab" aria-selected="true" aria-controls="panel-phone">手机验证码</button>
+        <button type="button" id="tab-qr" role="tab" aria-selected="false" aria-controls="panel-qr" tabindex="-1">二维码</button>
       </div>
-      <section id="panel-phone">
+      <section id="panel-phone" role="tabpanel" aria-labelledby="tab-phone">
         <form id="phone-form">
           <fieldset id="phone-fieldset">
           <label for="dial-code">国家/地区</label>
@@ -86,7 +87,7 @@
             <input id="local-phone" name="local" type="tel" inputmode="tel" autocomplete="tel-national"
               placeholder="13800138000" required aria-describedby="phone-hint" />
           </div>
-          <p id="phone-hint" class="muted" style="margin-top:-8px">示例：选「中国 +86」后填 <strong>13800138000</strong></p>
+          <p id="phone-hint" class="muted hint-tight">示例：选「中国 +86」后填 <strong>13800138000</strong></p>
           <button type="submit" id="btn-send-code">发送验证码</button>
           </fieldset>
         </form>
@@ -102,14 +103,14 @@
           <button type="submit">提交密码</button>
         </form>
       </section>
-      <section id="panel-qr" class="hidden">
+      <section id="panel-qr" class="hidden" role="tabpanel" aria-labelledby="tab-qr" hidden>
         <button type="button" id="qr-start">生成登录二维码</button>
         <p id="qr-box" class="muted hidden"></p>
         <p class="muted">用 Telegram App 扫描二维码，然后自动轮询状态。</p>
         <button type="button" id="qr-poll" class="hidden">检查是否已登录</button>
       </section>
       <p id="msg" class="muted" role="status"></p>
-    </section>
+    </main>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
   <script src="/assets/api-client.js"></script>

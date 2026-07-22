@@ -31,15 +31,17 @@
 
 <body>
 
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
   <div class="layout">
 
     <aside class="sidebar">
 
-      <strong>Telegram Drive</strong>
+      <strong class="brand-lockup">Telegram Drive</strong>
 
-      <nav style="margin-top:20px">
+      <nav class="sidebar-nav" aria-label="主导航">
 
-        <a href="/dashboard.html" class="active" data-nav="dashboard">概览 & 上传</a>
+        <a href="/dashboard.html" class="active" data-nav="dashboard" aria-current="page">概览 & 上传</a>
 
         <a href="/files.html" data-nav="files">文件列表</a>
 
@@ -53,17 +55,23 @@
 
         <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
 
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
 
       </nav>
 
-      <p class="muted" style="margin-top:16px;font-size:0.8rem">Web 控制台含上传、文件列表、分享与传输模式；深度管理请用桌面端。</p>
+      <p class="sidebar-note">高级配置与 API 说明可在设置和文档中完成。</p>
 
     </aside>
 
-    <section class="content">
+    <main id="main-content" class="content" tabindex="-1">
 
-      <h2>服务状态</h2>
+      <header class="page-header">
+        <div class="page-header-copy">
+          <p class="eyebrow">Storage control plane</p>
+          <h2>存储概览</h2>
+          <p class="page-subtitle">确认 Telegram 中继状态，然后把文件安全送入当前存储目标。</p>
+        </div>
+      </header>
       <div id="onboarding" class="onboarding" hidden aria-live="polite">
         <strong>首次使用（Bot 模式 3 步）</strong>
         <ol>
@@ -84,39 +92,45 @@
       </div>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-      <p><span id="tg-dot" class="status-dot bad"></span><span id="tg-status">检测中…</span></p>
+      <div class="status-rail" aria-live="polite">
+        <span id="tg-dot" class="status-dot bad" aria-hidden="true"></span>
+        <strong id="tg-status">检测中…</strong>
+        <span class="muted" id="api-health"></span>
+      </div>
+      <div id="service-banner" class="service-banner" hidden role="alert"></div>
 
-      <p class="muted" id="api-health"></p>
-      <div id="service-banner" hidden role="alert" style="margin:12px 0;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
 
 
+      <div class="page-header upload-heading">
+        <div class="page-header-copy">
+          <p class="eyebrow">New transfer</p>
+          <h2>上传文件</h2>
+          <p class="page-subtitle">小文件直接上传，大文件自动分片、合并并持续反馈进度。</p>
+        </div>
+      </div>
 
-      <h2 style="margin-top:32px">上传文件</h2>
-
-      <p class="muted">与 tg-disk 相同：小文件走 <code>/upload</code>，大文件自动 <code>/upload_chunk</code> + <code>/merge_chunks</code></p>
-
-      <div class="toolbar" style="margin-bottom:12px">
-        <label for="upload-folder" class="muted">目标文件夹</label>
-        <select id="upload-folder" class="toolbar-input" style="max-width:320px;margin-left:8px">
+      <div class="toolbar upload-toolbar">
+        <label for="upload-folder" class="toolbar-label">目标文件夹</label>
+        <select id="upload-folder" class="toolbar-input toolbar-wide">
           <option value="">Saved Messages（默认）</option>
         </select>
       </div>
 
-      <div class="upload-panel">
+      <div class="upload-panel upload-workspace">
 
-        <div class="drop-zone" id="drop">
+        <button type="button" class="drop-zone" id="drop" aria-controls="file-input">
 
           <div class="drop-title">拖拽文件到此处，或点击选择</div>
 
           <div class="drop-hint">支持任意格式，自动分片；配置来自 <code>GET /config</code></div>
 
-        </div>
+        </button>
 
         <input type="file" id="file-input" multiple hidden />
 
 
 
-        <div class="stats" id="stats" style="display:none">
+        <div class="stats" id="stats" hidden aria-live="polite">
 
           <div class="stat-item"><span class="stat-value" id="file-count">0</span><span class="stat-label">待上传</span></div>
 
@@ -136,21 +150,23 @@
 
 
 
-      <h3 style="margin-top:28px">curl 示例</h3>
+      <section class="technical-panel" aria-labelledby="curl-title">
+        <h3 id="curl-title">命令行上传</h3>
+        <p class="muted">需要自动化时，可使用同一兼容上传端点。</p>
+        <pre class="code" id="curl-upload"></pre>
+      </section>
 
-      <pre class="code" id="curl-upload"></pre>
-
-    </section>
+    </main>
 
   </div>
 
 
 
-  <div id="result-modal" class="modal">
+  <div id="result-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="result-modal-title" aria-hidden="true" hidden>
 
     <div class="modal-content">
 
-      <h3 class="modal-title">上传成功</h3>
+      <h3 class="modal-title" id="result-modal-title">上传结果</h3>
 
       <p class="muted">下载链接（与 tg-disk 弹窗字段一致）</p>
 
@@ -165,12 +181,9 @@
 
 
   <script src="/assets/api-client.js"></script>
-
-  <script src="/assets/page-readiness.js"></script>
-
-  <script src="/assets/share-domain.js"></script>
-
   <script src="/assets/web-pure.js"></script>
+  <script src="/assets/page-readiness.js"></script>
+  <script src="/assets/share-domain.js"></script>
   <script src="/assets/upload-folder.js"></script>
   <script src="/assets/upload-core.js"></script>
 
@@ -184,24 +197,21 @@
       await TdPageReadiness.refreshUploadReadiness({
         bannerPrefix: '上传暂不可用：',
         folderSelectSelector: '#upload-folder',
-        onStatus: function (st) {
+        onStatus: function (st, hv) {
+          var uploadReady = TdWebPure.isWebTransportReady(hv, st);
           var botDismissed = !!localStorage.getItem('td_onboarding_done');
           var userDismissed = !!localStorage.getItem('td_user_onboarding_done');
           var botEl = document.getElementById('onboarding');
           var userEl = document.getElementById('onboarding-user');
           if (botEl) {
-            botEl.hidden = !TdWebPure.shouldShowBotOnboarding(
-              st.transport_mode,
-              st.connected,
-              botDismissed,
-            );
+            botEl.hidden =
+              uploadReady ||
+              !TdWebPure.shouldShowBotOnboarding(st.transport_mode, st.connected, botDismissed);
           }
           if (userEl) {
-            userEl.hidden = !TdWebPure.shouldShowUserOnboarding(
-              st.transport_mode,
-              st.connected,
-              userDismissed,
-            );
+            userEl.hidden =
+              uploadReady ||
+              !TdWebPure.shouldShowUserOnboarding(st.transport_mode, st.connected, userDismissed);
           }
         },
       });
@@ -281,4 +291,3 @@
 </body>
 
 </html>
-

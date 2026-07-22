@@ -23,10 +23,13 @@
   <link rel="stylesheet" href="/assets/admin.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar">
-      <strong>Telegram Drive</strong>
-      <nav style="margin-top:20px">
+      <a class="brand-lockup" href="/dashboard.html" aria-label="Telegram Drive 控制台首页">
+        <span>Telegram Drive</span>
+      </a>
+      <nav class="sidebar-nav sidebar-nav-spaced" aria-label="主导航">
         <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
         <a href="/files.html" data-nav="files">文件列表</a>
         <a href="/shares.html" data-nav="shares">分享管理</a>
@@ -34,11 +37,17 @@
         <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
         <a href="/docs.html" data-nav="docs">API 文档</a>
         <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
       </nav>
     </aside>
-    <section class="content">
-      <h2>服务设置</h2>
+    <main id="main-content" class="content" tabindex="-1">
+      <header class="page-header page-header--compact">
+        <div class="page-header-copy">
+          <p class="eyebrow">Control plane</p>
+          <h2>服务设置</h2>
+          <p class="page-subtitle">管理传输模式、网络出口、分享域名与运行诊断。</p>
+        </div>
+      </header>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
       <div class="settings-block">
@@ -56,13 +65,13 @@
       <div class="settings-block">
         <h3>文件索引（User 模式）</h3>
         <p class="muted">切换传输模式或 Telegram 会话变更后，可在此手动重建本地文件索引。刷新/搜索时的后台重建不会弹 toast。</p>
-        <button type="button" id="rebuild-index-btn" class="btn-secondary btn-sm" style="width:auto">重建文件索引</button>
+        <button type="button" id="rebuild-index-btn" class="btn-secondary btn-sm button--auto">重建文件索引</button>
       </div>
 
       <div class="settings-block">
         <h3>监控</h3>
         <p class="muted" id="metrics-hint">检测 /metrics …</p>
-        <a id="metrics-link" href="/metrics" target="_blank" rel="noopener" class="btn-secondary btn-sm" style="display:none;width:auto">打开 Prometheus Metrics</a>
+        <a id="metrics-link" href="/metrics" target="_blank" rel="noopener" class="btn-secondary btn-sm metric-link" hidden>打开 Prometheus Metrics</a>
       </div>
 
       <div class="settings-block">
@@ -74,7 +83,7 @@
         <p class="muted">当前生效基址（API 请求 Host）：<code id="effective-base-url">—</code></p>
         <p class="muted">分享链接基址（/d/* 实际生成）：<code id="effective-share-base-url">—</code></p>
         <p class="muted">流媒体端口参考（桌面 REST）：<code id="effective-stream-base-url">—</code></p>
-        <button type="button" id="save-share-domain" class="btn-secondary btn-sm" style="width:auto;margin-top:8px">保存域名</button>
+        <button type="button" id="save-share-domain" class="btn-secondary btn-sm button--auto button--top-gap">保存域名</button>
       </div>
 
       <div class="settings-block">
@@ -94,15 +103,15 @@
         <input type="text" id="proxy-username" autocomplete="off" />
         <label for="proxy-password">密码（可选，留空不修改）</label>
         <input type="password" id="proxy-password" autocomplete="new-password" placeholder="已设置则显示为已配置" />
-        <label style="display:block;margin-top:8px"><input type="checkbox" id="vpn-enabled" /> 启用 VPN Optimizer</label>
-        <button type="button" id="save-network" class="btn-secondary btn-sm" style="width:auto;margin-top:12px">保存网络设置</button>
+        <label class="field-inline"><input type="checkbox" id="vpn-enabled" /> 启用 VPN Optimizer</label>
+        <button type="button" id="save-network" class="btn-secondary btn-sm button--auto button--wide-top-gap">保存网络设置</button>
       </div>
 
       <div class="settings-block">
         <h3>API 鉴权说明</h3>
         <p class="muted">Web 控制台使用登录密码作为 <code>X-Access-Pwd</code> 调用 <code>/api/v1/*</code>。外部集成请使用 <code>X-API-Key</code>（见 OpenAPI / docs）。</p>
       </div>
-    </section>
+    </main>
   </div>
   <script src="/assets/api-client.js"></script>
   <script src="/assets/share-domain.js"></script>

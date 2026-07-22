@@ -9,14 +9,12 @@ target for this line.
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)]()
+[![Release surface](https://img.shields.io/badge/release%20surface-Web%20Console%20%2B%20Headless%20API-blue)]()
 [![Downloads](https://img.shields.io/github/downloads/lza6/Telegram-Unlimited-storage/total)](https://github.com/lza6/Telegram-Unlimited-storage/releases)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/lza6/Telegram-Unlimited-storage/pkgs/container/telegram-unlimited-storage)
-[![Coverage](https://img.shields.io/badge/coverage-80%25-green)]()
+[![Release](https://img.shields.io/badge/release-v4.0.0--beta-blue)](https://github.com/lza6/Telegram-Unlimited-storage/releases)
 
 </div>
-
-![Auth Screen](screenshots/AuthScreen.png)
 
 ## v4.0.0-beta Highlights
 
@@ -46,7 +44,7 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 
 *   **Unlimited Cloud Storage**: Utilizing Telegram's generous cloud infrastructure.
 *   **High Performance Grid**: Virtual scrolling handles folders with thousands of files instantly.
-*   **Auto-Updates**: Seamless updates for Windows, macOS, and Linux.
+*   **Web Console + Headless API**: The supported release surface is the browser console in `deploy/web` and the Rust `telegram-drive-server`.
 *   **Media Streaming**: Stream video and audio files directly without downloading.
 *   **PDF Viewer:** Built-in PDF support with infinite scrolling for seamless document reading.
 *   **Drag & Drop Upload**: Desktop — drag files from Finder/Explorer onto the window (Tauri `onDragDropEvent`); in-dashboard HTML5 drag for file moves stays enabled via `dragDropEnabled: false`. Browser dev — use Upload button.
@@ -57,7 +55,7 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 *   **Proxy Support**: SOCKS5 proxy (grammers-backed); applied on save with automatic reconnect.
 *   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, adaptive keep-alives, and auto-detect VPN to enable optimizer when VPN interfaces are present.
 *   **Privacy Focused**: API keys and data stay local. No third-party servers.
-*   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, and Linux.
+*   **Legacy Desktop Compatibility**: The Tauri shell remains in source for compatibility, but this release does not ship a desktop installer or promise desktop auto-updates.
 
 ## Server API (7×24 headless)
 
@@ -85,38 +83,41 @@ Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头（OpenAPI 中 a
 
 **桌面可选 REST API**（Settings → API）：启用后自动生成 **Local Access Password**（`X-Access-Pwd`），亦可生成 API Key。老版本已开启 API 的用户在下次启动时会自动补全本地密码。侧栏显示三种连接态（会话活跃 / 会话过期 / 无网络）。开发环境下 REST 端口（默认 **8550**）可同时提供 `deploy/web` 静态页（含 `/telegram.html`），Settings 切 User 时优先在浏览器打开该页完成绑定。详见 [docs/DESKTOP-API.md](docs/DESKTOP-API.md)。
 
-##  Screenshots
+##  Interface Privacy
 
-| Dashboard | File Preview |
-|-----------|--------------|
-| ![Dashboard](screenshots/DashboardWithFiles.png) | ![Preview](screenshots/ImagePreview.png) |
-
-| Grid View | Authentication |
-|-----------|----------------|
-| ![Dark Mode](screenshots/DarkModeGrid.png) | ![Login](screenshots/LoginScreen.png) |
-
-| Audio Playback | Video Playback |
-|----------------|----------------|
-| ![Audio Playback](screenshots/AudioPlayback.png) | ![Video Playback](screenshots/VideoPlayback.png) |
-
-| Auth Code Screen | Upload Example |
-|------------------|-------------|
-| ![Auth Code Screen](screenshots/AuthCodeScreen.png) | ![Upload Example](screenshots/UploadExample.png) |
-
-| Folder Creation | Folder List View |
-|-----------------|------------------|
-| ![Folder Creation](screenshots/FolderCreation.png) | ![Folder List View](screenshots/FolderListView.png) |
+This public release tree intentionally does not include account, file-name, or
+share-link screenshots. Run the Web Console locally using
+[README-DOCKER.md](README-DOCKER.md) to inspect the supported interface with
+your own non-production test account.
 
 ##  Tech Stack
 
 *   **Frontend**: React, TypeScript, TailwindCSS, Framer Motion
-*   **Backend**: Rust (Tauri), Grammers (Telegram Client)
+*   **Backend**: Rust (Actix-web Headless API, optional Tauri shell), Grammers (Telegram Client)
 *   **Build Tool**: Vite
 
 
 ##  Getting Started
 
-### Prerequisites
+### Supported Web / Headless Deployment
+
+Follow [README-DOCKER.md](README-DOCKER.md) for the supported Docker deployment
+path, required environment variables, and pre-production smoke checks. Configure
+Telegram credentials only in a local environment file; never commit them.
+
+For source validation of the supported release surface, use Node.js 20 and Rust
+stable, then run:
+
+```bash
+cd app
+npm ci
+npm run test
+
+cd ../app/src-tauri
+cargo test --no-default-features --features headless-server --lib --tests
+```
+
+### Optional Legacy Desktop Source Build
 
 *   **Node.js (v18+)**: [Download here](https://nodejs.org/)
 *   **Rust (latest stable)**: Required to compile the Tauri backend. Install via [rustup](https://rustup.rs/):
@@ -137,9 +138,10 @@ Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头（OpenAPI 中 a
 > **First-run Compile Time:** The initial build (`npm run tauri dev` or `npm run tauri build`) will download and compile over 300 Rust crates. This process can take **5 to 15 minutes** depending on your hardware. Subsequent builds will be much faster.
 
 > [!TIP]
-> **NPM Vulnerabilities:** You may see vulnerability warnings during `npm install`. These are usually related to build tools and dev dependencies. You can optionally run `npm audit fix`, but it is not strictly required to run the app.
+> **NPM Vulnerabilities:** Do not apply `npm audit fix` automatically. Review the
+> affected dependency and lockfile change in a separate, tested update.
 
-### Installation
+### Optional Legacy Desktop Installation
 
 1.  **Clone the repository**
     ```bash

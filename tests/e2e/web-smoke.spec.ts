@@ -267,6 +267,62 @@ test.describe('Telegram Drive web smoke', () => {
     expect(text).toContain('无密码、永久有效');
   });
 
+  test('files-core share errors use TdSharePure formatter', async ({ request }) => {
+    const res = await request.get('/assets/files-core.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('TdSharePure.formatShareCreateErrorMessage');
+  });
+
+  test('share-pure exposes bot_file_map error helper', async ({ request }) => {
+    const res = await request.get('/assets/share-pure.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('formatShareCreateErrorMessage');
+    expect(text).toContain('bot_file_map');
+  });
+
+  test('files.html loads share-pure before files-core', async ({ request }) => {
+    const html = await request.get('/files.html');
+    const text = await html.text();
+    expect(text.indexOf('share-pure.js')).toBeLessThan(text.indexOf('files-core.js'));
+  });
+
+  test('files-core delete notifies share list invalidation', async ({ request }) => {
+    const res = await request.get('/assets/files-core.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('formatDeleteSuccessToast');
+    expect(text).toContain('bumpSharesInvalidateStorage');
+    expect(text).toContain('formatBulkDeleteConfirmMessage');
+  });
+
+  test('shares-core listens for cross-tab invalidation', async ({ request }) => {
+    const res = await request.get('/assets/shares-core.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('td-shares-invalidate');
+    expect(text).toContain("addEventListener('storage'");
+    expect(text).toContain('visibilitychange');
+  });
+
+  test('files-core delete aggregates shares_revoked from bulk API', async ({ request }) => {
+    const res = await request.get('/assets/files-core.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('sharesRevoked');
+    expect(text).toContain('res.shares_revoked');
+  });
+
+  test('upload-core aborts in-flight chunks when SSE reports failed', async ({ request }) => {
+    const res = await request.get('/assets/upload-core.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('chunkAbort');
+    expect(text).toContain('chunkAbort.abort()');
+    expect(text).toContain('signal: chunkAbort.signal');
+  });
+
   test('upload-core surfaces partial failure as error toast', async ({ request }) => {
     const res = await request.get('/assets/upload-core.js');
     expect(res.ok()).toBeTruthy();
@@ -321,6 +377,150 @@ test.describe('Telegram Drive web smoke', () => {
     const text = await res.text();
     expect(text).toContain('upload_progress_token');
     expect(text).toContain("encodeURIComponent(data.token)");
+    expect(text).toContain('PROGRESS_TOKEN_TIMEOUT_MS');
+    expect(text).toContain('controller.abort()');
+    expect(text).not.toContain("return '&pwd='");
+    expect(text).not.toContain("authQ.indexOf('pwd=')");
+  });
+
+  test('upload progress token failure does not open a query-auth channel', async ({ page }) => {
+    const tokenRequests: string[] = [];
+    await page.addInitScript(() => {
+      sessionStorage.setItem('td_access_pwd', 'correct-admin-password');
+      (window as any).__progressChannelCalls = { eventSource: 0, webSocket: 0 };
+      (window as any).EventSource = function () {
+        (window as any).__progressChannelCalls.eventSource += 1;
+      };
+      (window as any).WebSocket = function () {
+        (window as any).__progressChannelCalls.webSocket += 1;
+      };
+    });
+    await page.route('**/upload_progress_token', async (route) => {
+      tokenRequests.push(route.request().url());
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    });
+    await page.goto('/login.html');
+    await page.addScriptTag({ url: '/assets/upload-core.js' });
+
+    const result = await page.evaluate(async () => {
+      const statuses: Array<{ status: string; detail: string }> = [];
+      const source = await (window as any).TdUpload.subscribeUploadProgress(
+        'sess-token-failure',
+        () => {},
+        'correct-admin-password',
+        (status: { status: string; detail: string }) => statuses.push(status),
+      );
+      return {
+        sourceIsNull: source === null,
+        statuses,
+        channelCalls: (window as any).__progressChannelCalls,
+      };
+    });
+
+    expect(result.sourceIsNull).toBeTruthy();
+    expect(result.channelCalls).toEqual({ eventSource: 0, webSocket: 0 });
+    expect(result.statuses).toEqual([
+      {
+        status: 'error',
+        detail: '无法获取上传进度令牌；上传仍会继续，请查看文件行状态。',
+      },
+    ]);
+    expect(tokenRequests).toHaveLength(1);
+    expect(tokenRequests[0]).not.toContain('pwd=');
+    expect(tokenRequests[0]).not.toContain('correct-admin-password');
+  });
+
+  test('chunk upload continues when progress token issuance fails', async ({ page }) => {
+    const tokenRequests: string[] = [];
+    const chunkRequests: string[] = [];
+    let nextChunkId = 100;
+    let mergeCalled = false;
+
+    await page.addInitScript(() => {
+      sessionStorage.setItem('td_access_pwd', 'correct-admin-password');
+    });
+    await page.route('**/api/v1/auth/status', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          connected: true,
+          credentials_ok: true,
+          transport_mode: 'bot',
+          bot_configured: true,
+          user_configured: false,
+        }),
+      });
+    });
+    await page.route('**/api/v1/health', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'ok',
+          ready: true,
+          telegram_connected: true,
+          version: 'test',
+          transport_mode: 'bot',
+          presigned_download_enabled: true,
+          multi_tenant_enabled: false,
+        }),
+      });
+    });
+    await page.route('**/api/v1/folders', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    });
+    await page.route('**/config', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          chunk_size_mb: 1,
+          chunk_concurrent: 2,
+          files_concurrent: 1,
+        }),
+      });
+    });
+    await page.route('**/upload_progress_token', async (route) => {
+      tokenRequests.push(route.request().url());
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    });
+    await page.route('**/upload_chunk', async (route) => {
+      chunkRequests.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ file_id: nextChunkId++ }),
+      });
+    });
+    await page.route('**/merge_chunks', async (route) => {
+      mergeCalled = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          filename: 'large.bin',
+          download_url: 'http://localhost:1334/d/test-token',
+        }),
+      });
+    });
+
+    await page.goto('/upload.html');
+    await expect(page.locator('#upload-btn')).toBeEnabled();
+    await page.locator('#file-input').setInputFiles({
+      name: 'large.bin',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(2 * 1024 * 1024 + 1, 7),
+    });
+    await page.locator('#upload-btn').click();
+
+    await expect(page.locator('#status-0')).toHaveText('完成');
+    expect(tokenRequests).toHaveLength(1);
+    expect(tokenRequests[0]).not.toContain('pwd=');
+    expect(tokenRequests[0]).not.toContain('correct-admin-password');
+    expect(chunkRequests.length).toBeGreaterThan(0);
+    expect(chunkRequests.every((url) => !url.includes('pwd='))).toBeTruthy();
+    expect(mergeCalled).toBeTruthy();
   });
 
   test('dashboard upload button disabled when service not ready', async ({ page }) => {
@@ -424,5 +624,35 @@ test.describe('Telegram Drive web smoke', () => {
     expect(res.ok()).toBeTruthy();
     const text = await res.text();
     expect(text).toContain("TdApi.showToast('无法获取上传进度，请查看文件行状态', 'err')");
+  });
+  test('upload-core reuses stable idempotency key and surfaces saga states', async ({ request }) => {
+    const res = await request.get('/assets/upload-core.js');
+    expect(res.ok()).toBeTruthy();
+    const text = await res.text();
+    expect(text).toContain('stableUploadIdempotencyKey');
+    expect(text).toContain("'Idempotency-Key': idempotencyKey");
+    expect(text).toContain('UPLOAD_IN_PROGRESS');
+    expect(text).toContain('UPLOAD_RECONCILIATION_REQUIRED');
+    expect(text).toContain('UPLOAD_COMPENSATION_PENDING');
+    expect(text).toContain('MANUAL_REVIEW');
+    expect(text).toContain('SCHEDULER');
+  });
+
+  test('upload direct-link dialog is accessible and reports missing links', async ({ request }) => {
+    const html = await (await request.get('/upload.html')).text();
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('id="result-links" role="status" aria-live="polite"');
+    const script = await (await request.get('/assets/upload-core.js')).text();
+    expect(script).toContain('服务未返回可用直链');
+    expect(script).toContain("firstCopy.focus()");
+    expect(script).toContain("uploadBtn.focus()");
+  });
+
+  test('files page exposes assertive service and polite action status regions', async ({ request }) => {
+    const html = await (await request.get('/files.html')).text();
+    expect(html).toContain('role="alert" aria-live="assertive"');
+    expect(html).toContain('id="file-action-status"');
+    expect(html).toContain('aria-live="polite"');
   });
 });

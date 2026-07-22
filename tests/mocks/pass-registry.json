@@ -9,7 +9,7 @@
       "files": ["app/src-tauri/src/**/*.rs"],
       "vitest": [],
       "e2e": [],
-      "cargo": ["cargo test --lib (136 passed)"]
+      "cargo": ["cargo test --lib (139 passed)"]
     },
     "rust-integration-tests": {
       "status": "pass",
@@ -57,6 +57,85 @@
       "files": ["deploy/web/assets/files-core.js", "deploy/web/assets/shares-core.js"],
       "vitest": ["app/src/lib/filesPure.test.ts"],
       "e2e": ["web-smoke -g share"]
+    },
+    "web-readiness-r58": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": [
+        "deploy/web/assets/api-client.js",
+        "deploy/web/assets/files-core.js",
+        "deploy/web/assets/shares-core.js",
+        "deploy/web/assets/page-readiness.js",
+        "app/src/lib/webPure.ts"
+      ],
+      "vitest": ["app/src/lib/webPure.test.ts"],
+      "e2e": ["web-smoke.spec.ts", "web-metadata.spec.ts"]
+    },
+    "bot-dual-index-r59": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": [
+        "app/src-tauri/src/file_access.rs",
+        "app/src-tauri/src/db.rs",
+        "app/src-tauri/src/commands/fs.rs",
+        "app/src-tauri/src/api_routes.rs",
+        "app/src-tauri/src/share_api_routes.rs",
+        "app/src-tauri/src/share_routes.rs",
+        "app/src-tauri/src/commands/sharing.rs",
+        "app/src-tauri/src/local_api.rs",
+        "deploy/web/assets/upload-core.js",
+        "docs/DESKTOP-API.md"
+      ],
+      "vitest": [],
+      "e2e": ["web-smoke -g aborts in-flight"],
+      "cargo": ["cargo test --features headless-server --lib file_access::"]
+    },
+    "share-delete-cascade-r60": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": [
+        "app/src-tauri/src/sharing_core.rs",
+        "app/src-tauri/src/file_access.rs",
+        "app/src/lib/sharePure.ts",
+        "deploy/web/assets/share-pure.js",
+        "deploy/web/files.html",
+        "deploy/web/shares.html",
+        "app/src/components/dashboard/ShareDialog.tsx"
+      ],
+      "vitest": ["app/src/lib/sharePure.test.ts", "app/src/components/dashboard/ShareDialog.test.tsx"],
+      "e2e": ["web-smoke -g share-pure", "web-smoke -g TdSharePure"],
+      "cargo": ["cargo test --features headless-server --lib sharing_core:: revoke_shares"]
+    },
+    "share-list-invalidate-r61": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": [
+        "app/src/lib/webPure.ts",
+        "deploy/web/assets/web-pure.js",
+        "deploy/web/assets/files-core.js",
+        "deploy/web/assets/shares-core.js",
+        "app/src/components/Dashboard.tsx",
+        "app/src/components/dashboard/SettingsModal.tsx",
+        "app/src/hooks/useFileOperations.ts"
+      ],
+      "vitest": ["app/src/lib/webPure.test.ts", "app/src/hooks/useFileOperations.test.tsx"],
+      "e2e": ["web-smoke -g delete notifies share", "web-smoke -g cross-tab invalidation"]
+    },
+    "shares-revoked-count-r62": {
+      "status": "pass",
+      "verifiedAt": "2026-06-12",
+      "files": [
+        "app/src-tauri/src/file_access.rs",
+        "app/src-tauri/src/api_routes.rs",
+        "app/src-tauri/src/commands/fs.rs",
+        "app/src/lib/webPure.ts",
+        "deploy/web/assets/files-core.js",
+        "app/src/hooks/useFileOperations.ts",
+        "docs/openapi.json"
+      ],
+      "vitest": ["app/src/lib/webPure.test.ts", "app/src/hooks/useFileOperations.test.tsx"],
+      "e2e": ["web-smoke -g shares_revoked"],
+      "cargo": ["bulk_response_omits_zero_shares_revoked", "purge_file_index_entry_removes_both_tables"]
     },
     "web-metadata-r57": {
       "status": "pass",

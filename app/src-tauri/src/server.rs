@@ -270,7 +270,7 @@ async fn stream_media(
                                 };
 
                                 log::debug!(
-                                    "Stream request: Starting download for msg {} (mime: {}, size: {}, range: {}-{}, content_length: {})", 
+                                    "Stream request: Starting download for msg {} (mime: {}, size: {}, range: {}-{}, content_length: {})",
                                     message_id, mime, size, start_byte, end_byte, content_length
                                 );
 

@@ -177,4 +177,3 @@ export function EmptyState({ onUpload, uploadEnabled = true, blockedTitle, varia
     );
 
 }
-

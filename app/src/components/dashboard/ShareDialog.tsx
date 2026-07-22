@@ -23,7 +23,7 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
     const [requirePassword, setRequirePassword] = useState(false);
     const [expiryType, setExpiryType] = useState<'never' | '1h' | '1d' | '7d' | 'custom'>('1d');
     const [customHours, setCustomHours] = useState('24');
-    
+
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [shareInfo, setShareInfo] = useState<ShareInfo | null>(null);
@@ -146,7 +146,7 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
                                         />
                                     </button>
                                 </div>
-                                
+
                                 <AnimatePresence>
                                     {requirePassword && (
                                         <motion.div
@@ -182,8 +182,8 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
                                             type="button"
                                             onClick={() => setExpiryType(type)}
                                             className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                                expiryType === type 
-                                                    ? 'bg-telegram-primary border-telegram-primary text-white' 
+                                                expiryType === type
+                                                    ? 'bg-telegram-primary border-telegram-primary text-white'
                                                     : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
                                             }`}
                                         >
@@ -194,8 +194,8 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
                                         type="button"
                                         onClick={() => setExpiryType('never')}
                                         className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                            expiryType === 'never' 
-                                                ? 'bg-telegram-primary border-telegram-primary text-white' 
+                                            expiryType === 'never'
+                                                ? 'bg-telegram-primary border-telegram-primary text-white'
                                                 : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
                                         }`}
                                     >
@@ -205,8 +205,8 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
                                         type="button"
                                         onClick={() => setExpiryType('custom')}
                                         className={`col-span-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                            expiryType === 'custom' 
-                                                ? 'bg-telegram-primary border-telegram-primary text-white' 
+                                            expiryType === 'custom'
+                                                ? 'bg-telegram-primary border-telegram-primary text-white'
                                                 : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
                                         }`}
                                     >
@@ -266,8 +266,8 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
                                     <button
                                         onClick={handleCopy}
                                         className={`px-3 py-2 rounded-lg border flex items-center justify-center transition-all ${
-                                            copied 
-                                                ? 'bg-emerald-500 border-emerald-500 text-white' 
+                                            copied
+                                                ? 'bg-emerald-500 border-emerald-500 text-white'
                                                 : 'bg-telegram-hover border-telegram-border text-telegram-text hover:bg-white/10'
                                         }`}
                                     >

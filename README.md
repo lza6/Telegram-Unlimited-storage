@@ -123,7 +123,7 @@ Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头（OpenAPI 中 a
     *   **macOS/Linux:** `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
     *   **Windows:** Download and run `rustup-init.exe` from [rustup.rs](https://rustup.rs/)
     *   *Verify installation:* run `rustc --version` and `cargo --version` in your terminal.
-*   **OS-Specific Build Tools for Tauri**: 
+*   **OS-Specific Build Tools for Tauri**:
     *   **macOS:** Xcode Command Line Tools (`xcode-select --install`).
     *   **Linux (Ubuntu/Debian):** `sudo apt update && sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
     *   **Windows (CRITICAL):** You **must** install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). During installation, select the **"Desktop development with C++"** workload. Without this, you will get a `linker 'link.exe' not found` error.
@@ -133,7 +133,7 @@ Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头（OpenAPI 中 a
     1. Log into [my.telegram.org](https://my.telegram.org).
     2. Go to "API development tools" and create a new application to get your `api_id` and `api_hash`.
 
-> [!NOTE]  
+> [!NOTE]
 > **First-run Compile Time:** The initial build (`npm run tauri dev` or `npm run tauri build`) will download and compile over 300 Rust crates. This process can take **5 to 15 minutes** depending on your hardware. Subsequent builds will be much faster.
 
 > [!TIP]

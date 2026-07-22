@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react';
 
 /**
  * DropZoneContext - Minimal context for future extensibility
- * 
+ *
  * With dragDropEnabled: false, we don't need position-based detection.
  * This is kept minimal for potential future use.
  */

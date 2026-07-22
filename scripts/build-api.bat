@@ -69,4 +69,3 @@ if !EXIT_CODE! neq 0 (
 call "%ROOT%\scripts\_log.bat" "[OK] %EXE%"
 
 endlocal & exit /b 0
-

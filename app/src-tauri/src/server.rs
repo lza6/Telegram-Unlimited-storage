@@ -43,6 +43,7 @@ pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64
     }
 }
 
+#[cfg(feature = "desktop")]
 fn mime_from_filename(filename: &str) -> String {
     let ext = crate::local_api::extension_from_filename(filename);
     match ext.as_str() {
@@ -60,7 +61,7 @@ fn mime_from_filename(filename: &str) -> String {
     }
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 async fn stream_via_local_api(
     req: &actix_web::HttpRequest,
     message_id: i32,
@@ -401,7 +402,7 @@ async fn stream_media(
             }
         }
     } else {
-        #[cfg(not(feature = "headless-server"))]
+        #[cfg(feature = "desktop")]
         {
             if let Some(resp) =
                 stream_via_local_api(&req, message_id, folder_id, &local_bridge, &db_data).await

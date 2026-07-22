@@ -1,7 +1,7 @@
 //! Desktop → local headless REST bridge (Bot / asset-index mode).
 //! No Telegram GramJS client required when `asset_index_authoritative`.
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use tauri::Manager;
 
 pub struct LocalApiBridge {
@@ -10,7 +10,7 @@ pub struct LocalApiBridge {
 }
 
 impl LocalApiBridge {
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     pub fn from_data_dir(data_dir: &std::path::Path) -> Self {
         let settings = crate::commands::api_settings::load_settings_at(data_dir);
         Self {
@@ -19,7 +19,7 @@ impl LocalApiBridge {
         }
     }
 
-    #[cfg(feature = "headless-server")]
+    #[cfg(not(feature = "desktop"))]
     pub fn from_data_dir(_data_dir: &std::path::Path) -> Self {
         Self {
             port: 0,
@@ -52,7 +52,7 @@ pub fn extension_from_filename(name: &str) -> String {
     }
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub async fn desktop_uses_asset_index(
     app: &tauri::AppHandle,
     db_pool: &crate::db::DbConnection,
@@ -76,7 +76,7 @@ pub async fn desktop_uses_asset_index(
     ))
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub async fn desktop_is_bot_mode(
     app: &tauri::AppHandle,
     db_pool: &crate::db::DbConnection,
@@ -98,7 +98,7 @@ pub async fn desktop_is_bot_mode(
     Ok(mode == crate::telegram_transport::TelegramTransportMode::Bot)
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub async fn fetch_file_to_path(
     bridge: &LocalApiBridge,
     message_id: i32,

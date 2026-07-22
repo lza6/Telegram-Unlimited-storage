@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager};
 
 /// r2d2 connection manager for the `sqlite` crate.
@@ -39,6 +40,7 @@ pub fn init_db_at(data_dir: &Path) -> Result<DbConnection, String> {
     init_pool(db_path)
 }
 
+#[cfg(feature = "desktop")]
 pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     init_db_at(&dir)

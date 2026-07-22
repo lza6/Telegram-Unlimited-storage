@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+#[cfg(feature = "desktop")]
 use tauri::Manager;
 use tokio::sync::RwLock;
 
@@ -386,6 +387,7 @@ pub fn backoff_ms(attempt: u32, base_ms: u64, max_ms: u64) -> u64 {
     capped + jitter
 }
 
+#[cfg(feature = "desktop")]
 fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -406,6 +408,7 @@ pub fn load_network_config_at(data_dir: &std::path::Path) -> NetworkConfigSnapsh
     }
 }
 
+#[cfg(feature = "desktop")]
 pub fn load_network_config(app: &tauri::AppHandle) -> NetworkConfigSnapshot {
     let path = match settings_path(app) {
         Ok(p) => p,
@@ -428,6 +431,7 @@ pub fn load_network_config(app: &tauri::AppHandle) -> NetworkConfigSnapshot {
     }
 }
 
+#[cfg(feature = "desktop")]
 pub fn save_network_config(
     app: &tauri::AppHandle,
     config: &NetworkConfigSnapshot,

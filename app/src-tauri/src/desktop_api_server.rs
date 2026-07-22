@@ -1,28 +1,28 @@
 //! Optional desktop REST API (Settings → API) with full route + state wiring.
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use std::sync::Arc;
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use actix_files as fs;
 use actix_web::{web, App, HttpServer};
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::api_routes::{self, ApiState};
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::commands::api_settings::ApiSettingsFile;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::commands::TelegramState;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::db::DbConnection;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::server_config::ServerConfig;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::vpn_optimizer::NetworkConfig;
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub fn start_desktop_api_server(
     api_settings: ApiSettingsFile,
     tg_state: Arc<TelegramState>,

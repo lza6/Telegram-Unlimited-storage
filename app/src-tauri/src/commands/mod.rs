@@ -135,9 +135,13 @@ pub mod api_settings;
 pub mod auth;
 pub mod fs;
 pub mod network;
+#[cfg(feature = "desktop")]
 pub mod preview;
+#[cfg(feature = "desktop")]
 pub mod settings;
+#[cfg(feature = "desktop")]
 pub mod sharing;
+#[cfg(feature = "desktop")]
 pub mod streaming;
 pub mod utils;
 
@@ -145,8 +149,12 @@ pub use api_settings::*;
 pub use auth::*;
 pub use fs::*;
 pub use network::*;
+#[cfg(feature = "desktop")]
 pub use preview::*;
+#[cfg(feature = "desktop")]
 pub use settings::*;
+#[cfg(feature = "desktop")]
 pub use sharing::*;
+#[cfg(feature = "desktop")]
 pub use streaming::*;
 pub use utils::*;

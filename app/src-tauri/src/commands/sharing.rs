@@ -45,7 +45,7 @@ pub async fn cmd_create_share(
             Some(t.to_string())
         }
     });
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_is_bot_mode(&app, &db_pool).await? {
             crate::file_access::assert_bot_downloadable(&db_pool, message_id)?;

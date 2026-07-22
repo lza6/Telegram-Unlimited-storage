@@ -1,21 +1,22 @@
 pub mod models;
 
+#[cfg(feature = "desktop")]
 pub mod bandwidth;
 pub mod commands;
 pub mod vpn_optimizer;
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use crate::db::DbConnection;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use commands::streaming::StreamConfig;
 use commands::TelegramState;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use rand::Rng;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use std::collections::{HashMap, HashSet};
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use std::sync::Arc;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use tokio::sync::Mutex;
 
 pub mod access_lockout;
@@ -55,9 +56,10 @@ pub mod telegram_transport;
 pub mod tenant_auth;
 pub mod upload_gate;
 pub mod webdav_routes;
+#[cfg(feature = "desktop")]
 use bot_pool::BotPool;
 pub mod chunk_index;
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub mod desktop_api_server;
 pub mod download_counter;
 pub mod download_degradation;
@@ -70,7 +72,7 @@ pub mod ui_settings;
 pub mod upload_progress;
 pub mod upload_saga_recovery;
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 use tauri::Manager;
 /// Single source of truth for the Actix streaming server port.
 /// Referenced in lib.rs (server startup) and exposed to the frontend
@@ -78,7 +80,7 @@ use tauri::Manager;
 pub const STREAM_PORT: u16 = 14201;
 
 /// Generate a random 32-character hex token for streaming server auth
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 fn generate_stream_token() -> String {
     let mut rng = rand::thread_rng();
     let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
@@ -87,20 +89,20 @@ fn generate_stream_token() -> String {
 
 /// Holds the Actix-web server stop handle so we can shut it down
 /// from the RunEvent::Exit handler for graceful Ctrl+C termination.
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub struct ActixServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
 /// Tracks whether the API server is currently running (for the frontend status dot)
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub struct ApiServerRunning(pub Arc<std::sync::atomic::AtomicBool>);
 
 /// Holds the API server stop handle separately so we can restart it independently
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub struct ApiServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
 /// Restart (or stop) the API server based on current settings.
 /// Called from Tauri commands when the user changes API settings.
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub fn restart_api_server(app: &tauri::AppHandle) {
     let api_handle_arc = app.state::<ApiServerHandle>().0.clone();
     let old_handle = api_handle_arc.lock().ok().and_then(|mut g| g.take());
@@ -143,7 +145,7 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
     );
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();

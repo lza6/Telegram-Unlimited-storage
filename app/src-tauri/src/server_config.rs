@@ -433,7 +433,7 @@ pub fn resolve_desktop_web_static_dir(
 }
 
 /// Minimal ServerConfig for the desktop optional REST API (127.0.0.1, app data dir).
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub fn for_desktop_api(
     data_dir: PathBuf,
     port: u16,

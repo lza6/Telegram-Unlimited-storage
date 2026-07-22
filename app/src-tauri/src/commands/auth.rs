@@ -1,25 +1,31 @@
+#[cfg(feature = "desktop")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use grammers_client::Client;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::Session;
+#[cfg(feature = "desktop")]
 use grammers_tl_types as tl;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tauri::Manager;
-use tauri::State;
+#[cfg(feature = "desktop")]
+use tauri::{Manager, State};
 use tokio::sync::oneshot;
 use tokio::time::Duration;
 
+#[cfg(feature = "desktop")]
 use crate::commands::utils::map_error;
+#[cfg(feature = "desktop")]
 use crate::models::AuthResult;
 use crate::TelegramState;
+#[cfg(feature = "desktop")]
 use grammers_client::SignInError;
 
 /// Ensures the Telegram client is initialized.
 ///
 /// IMPORTANT: This function properly manages runner lifecycle to prevent stack overflow.
 /// Before spawning a new runner, it signals the old runner to shutdown.
+#[cfg(feature = "desktop")]
 pub async fn ensure_client_initialized(
     app_handle: &tauri::AppHandle,
     state: &State<'_, TelegramState>,
@@ -174,6 +180,7 @@ pub async fn ensure_client_initialized_at(
     Ok(client)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_connect(
     app_handle: tauri::AppHandle,
@@ -186,6 +193,7 @@ pub async fn cmd_connect(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_check_connection(
     app_handle: tauri::AppHandle,
@@ -231,6 +239,7 @@ pub async fn cmd_check_connection(
 }
 
 /// Reconnect Telegram after proxy/VPN network settings change.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_reconnect_telegram(
     app_handle: tauri::AppHandle,
@@ -254,6 +263,7 @@ pub async fn cmd_reconnect_telegram(
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_logout(
     app_handle: tauri::AppHandle,
@@ -299,6 +309,7 @@ pub async fn cmd_logout(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_auth_request_code(
     app_handle: tauri::AppHandle,
@@ -348,6 +359,7 @@ pub async fn cmd_auth_request_code(
     Err(format!("Telegram Error after retry: {}", last_error))
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_auth_sign_in(
     code: String,
@@ -397,6 +409,7 @@ pub async fn cmd_auth_sign_in(
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_auth_check_password(
     password: String,
@@ -431,6 +444,7 @@ pub async fn cmd_auth_check_password(
 
 /// QR Login -- Step 1: Export a login token and return the `tg://login?token=...` URL.
 /// The frontend renders this as a QR code for the user to scan with their phone.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_auth_qr_login(
     app_handle: tauri::AppHandle,
@@ -487,6 +501,7 @@ pub async fn cmd_auth_qr_login(
 /// previous one, causing the scanned QR code to fail with "Invalid code".
 /// Instead, we check is_authorized() which succeeds once the phone app
 /// accepts the token via auth.acceptLoginToken.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_auth_qr_poll(
     app_handle: tauri::AppHandle,

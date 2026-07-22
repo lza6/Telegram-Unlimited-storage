@@ -22,7 +22,7 @@ fn preview_cache_path(
     cache_dir.join(format!("{folder_key}_{message_id}.{ext}"))
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 async fn resolve_preview_extension(db_pool: &DbConnection, message_id: i32) -> String {
     if let Ok(Some(record)) = crate::db::get_file_asset(db_pool, message_id) {
         let ext = crate::local_api::extension_from_filename(&record.file_name);
@@ -39,7 +39,7 @@ async fn resolve_preview_extension(db_pool: &DbConnection, message_id: i32) -> S
     "bin".to_string()
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 async fn preview_via_local_api(
     app_handle: &tauri::AppHandle,
     message_id: i32,
@@ -108,7 +108,7 @@ async fn preview_via_local_api(
     Ok(save_path_str)
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 async fn thumbnail_via_local_api(
     app_handle: &tauri::AppHandle,
     message_id: i32,
@@ -225,7 +225,7 @@ pub async fn cmd_get_preview(
     log::info!("Using preview cache dir: {:?}", cache_dir);
     log::info!("Preview Request: msg_id={}", message_id);
 
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_uses_asset_index(&app_handle, &db_pool).await? {
             return preview_via_local_api(
@@ -408,7 +408,7 @@ pub async fn cmd_get_thumbnail(
         }
     }
 
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_uses_asset_index(&app_handle, &db_pool).await? {
             return thumbnail_via_local_api(

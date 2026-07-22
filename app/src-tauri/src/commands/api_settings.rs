@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "desktop")]
 use std::path::PathBuf;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager};
 
 /// Persisted API settings (written to api_settings.json in the app data dir)
@@ -25,6 +27,7 @@ impl Default for ApiSettingsFile {
 }
 
 /// What the frontend sees (never exposes the hash)
+#[cfg(feature = "desktop")]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiSettingsResponse {
     pub enabled: bool,
@@ -35,6 +38,7 @@ pub struct ApiSettingsResponse {
     pub local_access_pwd: Option<String>,
 }
 
+#[cfg(feature = "desktop")]
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -59,6 +63,7 @@ pub fn save_settings_at(
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "desktop")]
 pub fn load_settings(app: &AppHandle) -> ApiSettingsFile {
     let path = match settings_path(app) {
         Ok(p) => p,
@@ -70,7 +75,7 @@ pub fn load_settings(app: &AppHandle) -> ApiSettingsFile {
     }
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 fn save_settings(app: &AppHandle, settings: &ApiSettingsFile) -> Result<(), String> {
     let path = settings_path(app)?;
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
@@ -149,7 +154,7 @@ pub fn load_local_access_pwd(data_dir: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 fn wait_for_api_server(app: &AppHandle, want_running: bool) {
     if !want_running {
         return;
@@ -164,7 +169,7 @@ fn wait_for_api_server(app: &AppHandle, want_running: bool) {
     }
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 pub fn prepare_settings_for_runtime(app: &AppHandle) -> ApiSettingsFile {
     let mut settings = load_settings(app);
     if settings.enabled {
@@ -308,7 +313,7 @@ mod tests {
     }
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_get_api_settings(app: AppHandle) -> Result<ApiSettingsResponse, String> {
     let settings = load_settings(&app);
@@ -331,6 +336,7 @@ pub async fn cmd_get_api_settings(app: AppHandle) -> Result<ApiSettingsResponse,
     })
 }
 
+#[cfg(feature = "desktop")]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiHealthSnapshot {
     pub status: String,
@@ -341,7 +347,7 @@ pub struct ApiHealthSnapshot {
     pub upload_queue: serde_json::Value,
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_get_api_health(app: AppHandle) -> Result<ApiHealthSnapshot, String> {
     let settings = load_settings(&app);
@@ -395,7 +401,7 @@ pub async fn cmd_get_api_health(app: AppHandle) -> Result<ApiHealthSnapshot, Str
     })
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_update_api_settings(
     enabled: bool,
@@ -452,7 +458,7 @@ pub async fn cmd_update_api_settings(
     })
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_regenerate_api_key(app: AppHandle) -> Result<String, String> {
     let mut settings = load_settings(&app);
@@ -472,7 +478,7 @@ pub async fn cmd_regenerate_api_key(app: AppHandle) -> Result<String, String> {
     Ok(plaintext_key)
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_regenerate_local_access_pwd(app: AppHandle) -> Result<String, String> {
     let mut settings = load_settings(&app);

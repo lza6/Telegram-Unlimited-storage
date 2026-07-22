@@ -1,26 +1,39 @@
+#[cfg(feature = "desktop")]
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::{map_error, resolve_peer, resolve_peer_with_limit};
-use crate::models::{FileMetadata, FolderMetadata};
+use crate::commands::utils::resolve_peer;
+#[cfg(feature = "desktop")]
+use crate::commands::utils::{map_error, resolve_peer_with_limit};
+use crate::models::FileMetadata;
+#[cfg(feature = "desktop")]
+use crate::models::FolderMetadata;
+#[cfg(feature = "desktop")]
 use crate::vpn_optimizer::{backoff_ms, throttle_transfer_bytes, NetworkConfig, ThrottledReader};
+#[cfg(feature = "desktop")]
 use crate::TelegramState;
 use grammers_client::types::{Media, Peer};
+#[cfg(feature = "desktop")]
 use grammers_client::InputMessage;
+#[cfg(feature = "desktop")]
 use grammers_tl_types as tl;
+#[cfg(feature = "desktop")]
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::OnceLock;
-#[cfg(not(feature = "headless-server"))]
-use tauri::Manager;
-use tauri::{Emitter, State};
+#[cfg(feature = "desktop")]
+use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "desktop")]
+use tauri::{Emitter, Manager, State};
+#[cfg(feature = "desktop")]
 use tokio::sync::oneshot;
 
+#[cfg(feature = "desktop")]
 static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> =
     OnceLock::new();
 
+#[cfg(feature = "desktop")]
 fn get_upload_cancellations() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
     UPLOAD_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(feature = "desktop")]
 fn with_upload_cancellations<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce(&mut HashMap<String, oneshot::Sender<()>>) -> T,
@@ -31,6 +44,7 @@ where
     Ok(f(&mut guard))
 }
 
+#[cfg(any(feature = "desktop", test))]
 fn require_client(
     client_opt: Option<grammers_client::Client>,
 ) -> Result<grammers_client::Client, String> {
@@ -82,6 +96,7 @@ async fn list_document_files_in_folder(
     Ok(files)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_create_folder(
     name: String,
@@ -152,6 +167,7 @@ pub async fn cmd_create_folder(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_delete_folder(
     folder_id: i64,
@@ -206,6 +222,7 @@ pub async fn cmd_delete_folder(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[derive(Clone, serde::Serialize)]
 struct ProgressPayload {
     id: String,
@@ -217,11 +234,13 @@ struct ProgressPayload {
 
 /// Async reader wrapper that tracks bytes read for progress reporting.
 /// Wraps a tokio File and counts how many bytes have been consumed.
+#[cfg(feature = "desktop")]
 struct ProgressReader {
     inner: tokio::io::BufReader<tokio::fs::File>,
     bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+#[cfg(feature = "desktop")]
 impl ProgressReader {
     async fn new(
         path: &str,
@@ -240,6 +259,7 @@ impl ProgressReader {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl tokio::io::AsyncRead for ProgressReader {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -259,6 +279,7 @@ impl tokio::io::AsyncRead for ProgressReader {
 }
 
 /// Delete a partial file with retries (best-effort cleanup)
+#[cfg(feature = "desktop")]
 fn cleanup_partial_file(path: &str) {
     let path = path.to_string();
     std::thread::spawn(move || {
@@ -283,6 +304,7 @@ fn cleanup_partial_file(path: &str) {
     });
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_cancel_transfer(
     transfer_id: String,
@@ -300,6 +322,7 @@ pub async fn cmd_cancel_transfer(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_upload_file(
     path: String,
@@ -509,6 +532,7 @@ pub struct DeleteFileResult {
     pub shares_revoked: usize,
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_delete_file(
     message_id: i32,
@@ -518,7 +542,7 @@ pub async fn cmd_delete_file(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<DeleteFileResult, String> {
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
             let result = crate::file_access::purge_file_index_entry(&db_pool, message_id, None);
@@ -567,6 +591,7 @@ pub async fn cmd_delete_file(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_download_file(
     message_id: i32,
@@ -581,7 +606,7 @@ pub async fn cmd_download_file(
 ) -> Result<String, String> {
     let tid = transfer_id.unwrap_or_default();
 
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_uses_asset_index(&app_handle, &db_pool).await? {
             return download_file_via_local_api(
@@ -784,12 +809,13 @@ pub struct MoveFilesResult {
     pub target_folder_id: Option<i64>,
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_move_files(
     message_ids: Vec<i32>,
     source_folder_id: Option<i64>,
     target_folder_id: Option<i64>,
-    #[cfg(not(feature = "headless-server"))] app: tauri::AppHandle,
+    app: tauri::AppHandle,
     state: State<'_, TelegramState>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
@@ -803,7 +829,7 @@ pub async fn cmd_move_files(
         });
     }
 
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_is_bot_mode(&app, &db_pool).await? {
             return Err(
@@ -880,7 +906,7 @@ pub async fn cmd_move_files(
     })
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 fn asset_record_to_file_metadata(r: crate::db::FileAssetRecord) -> FileMetadata {
     let ext = std::path::Path::new(&r.file_name)
         .extension()
@@ -900,7 +926,7 @@ fn asset_record_to_file_metadata(r: crate::db::FileAssetRecord) -> FileMetadata 
     }
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 fn search_files_from_asset_index(
     db_pool: &crate::db::DbConnection,
     query: &str,
@@ -914,7 +940,7 @@ fn search_files_from_asset_index(
         .collect())
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 fn list_files_from_asset_index(
     db_pool: &crate::db::DbConnection,
     folder_id: Option<i64>,
@@ -935,7 +961,7 @@ fn list_files_from_asset_index(
         .collect())
 }
 
-#[cfg(not(feature = "headless-server"))]
+#[cfg(feature = "desktop")]
 async fn download_file_via_local_api(
     app_handle: &tauri::AppHandle,
     message_id: i32,
@@ -1088,6 +1114,7 @@ async fn download_file_via_local_api(
     Ok("Download successful".to_string())
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_get_files(
     folder_id: Option<i64>,
@@ -1095,7 +1122,7 @@ pub async fn cmd_get_files(
     state: State<'_, TelegramState>,
     db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<Vec<FileMetadata>, String> {
-    #[cfg(not(feature = "headless-server"))]
+    #[cfg(feature = "desktop")]
     {
         if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
             return list_files_from_asset_index(&db_pool, folder_id);
@@ -1149,6 +1176,7 @@ pub async fn rebuild_file_index_for_folders(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_rebuild_file_index(
     folder_ids: Vec<Option<i64>>,
@@ -1168,6 +1196,7 @@ pub async fn cmd_rebuild_file_index(
     .await
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn cmd_invalidate_file_index(
     db_pool: State<'_, crate::db::DbConnection>,
@@ -1176,6 +1205,7 @@ pub fn cmd_invalidate_file_index(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_search_global(
     query: String,
@@ -1188,45 +1218,12 @@ pub async fn cmd_search_global(
         return Ok(Vec::new());
     }
 
-    #[cfg(not(feature = "headless-server"))]
-    {
-        if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
-            return search_files_from_asset_index(
-                &db_pool,
-                q,
-                Some(crate::tenant_auth::OWNER_WEB),
-                50,
-            );
-        }
+    if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
+        return search_files_from_asset_index(&db_pool, q, Some(crate::tenant_auth::OWNER_WEB), 50);
     }
 
     if crate::db::is_file_index_complete(&db_pool)? {
-        #[cfg(not(feature = "headless-server"))]
-        {
-            return search_files_from_asset_index(&db_pool, q, None, 50);
-        }
-        #[cfg(feature = "headless-server")]
-        {
-            let records = crate::db::search_file_assets(&db_pool, q, None, None, false, 50)?;
-            return Ok(records
-                .into_iter()
-                .map(|r| {
-                    let ext = std::path::Path::new(&r.file_name)
-                        .extension()
-                        .map(|os| os.to_str().unwrap_or("").to_string());
-                    FileMetadata {
-                        id: r.message_id as i64,
-                        folder_id: r.folder_id,
-                        name: r.file_name,
-                        size: r.file_size as u64,
-                        mime_type: None,
-                        file_ext: ext,
-                        created_at: r.created_at.to_string(),
-                        icon_type: "file".into(),
-                    }
-                })
-                .collect());
-        }
+        return search_files_from_asset_index(&db_pool, q, None, 50);
     }
 
     let client_opt = { state.client.lock().await.clone() };
@@ -1336,6 +1333,7 @@ pub async fn cmd_search_global(
     Ok(files)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_scan_folders(
     state: State<'_, TelegramState>,
@@ -1436,6 +1434,7 @@ pub async fn cmd_scan_folders(
 
 /// Zip a folder's contents into a temp file and return the path.
 /// The resulting zip preserves the relative directory structure.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_zip_folder(folder_path: String) -> Result<String, String> {
     let src = std::path::Path::new(&folder_path)
@@ -1507,6 +1506,7 @@ pub async fn cmd_zip_folder(folder_path: String) -> Result<String, String> {
 }
 
 /// Delete a temporary zip file created by cmd_zip_folder.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_delete_temp_zip(path: String) -> Result<(), String> {
     let path_clone = path.clone();

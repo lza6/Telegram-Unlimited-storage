@@ -1,9 +1,14 @@
+#[cfg(feature = "desktop")]
 use crate::vpn_optimizer::NetworkConfig;
+#[cfg(feature = "desktop")]
 use std::net::TcpStream;
+#[cfg(feature = "desktop")]
 use std::time::Duration;
+#[cfg(feature = "desktop")]
 use tauri::State;
 
 /// Telegram DC addresses for connectivity checks and fallback
+#[cfg(feature = "desktop")]
 const DC_ADDRESSES: &[&str] = &[
     "149.154.167.50:443", // DC2
     "149.154.175.53:443", // DC1
@@ -77,6 +82,7 @@ pub fn detect_vpn_interfaces() -> bool {
 /// - Uses the configured timeout multiplier when VPN mode is on
 /// - When proxy is active, checks proxy reachability instead
 /// - Tries multiple DCs when VPN fallback is enabled
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_is_network_available(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
@@ -124,6 +130,7 @@ pub async fn cmd_is_network_available(
 
 /// Measure TCP connect latency to the best Telegram DC.
 /// Returns latency in milliseconds, or -1 if unreachable.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_check_latency(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
@@ -157,6 +164,7 @@ pub async fn cmd_check_latency(
 }
 
 /// Detect VPN network interfaces on the system.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_detect_vpn() -> Result<bool, String> {
     tokio::task::spawn_blocking(detect_vpn_interfaces)

@@ -1,8 +1,10 @@
+#[cfg(feature = "desktop")]
 use crate::bandwidth::BandwidthManager;
 use grammers_client::types::Peer;
 use grammers_client::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "desktop")]
 use tauri::State;
 use tokio::sync::RwLock;
 
@@ -86,11 +88,13 @@ pub async fn clear_peer_cache(peer_cache: &Arc<RwLock<HashMap<i64, Peer>>>) {
     peer_cache.write().await.clear();
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn cmd_log(message: String) {
     log::info!("[FRONTEND] {}", message);
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn cmd_get_bandwidth(
     bw_state: State<'_, BandwidthManager>,

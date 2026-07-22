@@ -1,12 +1,14 @@
 use tauri::{State, Emitter};
+#[cfg(not(feature = "headless-server"))]
+use tauri::Manager;
 use grammers_client::types::{Media, Peer};
 use grammers_client::InputMessage;
 use grammers_tl_types as tl;
 use crate::TelegramState;
 use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::{resolve_peer, map_error};
-use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
+use crate::commands::utils::{resolve_peer, resolve_peer_with_limit, map_error};
+use crate::vpn_optimizer::{NetworkConfig, backoff_ms, throttle_transfer_bytes, ThrottledReader};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::Mutex;
@@ -18,40 +20,98 @@ fn get_upload_cancellations() -> &'static Mutex<HashMap<String, oneshot::Sender<
     UPLOAD_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn with_upload_cancellations<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut HashMap<String, oneshot::Sender<()>>) -> T,
+{
+    let mut guard = get_upload_cancellations()
+        .lock()
+        .map_err(|e| format!("upload cancellation lock poisoned: {e}"))?;
+    Ok(f(&mut guard))
+}
+
+fn require_client(
+    client_opt: Option<grammers_client::Client>,
+) -> Result<grammers_client::Client, String> {
+    client_opt.ok_or_else(|| "Telegram client is not connected".to_string())
+}
+
+async fn list_document_files_in_folder(
+    client: &grammers_client::Client,
+    folder_id: Option<i64>,
+    peer_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Peer>>>,
+) -> Result<Vec<FileMetadata>, String> {
+    let peer = resolve_peer(client, folder_id, peer_cache).await?;
+    let mut files = Vec::new();
+
+    let mut msgs = client.iter_messages(&peer);
+    while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
+        if let Some(doc) = msg.media() {
+            let (name, size, mime, ext) = match doc {
+                Media::Document(d) => {
+                    let n = d.name().to_string();
+                    let s = d.size();
+                    let m = d.mime_type().map(|s| s.to_string());
+                    let e = std::path::Path::new(&n)
+                        .extension()
+                        .map(|os| os.to_str().unwrap_or("").to_string());
+                    (n, s, m, e)
+                }
+                Media::Photo(_) => (
+                    "Photo.jpg".to_string(),
+                    0,
+                    Some("image/jpeg".into()),
+                    Some("jpg".into()),
+                ),
+                _ => ("Unknown".to_string(), 0, None, None),
+            };
+            files.push(FileMetadata {
+                id: msg.id() as i64,
+                folder_id,
+                name,
+                size: size as u64,
+                mime_type: mime,
+                file_ext: ext,
+                created_at: msg.date().to_string(),
+                icon_type: "file".into(),
+            });
+        }
+    }
+
+    Ok(files)
+}
+
 #[tauri::command]
 pub async fn cmd_create_folder(
     name: String,
     state: State<'_, TelegramState>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<FolderMetadata, String> {
     let client_opt = {
         state.client.lock().await.clone()
     };
     
-    // --- MOCK ---
-    if client_opt.is_none() {
-        let mock_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-        log::info!("[MOCK] Created folder '{}' with ID {}", name, mock_id);
-        return Ok(FolderMetadata {
-            id: mock_id,
-            name,
-            parent_id: None,
-        });
-    }
-    // -----------
-    let client = client_opt.unwrap();
+    let client = require_client(client_opt)?;
     log::info!("Creating Telegram Channel: {}", name);
-    
-    let result = client.invoke(&tl::functions::channels::CreateChannel {
-        broadcast: true,
-        megagroup: false,
-        title: format!("{} [TD]", name),
-        about: "Telegram Drive Storage Folder\n[telegram-drive-folder]".to_string(),
-        geo_point: None,
-        address: None,
-        for_import: false,
-        forum: false,
-        ttl_period: None, // Initial creation TTL
-    }).await.map_err(map_error)?;
+
+    let result = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async {
+            client.invoke(&tl::functions::channels::CreateChannel {
+                broadcast: true,
+                megagroup: false,
+                title: format!("{} [TD]", name),
+                about: "Telegram Drive Storage Folder\n[telegram-drive-folder]".to_string(),
+                geo_point: None,
+                address: None,
+                for_import: false,
+                forum: false,
+                ttl_period: None,
+            }).await.map_err(|e| map_error(e))
+        },
+        "create_channel",
+    ).await?;
     
     let (chat_id, access_hash) = match result {
         tl::enums::Updates::Updates(u) => {
@@ -75,6 +135,8 @@ pub async fn cmd_create_folder(
         period: 0, 
     }).await;
 
+    let _ = crate::db::set_file_index_complete(&db_pool, false);
+
     Ok(FolderMetadata {
         id: chat_id,
         name,
@@ -86,20 +148,22 @@ pub async fn cmd_create_folder(
 pub async fn cmd_delete_folder(
     folder_id: i64,
     state: State<'_, TelegramState>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<bool, String> {
     let client_opt = {
         state.client.lock().await.clone()
     };
-    
-    if client_opt.is_none() {
-        log::info!("[MOCK] Deleted folder ID {}", folder_id);
-        return Ok(true);
-    }
-    let client = client_opt.unwrap();
+
+    let client = require_client(client_opt)?;
     log::info!("Deleting folder/channel: {}", folder_id);
 
-    let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
-    
+    let peer = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { resolve_peer(&client, Some(folder_id), &state.peer_cache).await },
+        "resolve_peer(delete_folder)",
+    ).await?;
+
     let input_channel = match peer {
         Peer::Channel(c) => {
              let chan = &c.raw;
@@ -110,11 +174,23 @@ pub async fn cmd_delete_folder(
         },
         _ => return Err("Only channels (folders) can be deleted.".to_string()),
     };
-    
-    client.invoke(&tl::functions::channels::DeleteChannel {
-        channel: input_channel,
-    }).await.map_err(|e| format!("Failed to delete channel: {}", e))?;
-    
+
+    crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async {
+            client.invoke(&tl::functions::channels::DeleteChannel { channel: input_channel.clone() }
+            ).await.map_err(|e| format!("Failed to delete channel: {}", e))
+        },
+        "delete_channel",
+    ).await?;
+
+    let _ = crate::db::delete_file_assets_in_folder(
+        &db_pool,
+        Some(folder_id),
+        crate::tenant_auth::OWNER_WEB,
+    );
+    let _ = crate::db::set_file_index_complete(&db_pool, false);
+
     Ok(true)
 }
 
@@ -193,7 +269,7 @@ pub async fn cmd_cancel_transfer(
 ) -> Result<bool, String> {
     log::info!("Cancelling transfer: {}", transfer_id);
     state.cancelled_transfers.write().await.insert(transfer_id.clone());
-    if let Some(tx) = get_upload_cancellations().lock().unwrap().remove(&transfer_id) {
+    if let Ok(Some(tx)) = with_upload_cancellations(|m| m.remove(&transfer_id)) {
         let _ = tx.send(());
     }
     Ok(true)
@@ -208,19 +284,15 @@ pub async fn cmd_upload_file(
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<String, String> {
     let size = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?.len();
-    bw_state.can_transfer(size)?;
+    bw_state.can_transfer(size).await?;
 
     let tid = transfer_id.unwrap_or_default();
 
     let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() {
-        log::info!("[MOCK] Uploaded file {} to {:?}", path, folder_id);
-        bw_state.add_up(size);
-        return Ok("Mock upload successful".to_string());
-    }
-    let client = client_opt.unwrap();
+    let client = require_client(client_opt)?;
 
     // Emit start progress
     if !tid.is_empty() {
@@ -230,11 +302,14 @@ pub async fn cmd_upload_file(
     }
 
     // Create progress-tracking reader
-    let (mut reader, file_size, bytes_counter) = ProgressReader::new(&path).await?;
+    let (reader, file_size, bytes_counter) = ProgressReader::new(&path).await?;
+    let upload_limit = net_config.upload_limit_bytes_per_sec();
+    let mut throttled = ThrottledReader::new(reader, upload_limit);
     let file_name = std::path::Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
+    let file_name_for_index = file_name.clone();
 
     // Spawn a progress reporter task that emits events every 250ms
     let cancelled = state.cancelled_transfers.clone();
@@ -278,19 +353,19 @@ pub async fn cmd_upload_file(
 
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     if !tid.is_empty() {
-        get_upload_cancellations().lock().unwrap().insert(tid.clone(), cancel_tx);
+        with_upload_cancellations(|m| m.insert(tid.clone(), cancel_tx))?;
     }
 
     let client_clone = client.clone();
     let mut upload_task = tokio::spawn(async move {
-        client_clone.upload_stream(&mut reader, file_size as usize, file_name).await
+        client_clone.upload_stream(&mut throttled, file_size as usize, file_name).await
     });
 
     let upload_result = {
         tokio::select! {
             res = &mut upload_task => {
                 if !tid.is_empty() {
-                    get_upload_cancellations().lock().unwrap().remove(&tid);
+                    let _ = with_upload_cancellations(|m| m.remove(&tid));
                 }
                 res.map_err(|e| format!("Task join error: {}", e))?
             }
@@ -310,69 +385,79 @@ pub async fn cmd_upload_file(
     let uploaded_file = upload_result.map_err(map_error)?;
     let message = InputMessage::new().text("").file(uploaded_file);
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { resolve_peer_with_limit(&client, folder_id, &state.peer_cache, net_config.peer_cache_size()).await },
+        "resolve_peer(upload)",
+    ).await?;
 
-    // VPN-aware retry logic for send_message
-    let max_retries = net_config.retry_attempts();
-    let base_ms = net_config.retry_base_backoff_ms();
-    let max_ms = net_config.retry_max_backoff_ms();
-    let respect_flood = net_config.should_respect_flood_wait();
-    let mut last_err = String::new();
+    // VPN-aware retry logic for send_message via unified wrapper
+    let sent = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async {
+            client.send_message(&peer, message.clone()).await.map_err(|e| map_error(e))
+        },
+        "send_message(upload)",
+    ).await?;
 
-    for attempt in 0..=max_retries {
-        match client.send_message(&peer, message.clone()).await {
-            Ok(_) => {
-                bw_state.add_up(size);
-                if !tid.is_empty() {
-                    let _ = app_handle.emit("upload-progress", ProgressPayload {
-                        id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
-                    });
-                }
-                return Ok("File uploaded successfully".to_string());
-            }
-            Err(e) => {
-                let err = map_error(e);
-                log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
-
-                // Handle FLOOD_WAIT: sleep the requested time if configured
-                if respect_flood && err.starts_with("FLOOD_WAIT_") {
-                    if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
-                        let wait = secs.min(300); // cap at 5 min
-                        log::info!("Respecting FLOOD_WAIT: sleeping {}s", wait);
-                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-                        last_err = err;
-                        continue;
-                    }
-                }
-
-                last_err = err;
-                if attempt < max_retries {
-                    let delay = backoff_ms(attempt, base_ms, max_ms);
-                    log::info!("Retrying in {}ms...", delay);
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                }
-            }
-        }
+    let message_id = sent.id();
+    if let Err(e) = crate::file_access::record_uploaded_file(
+        &db_pool,
+        message_id,
+        folder_id,
+        crate::tenant_auth::OWNER_WEB,
+        &file_name_for_index,
+        size as i64,
+    ) {
+        log::warn!("file_assets index after upload failed: {e}");
     }
 
-    Err(format!("Upload failed after {} attempts: {}", max_retries + 1, last_err))
+    crate::metadata_cache::invalidate_files(&db_pool, folder_id);
+
+    bw_state.add_up(size).await;
+    if !tid.is_empty() {
+        let _ = app_handle.emit("upload-progress", ProgressPayload {
+            id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
+        });
+    }
+    Ok("File uploaded successfully".to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_delete_file(
     message_id: i32,
     folder_id: Option<i64>,
+    #[allow(unused_variables)] app: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<bool, String> {
-    let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() { 
-         log::info!("[MOCK] Deleted message {} from folder {:?}", message_id, folder_id);
-        return Ok(true); 
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
+            return Ok(crate::db::delete_file_asset(&db_pool, message_id, None).unwrap_or(false));
+        }
     }
-    let client = client_opt.unwrap();
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-    client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let client_opt = { state.client.lock().await.clone() };
+    let client = require_client(client_opt)?;
+
+    let peer = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { resolve_peer_with_limit(&client, folder_id, &state.peer_cache, net_config.peer_cache_size()).await },
+        "resolve_peer(delete_file)",
+    ).await?;
+
+    crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async {
+            client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())
+        },
+        "delete_messages",
+    ).await?;
+
+    let _ = crate::db::delete_file_asset(&db_pool, message_id, None);
+
     Ok(true)
 }
 
@@ -386,21 +471,43 @@ pub async fn cmd_download_file(
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    #[allow(unused_variables)]
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<String, String> {
     let tid = transfer_id.unwrap_or_default();
 
-    let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() { 
-        log::info!("[MOCK] Downloaded message {} from {:?} to {}", message_id, folder_id, save_path);
-        if let Err(e) = tokio::fs::write(&save_path, b"Mock Content").await { return Err(e.to_string()); }
-        return Ok("Download successful".to_string());
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_uses_asset_index(&app_handle, &db_pool).await? {
+            return download_file_via_local_api(
+                &app_handle,
+                message_id,
+                folder_id,
+                &save_path,
+                &tid,
+                &state,
+                &bw_state,
+                &net_config,
+            )
+            .await;
+        }
     }
-    let client = client_opt.unwrap();
+
+    let client_opt = { state.client.lock().await.clone() };
+    let client = require_client(client_opt)?;
     
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { resolve_peer_with_limit(&client, folder_id, &state.peer_cache, net_config.peer_cache_size()).await },
+        "resolve_peer(download)",
+    ).await?;
 
     // Use get_messages_by_id for efficient message lookup (same as server.rs)
-    let messages = client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let messages = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string()) },
+        "get_messages_by_id",
+    ).await?;
     
     let msg = messages.into_iter()
         .flatten()
@@ -416,7 +523,7 @@ pub async fn cmd_download_file(
         _ => 0,
     };
     
-    bw_state.can_transfer(total_size)?;
+    bw_state.can_transfer(total_size).await?;
 
     // Emit start
     if !tid.is_empty() {
@@ -426,12 +533,15 @@ pub async fn cmd_download_file(
     }
 
     // Stream download with per-chunk progress
-    let mut download_iter = client.iter_download(&media);
+    let chunk_size = net_config.chunk_size_bytes() as i32;
+    let mut download_iter = client.iter_download(&media).chunk_size(chunk_size);
     let mut file = tokio::fs::File::create(&save_path).await.map_err(|e| e.to_string())?;
     let mut downloaded: u64 = 0;
     let mut last_emit_time = std::time::Instant::now();
     let mut last_emit_bytes: u64 = 0;
     let mut chunk_retry_budget = net_config.retry_attempts();
+    let mut throttle_bytes = 0u64;
+    let mut throttle_start = std::time::Instant::now();
 
     while let Some(chunk) = download_iter.next().await.transpose() {
         // Check cancellation
@@ -477,21 +587,19 @@ pub async fn cmd_download_file(
             }
         }
 
-        // Bandwidth throttle: if download limit is set, sleep to maintain rate
+        // Bandwidth throttle
         let dl_limit = net_config.download_limit_bytes_per_sec();
         if dl_limit > 0 {
-            let elapsed = last_emit_time.elapsed().as_secs_f64().max(0.001);
-            let current_rate = (downloaded - last_emit_bytes) as f64 / elapsed;
-            if current_rate > dl_limit as f64 {
-                let sleep_ms = ((current_rate / dl_limit as f64 - 1.0) * elapsed * 1000.0) as u64;
-                if sleep_ms > 0 && sleep_ms < 5000 {
-                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
-                }
-            }
+            throttle_transfer_bytes(
+                bytes.len() as u64,
+                dl_limit,
+                &mut throttle_bytes,
+                &mut throttle_start,
+            ).await;
         }
     }
 
-    bw_state.add_down(total_size);
+    bw_state.add_down(total_size).await;
 
     // Emit completion
     if !tid.is_empty() {
@@ -503,87 +611,441 @@ pub async fn cmd_download_file(
     Ok("Download successful".to_string())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveFilesResult {
+    pub moved: usize,
+    pub old_message_ids: Vec<i32>,
+    pub new_message_ids: Vec<i32>,
+    pub target_folder_id: Option<i64>,
+}
+
 #[tauri::command]
 pub async fn cmd_move_files(
     message_ids: Vec<i32>,
     source_folder_id: Option<i64>,
     target_folder_id: Option<i64>,
     state: State<'_, TelegramState>,
-) -> Result<bool, String> {
-    if source_folder_id == target_folder_id { return Ok(true); }
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    db_pool: State<'_, crate::db::DbConnection>,
+) -> Result<MoveFilesResult, String> {
+    if source_folder_id == target_folder_id {
+        return Ok(MoveFilesResult {
+            moved: 0,
+            old_message_ids: message_ids,
+            new_message_ids: vec![],
+            target_folder_id,
+        });
+    }
     let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() { 
-        log::info!("[MOCK] Moved msgs {:?} from {:?} to {:?}", message_ids, source_folder_id, target_folder_id);
-        return Ok(true); 
-    }
-    let client = client_opt.unwrap();
+    let client = require_client(client_opt)?;
 
-    let source_peer = resolve_peer(&client, source_folder_id, &state.peer_cache).await?;
-    let target_peer = resolve_peer(&client, target_folder_id, &state.peer_cache).await?;
+    let source_peer = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { resolve_peer(&client, source_folder_id, &state.peer_cache).await },
+        "resolve_peer(move_source)",
+    )
+    .await?;
+    let target_peer = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async { resolve_peer(&client, target_folder_id, &state.peer_cache).await },
+        "resolve_peer(move_target)",
+    )
+    .await?;
 
-    match client.forward_messages(&target_peer, &message_ids, &source_peer).await {
-        Ok(_) => {},
-        Err(e) => return Err(format!("Forward failed: {}", e)),
-    }
-    
-    match client.delete_messages(&source_peer, &message_ids).await {
-        Ok(_) => {},
-        Err(e) => return Err(format!("Delete original failed: {}", e)),
+    let forwarded = crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async {
+            client
+                .forward_messages(&target_peer, &message_ids, &source_peer)
+                .await
+                .map_err(|e| format!("Forward failed: {}", e))
+        },
+        "forward_messages",
+    )
+    .await?;
+
+    let new_ids: Vec<i32> = forwarded
+        .iter()
+        .filter_map(|m| m.as_ref().map(|msg| msg.id()))
+        .collect();
+    if new_ids.len() != message_ids.len() {
+        return Err(format!(
+            "Forward returned {} message(s), expected {} — originals not deleted",
+            new_ids.len(),
+            message_ids.len()
+        ));
     }
 
-    Ok(true)
+    crate::vpn_optimizer::with_retry(
+        &net_config,
+        || async {
+            client
+                .delete_messages(&source_peer, &message_ids)
+                .await
+                .map_err(|e| format!("Delete original failed: {}", e))
+        },
+        "delete_messages(move)",
+    )
+    .await?;
+    crate::file_access::remap_file_assets_after_move(
+        &db_pool,
+        &message_ids,
+        &new_ids,
+        target_folder_id,
+    )
+    .map_err(|e| format!("Index remap after move failed: {e}"))?;
+
+    Ok(MoveFilesResult {
+        moved: new_ids.len(),
+        old_message_ids: message_ids,
+        new_message_ids: new_ids,
+        target_folder_id,
+    })
+}
+
+#[cfg(not(feature = "headless-server"))]
+fn asset_record_to_file_metadata(r: crate::db::FileAssetRecord) -> FileMetadata {
+    let ext = std::path::Path::new(&r.file_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase());
+    FileMetadata {
+        id: r.message_id as i64,
+        folder_id: r.folder_id,
+        name: r.file_name,
+        size: r.file_size.max(0) as u64,
+        mime_type: None,
+        file_ext: ext,
+        created_at: chrono::DateTime::from_timestamp(r.created_at, 0)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_else(|| r.created_at.to_string()),
+        icon_type: "file".to_string(),
+    }
+}
+
+#[cfg(not(feature = "headless-server"))]
+fn search_files_from_asset_index(
+    db_pool: &crate::db::DbConnection,
+    query: &str,
+    owner_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<FileMetadata>, String> {
+    let records = crate::db::search_file_assets(
+        db_pool,
+        query,
+        owner_id,
+        None,
+        false,
+        limit,
+    )?;
+    Ok(records
+        .into_iter()
+        .map(asset_record_to_file_metadata)
+        .collect())
+}
+
+#[cfg(not(feature = "headless-server"))]
+fn list_files_from_asset_index(
+    db_pool: &crate::db::DbConnection,
+    folder_id: Option<i64>,
+) -> Result<Vec<FileMetadata>, String> {
+    let has_folder = folder_id.is_some();
+    let records = crate::db::list_file_assets_scoped(
+        db_pool,
+        Some(crate::tenant_auth::OWNER_WEB),
+        folder_id,
+        has_folder,
+        None,
+        50_000,
+        0,
+    )?;
+    Ok(records
+        .into_iter()
+        .map(asset_record_to_file_metadata)
+        .collect())
+}
+
+#[cfg(not(feature = "headless-server"))]
+async fn download_file_via_local_api(
+    app_handle: &tauri::AppHandle,
+    message_id: i32,
+    folder_id: Option<i64>,
+    save_path: &str,
+    tid: &str,
+    state: &TelegramState,
+    bw_state: &BandwidthManager,
+    net_config: &std::sync::Arc<NetworkConfig>,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+
+    let data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::commands::api_settings::load_settings_at(&data_dir);
+    let pwd = crate::commands::api_settings::load_local_access_pwd(&data_dir);
+    if pwd.is_empty() {
+        return Err("Local API access password is not configured".to_string());
+    }
+
+    let url = crate::local_api::build_download_url(settings.port, message_id, folder_id);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3600))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .get(&url)
+        .header("X-Access-Pwd", &pwd)
+        .send()
+        .await
+        .map_err(|e| format!("API download request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API download failed ({status}): {body}"));
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    if total_size > 0 {
+        bw_state.can_transfer(total_size).await?;
+    }
+
+    if !tid.is_empty() {
+        let _ = app_handle.emit("download-progress", ProgressPayload {
+            id: tid.to_string(),
+            percent: 0,
+            uploaded_bytes: 0,
+            total_bytes: total_size,
+            speed_bytes_per_sec: 0,
+        });
+    }
+
+    let mut file = tokio::fs::File::create(save_path).await.map_err(|e| e.to_string())?;
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    let mut last_emit_time = std::time::Instant::now();
+    let mut last_emit_bytes: u64 = 0;
+    let mut throttle_bytes = 0u64;
+    let mut throttle_start = std::time::Instant::now();
+
+    while let Some(chunk_result) = stream.next().await {
+        if !tid.is_empty() && state.cancelled_transfers.read().await.contains(tid) {
+            state.cancelled_transfers.write().await.remove(tid);
+            drop(file);
+            cleanup_partial_file(save_path);
+            return Err("Transfer cancelled".to_string());
+        }
+
+        let bytes = chunk_result.map_err(|e| format!("API download stream error: {e}"))?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        downloaded += bytes.len() as u64;
+
+        if !tid.is_empty() {
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last_emit_time).as_secs_f64();
+            if dt >= 0.25 || (total_size > 0 && downloaded >= total_size) {
+                let speed = if dt > 0.0 {
+                    ((downloaded - last_emit_bytes) as f64 / dt) as u64
+                } else {
+                    0
+                };
+                let percent = if total_size > 0 {
+                    ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8
+                } else {
+                    0
+                };
+                let _ = app_handle.emit("download-progress", ProgressPayload {
+                    id: tid.to_string(),
+                    percent,
+                    uploaded_bytes: downloaded,
+                    total_bytes: total_size,
+                    speed_bytes_per_sec: speed,
+                });
+                last_emit_time = now;
+                last_emit_bytes = downloaded;
+            }
+        }
+
+        let dl_limit = net_config.download_limit_bytes_per_sec();
+        if dl_limit > 0 {
+            throttle_transfer_bytes(
+                bytes.len() as u64,
+                dl_limit,
+                &mut throttle_bytes,
+                &mut throttle_start,
+            )
+            .await;
+        }
+    }
+
+    let counted = if total_size > 0 { total_size } else { downloaded };
+    bw_state.add_down(counted).await;
+
+    if !tid.is_empty() {
+        let _ = app_handle.emit("download-progress", ProgressPayload {
+            id: tid.to_string(),
+            percent: 100,
+            uploaded_bytes: downloaded,
+            total_bytes: if total_size > 0 { total_size } else { downloaded },
+            speed_bytes_per_sec: 0,
+        });
+    }
+
+    Ok("Download successful".to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_get_files(
     folder_id: Option<i64>,
+    #[allow(unused_variables)] app: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<Vec<FileMetadata>, String> {
-    let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() { 
-        log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
-        return Ok(Vec::new()); // No mock files for now
-    }
-    let client = client_opt.unwrap();
-    let mut files = Vec::new();
-    
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-
-    let mut msgs = client.iter_messages(&peer);
-    while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
-        if let Some(doc) = msg.media() {
-            let (name, size, mime, ext) = match doc {
-                Media::Document(d) => {
-                    let n = d.name().to_string();
-                    let s = d.size();
-                    let m = d.mime_type().map(|s| s.to_string());
-                    let e = std::path::Path::new(&n).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                    (n, s, m, e)
-                },
-                Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into()), Some("jpg".into())),
-                _ => ("Unknown".to_string(), 0, None, None),
-            };
-            files.push(FileMetadata {
-                id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into()
-            });
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
+            return list_files_from_asset_index(&db_pool, folder_id);
         }
     }
 
+    let client_opt = { state.client.lock().await.clone() };
+    let client = require_client(client_opt)?;
+
+    let files = list_document_files_in_folder(&client, folder_id, &state.peer_cache).await?;
+
+    crate::file_access::index_file_metadata_list(
+        &db_pool,
+        &files,
+        crate::tenant_auth::OWNER_WEB,
+    );
+
     Ok(files)
+}
+
+#[derive(serde::Serialize)]
+pub struct RebuildIndexResult {
+    pub folders_scanned: usize,
+    pub files_indexed: usize,
+}
+
+/// Scan all given folders (None = Saved Messages) and rebuild the local file_assets index.
+pub async fn rebuild_file_index_for_folders(
+    client: &grammers_client::Client,
+    peer_cache: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Peer>>>,
+    db_pool: &crate::db::DbConnection,
+    folder_ids: Vec<Option<i64>>,
+    owner_id: &str,
+) -> Result<RebuildIndexResult, String> {
+    let targets: Vec<Option<i64>> = if folder_ids.is_empty() {
+        vec![None]
+    } else {
+        folder_ids
+    };
+
+    crate::db::delete_all_file_assets_for_owner(db_pool, owner_id)?;
+
+    let mut files_indexed = 0usize;
+    for folder_id in &targets {
+        let files = list_document_files_in_folder(client, *folder_id, peer_cache).await?;
+        files_indexed += files.len();
+        crate::file_access::index_file_metadata_list(db_pool, &files, owner_id);
+    }
+
+    crate::db::set_file_index_complete(db_pool, true)?;
+
+    Ok(RebuildIndexResult {
+        folders_scanned: targets.len(),
+        files_indexed,
+    })
+}
+
+#[tauri::command]
+pub async fn cmd_rebuild_file_index(
+    folder_ids: Vec<Option<i64>>,
+    state: State<'_, TelegramState>,
+    db_pool: State<'_, crate::db::DbConnection>,
+) -> Result<RebuildIndexResult, String> {
+    let client_opt = { state.client.lock().await.clone() };
+    let client = require_client(client_opt)?;
+
+    rebuild_file_index_for_folders(
+        &client,
+        &state.peer_cache,
+        &db_pool,
+        folder_ids,
+        crate::tenant_auth::OWNER_WEB,
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn cmd_invalidate_file_index(
+    db_pool: State<'_, crate::db::DbConnection>,
+) -> Result<bool, String> {
+    crate::db::set_file_index_complete(&db_pool, false)?;
+    Ok(true)
 }
 
 #[tauri::command]
 pub async fn cmd_search_global(
     query: String,
+    #[allow(unused_variables)] app: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<Vec<FileMetadata>, String> {
-    let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() { 
+    let q = query.trim();
+    if q.is_empty() {
         return Ok(Vec::new());
     }
-    let client = client_opt.unwrap();
+
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_uses_asset_index(&app, &db_pool).await? {
+            return search_files_from_asset_index(
+                &db_pool,
+                q,
+                Some(crate::tenant_auth::OWNER_WEB),
+                50,
+            );
+        }
+    }
+
+    if crate::db::is_file_index_complete(&db_pool)? {
+        #[cfg(not(feature = "headless-server"))]
+        {
+            return search_files_from_asset_index(&db_pool, q, None, 50);
+        }
+        #[cfg(feature = "headless-server")]
+        {
+            let records = crate::db::search_file_assets(&db_pool, q, None, None, false, 50)?;
+            return Ok(records
+                .into_iter()
+                .map(|r| {
+                    let ext = std::path::Path::new(&r.file_name)
+                        .extension()
+                        .map(|os| os.to_str().unwrap_or("").to_string());
+                    FileMetadata {
+                        id: r.message_id as i64,
+                        folder_id: r.folder_id,
+                        name: r.file_name,
+                        size: r.file_size as u64,
+                        mime_type: None,
+                        file_ext: ext,
+                        created_at: r.created_at.to_string(),
+                        icon_type: "file".into(),
+                    }
+                })
+                .collect());
+        }
+    }
+
+    let client_opt = { state.client.lock().await.clone() };
+    let client = require_client(client_opt)?;
     let mut files = Vec::new();
-    
+
     log::info!("Searching global for: {}", query);
 
     let result = client.invoke(&tl::functions::messages::SearchGlobal {
@@ -605,25 +1067,24 @@ pub async fn cmd_search_global(
         for msg in msgs.messages {
             if let tl::enums::Message::Message(m) = msg {
                 if let Some(tl::enums::MessageMedia::Document(d)) = m.media {
-                    if let tl::enums::Document::Document(doc) = d.document.unwrap() {
-                        let name = doc.attributes.iter().find_map(|a| match a {
-                            tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
-                            _ => None
-                        }).unwrap_or("Unknown".to_string());
-                        let size = doc.size as u64;
-                        let mime = doc.mime_type.clone();
-                        let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                        let folder_id = match m.peer_id {
-                            tl::enums::Peer::Channel(c) => Some(c.channel_id),
-                            tl::enums::Peer::User(u) => Some(u.user_id),
-                            tl::enums::Peer::Chat(c) => Some(c.chat_id),
-                        };
-                        files.push(FileMetadata {
-                            id: m.id as i64, folder_id, name, size,
-                            mime_type: Some(mime), file_ext: ext,
-                            created_at: m.date.to_string(), icon_type: "file".into()
-                        });
-                    }
+                    let doc = match d.document {
+                        Some(tl::enums::Document::Document(doc)) => doc,
+                        None => return Err("Search result missing document payload".to_string()),
+                        Some(_) => return Err("Search result has unsupported document type".to_string()),
+                    };
+                    let name = doc.attributes.iter().find_map(|a| match a {
+                        tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
+                        _ => None
+                    }).unwrap_or("Unknown".to_string());
+                    let size = doc.size as u64;
+                    let mime = doc.mime_type.clone();
+                    let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
+                    let folder_id = crate::commands::utils::telegram_peer_id_to_folder_id(&m.peer_id);
+                    files.push(FileMetadata {
+                        id: m.id as i64, folder_id, name, size,
+                        mime_type: Some(mime), file_ext: ext,
+                        created_at: m.date.to_string(), icon_type: "file".into()
+                    });
                 }
             }
         }
@@ -631,25 +1092,24 @@ pub async fn cmd_search_global(
         for msg in msgs.messages {
             if let tl::enums::Message::Message(m) = msg {
                 if let Some(tl::enums::MessageMedia::Document(d)) = m.media {
-                    if let tl::enums::Document::Document(doc) = d.document.unwrap() {
-                        let name = doc.attributes.iter().find_map(|a| match a {
-                            tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
-                            _ => None
-                        }).unwrap_or("Unknown".to_string());
-                        let size = doc.size as u64;
-                        let mime = doc.mime_type.clone();
-                        let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                        let folder_id = match m.peer_id {
-                            tl::enums::Peer::Channel(c) => Some(c.channel_id),
-                            tl::enums::Peer::User(u) => Some(u.user_id),
-                            tl::enums::Peer::Chat(c) => Some(c.chat_id),
-                        };
-                        files.push(FileMetadata {
-                            id: m.id as i64, folder_id, name, size,
-                            mime_type: Some(mime), file_ext: ext,
-                            created_at: m.date.to_string(), icon_type: "file".into()
-                        });
-                    }
+                    let doc = match d.document {
+                        Some(tl::enums::Document::Document(doc)) => doc,
+                        None => return Err("Search result missing document payload".to_string()),
+                        Some(_) => return Err("Search result has unsupported document type".to_string()),
+                    };
+                    let name = doc.attributes.iter().find_map(|a| match a {
+                        tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
+                        _ => None
+                    }).unwrap_or("Unknown".to_string());
+                    let size = doc.size as u64;
+                    let mime = doc.mime_type.clone();
+                    let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
+                    let folder_id = crate::commands::utils::telegram_peer_id_to_folder_id(&m.peer_id);
+                    files.push(FileMetadata {
+                        id: m.id as i64, folder_id, name, size,
+                        mime_type: Some(mime), file_ext: ext,
+                        created_at: m.date.to_string(), icon_type: "file".into()
+                    });
                 }
             }
         }
@@ -661,13 +1121,11 @@ pub async fn cmd_search_global(
 #[tauri::command]
 pub async fn cmd_scan_folders(
     state: State<'_, TelegramState>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<Vec<FolderMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() { 
-        return Ok(Vec::new());
-    }
-    let client = client_opt.unwrap();
-    
+    let client = require_client(client_opt)?;
+
     let mut folders = Vec::new();
     let mut dialogs = client.iter_dialogs();
     let mut discovered = HashMap::new();
@@ -729,6 +1187,7 @@ pub async fn cmd_scan_folders(
     {
         let mut cache = state.peer_cache.write().await;
         cache.extend(discovered);
+        crate::commands::utils::trim_peer_cache(&mut cache, net_config.peer_cache_size());
     }
     
     let cache_len = state.peer_cache.read().await.len();
@@ -820,4 +1279,32 @@ pub async fn cmd_delete_temp_zip(
     })
     .await
     .map_err(|e| format!("Task panicked: {}", e))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_client_err_when_disconnected() {
+        match require_client(None) {
+            Err(err) => assert!(err.contains("not connected")),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[test]
+    fn move_files_result_serializes_camel_case() {
+        let result = MoveFilesResult {
+            moved: 2,
+            old_message_ids: vec![10, 11],
+            new_message_ids: vec![20, 21],
+            target_folder_id: Some(99),
+        };
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(json["moved"], 2);
+        assert_eq!(json["oldMessageIds"], serde_json::json!([10, 11]));
+        assert_eq!(json["newMessageIds"], serde_json::json!([20, 21]));
+        assert_eq!(json["targetFolderId"], 99);
+    }
 }

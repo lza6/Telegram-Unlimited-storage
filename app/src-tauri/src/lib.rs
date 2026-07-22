@@ -56,6 +56,7 @@ pub mod ui_settings;
 pub mod settings_routes;
 pub mod upload_progress;
 pub mod download_degradation;
+pub mod progress_distributed;
 pub mod storage_factory;
 pub mod chunk_index;
 #[cfg(not(feature = "headless-server"))]

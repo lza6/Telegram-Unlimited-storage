@@ -5,9 +5,169 @@ use base64::{Engine as _, engine::general_purpose};
 use crate::TelegramState;
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::resolve_peer;
+use crate::db::DbConnection;
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 80 * 1024 * 1024;
+
+fn preview_cache_path(
+    cache_dir: &std::path::Path,
+    folder_id: Option<i64>,
+    message_id: i32,
+    ext: &str,
+) -> std::path::PathBuf {
+    let folder_key = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+    cache_dir.join(format!("{folder_key}_{message_id}.{ext}"))
+}
+
+#[cfg(not(feature = "headless-server"))]
+async fn resolve_preview_extension(
+    db_pool: &DbConnection,
+    message_id: i32,
+) -> String {
+    if let Ok(Some(record)) = crate::db::get_file_asset(db_pool, message_id) {
+        let ext = crate::local_api::extension_from_filename(&record.file_name);
+        if ext != "bin" {
+            return ext;
+        }
+    }
+    if let Ok(Some(record)) = crate::db::get_bot_file_map(db_pool, message_id) {
+        let ext = crate::local_api::extension_from_filename(&record.file_name);
+        if ext != "bin" {
+            return ext;
+        }
+    }
+    "bin".to_string()
+}
+
+#[cfg(not(feature = "headless-server"))]
+async fn preview_via_local_api(
+    app_handle: &tauri::AppHandle,
+    message_id: i32,
+    folder_id: Option<i64>,
+    cache_dir: std::path::PathBuf,
+    db_pool: &DbConnection,
+    bw_state: &BandwidthManager,
+) -> Result<String, String> {
+    let data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let bridge = crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
+    let ext = resolve_preview_extension(db_pool, message_id).await;
+    let save_path = preview_cache_path(&cache_dir, folder_id, message_id, &ext);
+    let save_path_str = save_path.to_string_lossy().to_string();
+
+    let file_ready = if tokio::fs::metadata(&save_path).await.is_ok() {
+        true
+    } else {
+        match crate::local_api::fetch_file_to_path(
+            &bridge,
+            message_id,
+            folder_id,
+            &save_path_str,
+            bw_state,
+        )
+        .await
+        {
+            Ok(_) => {
+                prune_preview_cache(cache_dir.clone()).await;
+                true
+            }
+            Err(e) => {
+                log::error!("Bot preview download error: {e}");
+                false
+            }
+        }
+    };
+
+    if !file_ready {
+        return Err("File not found or failed to download".to_string());
+    }
+
+    let lower_ext = ext.to_lowercase();
+    if ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].contains(&lower_ext.as_str()) {
+        match tokio::fs::read(&save_path).await {
+            Ok(bytes) => {
+                let b64 = general_purpose::STANDARD.encode(&bytes);
+                let mime = match lower_ext.as_str() {
+                    "png" => "image/png",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    "bmp" => "image/bmp",
+                    "svg" => "image/svg+xml",
+                    _ => "image/jpeg",
+                };
+                return Ok(format!("data:{mime};base64,{b64}"));
+            }
+            Err(e) => {
+                log::error!("Failed to read preview file: {e}");
+                return Ok(save_path_str);
+            }
+        }
+    }
+    Ok(save_path_str)
+}
+
+#[cfg(not(feature = "headless-server"))]
+async fn thumbnail_via_local_api(
+    app_handle: &tauri::AppHandle,
+    message_id: i32,
+    folder_id: Option<i64>,
+    cache_dir: std::path::PathBuf,
+    db_pool: &DbConnection,
+    bw_state: &BandwidthManager,
+) -> Result<String, String> {
+    let ext = resolve_preview_extension(db_pool, message_id).await;
+    let lower = ext.to_lowercase();
+    if !["jpg", "jpeg", "png", "gif", "webp"].contains(&lower.as_str()) {
+        return Ok(String::new());
+    }
+    let thumb_ext = if lower == "jpeg" {
+        "jpg".to_string()
+    } else {
+        lower.clone()
+    };
+    let save_path = cache_dir.join(format!("{message_id}.{thumb_ext}"));
+    if tokio::fs::metadata(&save_path).await.is_ok() {
+        if let Ok(bytes) = tokio::fs::read(&save_path).await {
+            let mime = match thumb_ext.as_str() {
+                "png" => "image/png",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                _ => "image/jpeg",
+            };
+            let b64 = general_purpose::STANDARD.encode(&bytes);
+            return Ok(format!("data:{mime};base64,{b64}"));
+        }
+    }
+
+    let data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let bridge = crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
+    let save_path_str = save_path.to_string_lossy().to_string();
+    if crate::local_api::fetch_file_to_path(
+        &bridge,
+        message_id,
+        folder_id,
+        &save_path_str,
+        bw_state,
+    )
+    .await
+    .is_ok()
+    {
+        if let Ok(bytes) = tokio::fs::read(&save_path).await {
+            bw_state.add_down(bytes.len() as u64).await;
+            let mime = match thumb_ext.as_str() {
+                "png" => "image/png",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                _ => "image/jpeg",
+            };
+            let b64 = general_purpose::STANDARD.encode(&bytes);
+            return Ok(format!("data:{mime};base64,{b64}"));
+        }
+    }
+    Ok(String::new())
+}
 
 async fn prune_preview_cache(cache_dir: std::path::PathBuf) {
     let _ = tokio::task::spawn_blocking(move || {
@@ -47,6 +207,8 @@ pub async fn cmd_get_preview(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
+    #[allow(unused_variables)]
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     let cache_dir = app_handle
         .path()
@@ -59,11 +221,26 @@ pub async fn cmd_get_preview(
     prune_preview_cache(cache_dir.clone()).await;
     log::info!("Using preview cache dir: {:?}", cache_dir);
     log::info!("Preview Request: msg_id={}", message_id);
-    let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() {
-        return Ok("".to_string());
+
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_uses_asset_index(&app_handle, &db_pool).await? {
+            return preview_via_local_api(
+                &app_handle,
+                message_id,
+                folder_id,
+                cache_dir,
+                &db_pool,
+                &bw_state,
+            )
+            .await;
+        }
     }
-    let client = client_opt.unwrap();
+
+    let client_opt = { state.client.lock().await.clone() };
+    let Some(client) = client_opt else {
+        return Ok("".to_string());
+    };
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     let messages = client.get_messages_by_id(&peer, &[message_id])
@@ -111,14 +288,14 @@ pub async fn cmd_get_preview(
                     _ => 0,
                 };
                 log::info!("Downloading preview... Size: {}", size);
-                if let Err(e) = bw_state.can_transfer(size) {
+                if let Err(e) = bw_state.can_transfer(size).await {
                     log::warn!("Bandwidth limit hit for preview: {}", e);
                     false
                 } else {
                     match client.download_media(&media, &save_path_str).await {
                         Ok(_) => {
                             log::info!("Preview download complete.");
-                            bw_state.add_down(size);
+                            bw_state.add_down(size).await;
                             prune_preview_cache(cache_dir.clone()).await;
                             true
                         },
@@ -195,6 +372,9 @@ pub async fn cmd_get_thumbnail(
     folder_id: Option<i64>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    bw_state: State<'_, BandwidthManager>,
+    #[allow(unused_variables)]
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     // Check if thumbnail already in cache
     let cache_dir = app_handle
@@ -224,12 +404,26 @@ pub async fn cmd_get_thumbnail(
         }
     }
 
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_uses_asset_index(&app_handle, &db_pool).await? {
+            return thumbnail_via_local_api(
+                &app_handle,
+                message_id,
+                folder_id,
+                cache_dir,
+                &db_pool,
+                &bw_state,
+            )
+            .await;
+        }
+    }
+
     // No cache, need to fetch from Telegram
     let client_opt = { state.client.lock().await.clone() };
-    if client_opt.is_none() {
+    let Some(client) = client_opt else {
         return Ok("".to_string());
-    }
-    let client = client_opt.unwrap();
+    };
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     let messages = client.get_messages_by_id(&peer, &[message_id])
@@ -275,6 +469,10 @@ pub async fn cmd_get_thumbnail(
                 };
 
                 if download_success {
+                    // Track bandwidth for thumbnail download
+                    if let Ok(meta) = tokio::fs::metadata(&save_path).await {
+                        bw_state.add_down(meta.len()).await;
+                    }
                     if let Ok(bytes) = tokio::fs::read(&save_path).await {
                         let mime = match ext.as_str() {
                             "png" => "image/png",

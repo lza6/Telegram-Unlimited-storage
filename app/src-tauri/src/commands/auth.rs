@@ -25,6 +25,20 @@ pub async fn ensure_client_initialized(
     state: &State<'_, TelegramState>,
     api_id: i32,
 ) -> Result<Client, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let net_config = app_handle.state::<Arc<crate::vpn_optimizer::NetworkConfig>>();
+    ensure_client_initialized_at(&app_data_dir, net_config.inner(), state, api_id).await
+}
+
+pub async fn ensure_client_initialized_at(
+    data_dir: &std::path::Path,
+    net_config: &Arc<crate::vpn_optimizer::NetworkConfig>,
+    state: &TelegramState,
+    api_id: i32,
+) -> Result<Client, String> {
     let mut client_guard = state.client.lock().await;
 
     if let Some(client) = client_guard.as_ref() {
@@ -32,34 +46,21 @@ pub async fn ensure_client_initialized(
     }
 
     // CRITICAL: Shutdown existing runner before creating a new one
-    // This prevents runner task accumulation which causes stack overflow
-    let did_shutdown_old_runner = {
-        let mut guard = state.runner_shutdown.lock().unwrap();
-        if let Some(shutdown_tx) = guard.take() {
-            log::info!("Signaling old runner to shutdown...");
-            let _ = shutdown_tx.send(());
-            true
-        } else {
-            false
-        }
-    }; // MutexGuard dropped here — before the await
+    let did_shutdown_old_runner = crate::commands::signal_runner_shutdown(&state.runner_shutdown);
     if did_shutdown_old_runner {
+        log::info!("Signaling old runner to shutdown...");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     let runner_num = state.runner_count.fetch_add(1, Ordering::SeqCst) + 1;
     log::info!("Initializing Telegram Client #{} with API ID: {}", runner_num, api_id);
     
-    // Resolve session path safely
-    let app_data_dir = app_handle.path().app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-        
-    if !app_data_dir.exists() {
-        std::fs::create_dir_all(&app_data_dir)
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)
             .map_err(|e| format!("Failed to create app data dir: {}", e))?;
     }
-    
-    let session_path = app_data_dir.join("telegram.session");
+
+    let session_path = data_dir.join("telegram.session");
     let session_path_str = session_path.to_string_lossy().to_string();
     log::info!("Opening session at: {}", session_path_str);
     
@@ -91,9 +92,8 @@ pub async fn ensure_client_initialized(
         }
     };
         
-    let net_config = app_handle.state::<Arc<crate::vpn_optimizer::NetworkConfig>>();
     let preferred_dc = {
-        let vpn = net_config.vpn.read().unwrap();
+        let vpn = net_config.vpn.read().await;
         if vpn.enabled {
             vpn.preferred_dc.clone()
         } else {
@@ -108,7 +108,7 @@ pub async fn ensure_client_initialized(
     }
 
     let mut connection_params = grammers_mtsender::ConnectionParams::default();
-    let proxy = net_config.proxy.read().unwrap();
+    let proxy = net_config.proxy.read().await;
     if proxy.enabled && !proxy.host.is_empty() {
         if proxy.proxy_type == "socks5" {
             let url = if !proxy.username.is_empty() {
@@ -135,17 +135,21 @@ pub async fn ensure_client_initialized(
     
     // Create shutdown channel for this runner
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    *state.runner_shutdown.lock().unwrap() = Some(shutdown_tx);
+    {
+        let mut guard = match state.runner_shutdown.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Some(shutdown_tx);
+    }
     
     // Spawn the network runner with shutdown support
     let SenderPool { runner, .. } = pool;
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         tokio::select! {
-            // Normal runner operation
             _ = runner.run() => {
                 log::info!("Runner #{} exited normally", runner_num);
             }
-            // Shutdown requested
             _ = shutdown_rx => {
                 log::info!("Runner #{} shutdown requested, exiting", runner_num);
             }
@@ -212,21 +216,40 @@ pub async fn cmd_check_connection(
     Ok(false) // Not connected and no credentials to reconnect
 }
 
+/// Reconnect Telegram after proxy/VPN network settings change.
+#[tauri::command]
+pub async fn cmd_reconnect_telegram(
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+) -> Result<bool, String> {
+    log::info!("Reconnecting Telegram client after network settings change...");
+    crate::commands::signal_runner_shutdown(&state.runner_shutdown);
+    *state.client.lock().await = None;
+
+    let api_id_opt = *state.api_id.lock().await;
+    let Some(api_id) = api_id_opt else {
+        return Ok(false);
+    };
+
+    let client = ensure_client_initialized(&app_handle, &state, api_id).await?;
+    if client.get_me().await.is_ok() {
+        log::info!("Network reconnect successful.");
+        Ok(true)
+    } else {
+        Err("Reconnect succeeded but ping failed.".to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn cmd_logout(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<bool, String> {
     log::info!("Logging out...");
-    
-    // 1. Shutdown the network runner FIRST to prevent any operations
-    {
-        let mut shutdown_guard = state.runner_shutdown.lock().unwrap();
-        if let Some(shutdown_tx) = shutdown_guard.take() {
-            log::info!("Signaling runner shutdown for logout...");
-            let _ = shutdown_tx.send(());
-        }
-    }
+
+    log::info!("Signaling runner shutdown for logout...");
+    crate::commands::signal_runner_shutdown(&state.runner_shutdown);
     
     // 2. Try to sign out from Telegram (if connected)
     let client_opt = { state.client.lock().await.clone() };
@@ -244,11 +267,16 @@ pub async fn cmd_logout(
     state.cancelled_transfers.write().await.clear();
 
     // 4. Remove Session File
-    let app_data_dir = app_handle.path().app_data_dir().unwrap();
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     let session_path = app_data_dir.join("telegram.session");
     let _ = std::fs::remove_file(session_path);
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-wal"));
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-shm"));
+
+    let _ = crate::db::set_file_index_complete(&db_pool, false);
 
     log::info!("Logout complete. Runner count: {}", state.runner_count.load(Ordering::SeqCst));
     Ok(true)

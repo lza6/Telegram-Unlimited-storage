@@ -23,10 +23,13 @@
   <link rel="stylesheet" href="/assets/admin.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar">
-      <strong>Telegram Drive</strong>
-      <nav style="margin-top:20px">
+      <a class="brand-lockup" href="/dashboard.html" aria-label="Telegram Drive 控制台首页">
+        <span>Telegram Drive</span>
+      </a>
+      <nav class="sidebar-nav sidebar-nav-spaced" aria-label="主导航">
         <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
         <a href="/files.html" data-nav="files">文件列表</a>
         <a href="/shares.html" data-nav="shares">分享管理</a>
@@ -34,16 +37,22 @@
         <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
         <a href="/docs.html" data-nav="docs">API 文档</a>
         <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
       </nav>
     </aside>
-    <section class="content">
-      <div class="head-row">
-        <h2>分享链接</h2>
-        <button type="button" id="refresh-shares" class="btn-secondary btn-sm">刷新</button>
-      </div>
+    <main id="main-content" class="content" tabindex="-1">
+      <header class="page-header page-header--compact">
+        <div class="page-header-copy">
+          <p class="eyebrow">Public links</p>
+          <h2>分享链接</h2>
+          <p class="page-subtitle">创建可控的文件链接，设置密码与过期时间，并随时撤销访问。</p>
+        </div>
+        <div class="page-actions">
+          <button type="button" id="refresh-shares" class="btn-secondary btn-sm">刷新列表</button>
+        </div>
+      </header>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-      <div id="service-banner" class="service-banner" hidden role="alert" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
+      <div id="service-banner" class="service-banner service-banner--inline" hidden role="alert" aria-live="assertive"></div>
       <div class="settings-block">
         <h3>创建分享</h3>
         <form id="create-share-form" class="share-create-form">
@@ -59,7 +68,7 @@
           <input type="password" id="share-password" placeholder="留空表示无密码" autocomplete="new-password" />
           <label for="share-expiry-hours">有效期（小时，可选）</label>
           <input type="number" id="share-expiry-hours" min="1" placeholder="留空表示永不过期" />
-          <button type="submit" class="btn-secondary btn-sm" style="margin-top:8px;width:auto">创建并复制链接</button>
+          <button type="submit" class="btn-secondary btn-sm button--auto button--top-gap">创建并复制链接</button>
         </form>
         <p class="muted">也可在 <a href="/files.html">文件列表</a> 行内点「分享」。</p>
       </div>
@@ -69,10 +78,11 @@
         <p class="muted">与「服务设置」共用服务端 <code>ui_settings.json</code>，全浏览器同步。</p>
       </div>
       <div id="shares-list"></div>
-    </section>
+    </main>
   </div>
   <script src="/assets/api-client.js"></script>
   <script src="/assets/share-domain.js"></script>
+  <script src="/assets/share-pure.js"></script>
   <script src="/assets/shares-core.js"></script>
 </body>
 </html>

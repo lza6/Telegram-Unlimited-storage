@@ -76,9 +76,12 @@
       .replace(/"/g, '&quot;');
   }
 
+  var createShareInFlight = false;
+
   if (createForm) {
     createForm.addEventListener('submit', async function (ev) {
       ev.preventDefault();
+      if (createShareInFlight) return;
       var messageId = parseInt(document.getElementById('share-message-id').value, 10);
       var fileName = document.getElementById('share-file-name').value.trim();
       var fileSize = parseInt(document.getElementById('share-file-size').value, 10) || 0;
@@ -108,6 +111,9 @@
         return;
       }
 
+      createShareInFlight = true;
+      var submitButton = createForm.querySelector('button[type=submit]');
+      if (submitButton) submitButton.disabled = true;
       try {
         var info = await TdApi.apiJson('/api/v1/shares', {
           method: 'POST',
@@ -126,6 +132,9 @@
         loadShares();
       } catch (e) {
         TdApi.showToast(String(e.message || e), 'err');
+      } finally {
+        createShareInFlight = false;
+        if (submitButton) submitButton.disabled = false;
       }
     });
   }
@@ -208,6 +217,17 @@
       TdApi.showToast(String(e.message || e), 'err');
     }
   }
+
+  // File deletion can happen in another browser tab. Reconcile the list on
+  // storage/custom-event notifications and when the tab becomes visible again
+  // so revoked links never remain stale until a manual refresh.
+  window.addEventListener('storage', function (event) {
+    if (event.key === 'td-shares-invalidate') loadShares();
+  });
+  window.addEventListener('td-shares-invalidate', loadShares);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) loadShares();
+  });
 
   refreshBtn.addEventListener('click', loadShares);
   loadShares();

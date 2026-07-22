@@ -381,7 +381,7 @@
 
         metricsHint.textContent = 'Metrics 未启用（.env METRICS_ENABLED=false）';
 
-        metricsLink.style.display = 'none';
+        metricsLink.hidden = true;
 
         return;
 
@@ -393,13 +393,13 @@
 
         metricsLink.href = '/metrics';
 
-        metricsLink.style.display = 'inline-flex';
+        metricsLink.hidden = false;
 
       } else {
 
         metricsHint.textContent = 'Metrics 探测失败: HTTP ' + res.status;
 
-        metricsLink.style.display = 'none';
+        metricsLink.hidden = true;
 
       }
 

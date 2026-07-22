@@ -1,5 +1,6 @@
 /* Shared REST client for Web admin — uses session ACCESS_PWD as X-Access-Pwd */
 (function (global) {
+  var toastTimer = null;
   function getAccessPwd() {
     return sessionStorage.getItem('td_access_pwd') || sessionStorage.getItem('pwd') || '';
   }
@@ -15,7 +16,10 @@
 
   function initSidebar(activeNav) {
     document.querySelectorAll('[data-nav]').forEach(function (el) {
-      el.classList.toggle('active', el.getAttribute('data-nav') === activeNav);
+      var isActive = el.getAttribute('data-nav') === activeNav;
+      el.classList.toggle('active', isActive);
+      if (isActive) el.setAttribute('aria-current', 'page');
+      else el.removeAttribute('aria-current');
     });
     var logout = document.getElementById('logout-btn');
     if (logout && !logout.dataset.bound) {
@@ -36,8 +40,14 @@
     if (type === 'err') cls += ' toast-err';
     else if (type === 'info') cls += ' toast-info';
     el.className = cls;
+    el.setAttribute('role', type === 'err' ? 'alert' : 'status');
+    el.setAttribute('aria-live', type === 'err' ? 'assertive' : 'polite');
     el.hidden = false;
-    setTimeout(function () { el.hidden = true; }, 4500);
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      el.hidden = true;
+      toastTimer = null;
+    }, 4500);
   }
 
   async function apiFetch(path, options) {
@@ -134,6 +144,19 @@
     return health;
   }
 
+  /** API process reachable — enough for DB-only mutations (share CRUD, Bot bulk delete) */
+  async function ensureApiAvailable() {
+    var health = await fetchHealth();
+    if (!health || typeof health.version !== 'string') {
+      throw new Error('API 服务不可用，请确认服务已启动');
+    }
+    return health;
+  }
+
+  async function ensureTransportReady() {
+    return ensureServiceReady();
+  }
+
   function formatSize(bytes) {
     var n = Number(bytes) || 0;
     if (n < 1024) return n + ' B';
@@ -161,6 +184,8 @@
     fetchHealth: fetchHealth,
     fetchAuthStatus: fetchAuthStatus,
     ensureServiceReady: ensureServiceReady,
+    ensureTransportReady: ensureTransportReady,
+    ensureApiAvailable: ensureApiAvailable,
     formatSize: formatSize,
     copyToClipboard: copyToClipboard,
   };

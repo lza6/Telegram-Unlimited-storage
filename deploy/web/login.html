@@ -29,17 +29,23 @@
 
 </head>
 
-<body class="page-center">
+<body class="page-center login-page">
 
-  <a class="skip-link" href="#login-form">跳到登录表单</a>
+  <a class="skip-link" href="#main-content">跳到登录表单</a>
 
-  <main class="card" role="main">
+  <div class="login-shell">
+    <section class="login-brand" aria-labelledby="product-title">
+      <p class="login-kicker">Midnight Relay</p>
+      <h1 id="product-title">Telegram<br />Drive</h1>
+      <p class="login-copy">把 Telegram 连接成清晰、可靠的文件中继站。管理上传、文件、分享与服务状态，不暴露真实 Telegram 凭据。</p>
+    </section>
 
-    <h1>Telegram Drive</h1>
+    <main id="main-content" class="card login-card" tabindex="-1">
+      <p class="eyebrow">安全访问</p>
+      <h2>进入控制台</h2>
+      <p class="login-meta">使用服务端配置的管理密码。它仅用于访问本控制台，与 Telegram API 凭据无关。</p>
 
-    <p class="muted">API 服务管理台 · <code>http://localhost:1334</code><br>密码 = 项目根目录 <code>.env</code> 中的 <code>ACCESS_PWD</code>（与 Telegram API 无关）</p>
-
-    <form id="login-form" novalidate>
+      <form id="login-form" novalidate>
 
       <label for="username-input" class="sr-only">账号</label>
 
@@ -63,9 +69,9 @@
 
       />
 
-      <label for="pwd-input">管理密码 (ACCESS_PWD)</label>
-
-      <div class="input-row">
+      <div class="field-stack">
+        <label for="pwd-input">管理密码 <span class="muted">ACCESS_PWD</span></label>
+        <div class="input-row">
 
         <input
 
@@ -85,8 +91,8 @@
 
         />
 
-        <button type="button" id="toggle-pwd" class="btn-icon" aria-label="显示密码" aria-pressed="false">显示</button>
-
+          <button type="button" id="toggle-pwd" class="btn-icon btn-secondary" aria-label="显示密码" aria-pressed="false">显示</button>
+        </div>
       </div>
 
       <button type="submit" id="submit-btn">
@@ -97,22 +103,18 @@
 
       </button>
 
-    </form>
+      </form>
 
-    <p id="err" class="error hidden" role="alert" aria-live="polite"></p>
-    <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+      <p id="err" class="error hidden" role="alert" aria-live="assertive"></p>
+      <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
 
-    <nav class="links" aria-label="相关页面">
-
-      <a href="/docs.html">API 文档</a>
-
-      <a href="/login.html?next=/telegram.html">Telegram 账号登录</a>
-
-      <a href="/login.html?next=/upload.html">登录后进入 tg-disk 上传页</a>
-
-    </nav>
-
-  </main>
+      <nav class="links login-footer" aria-label="相关页面">
+        <a href="/docs.html">API 文档</a>
+        <a href="/login.html?next=/telegram.html">绑定 Telegram</a>
+        <a href="/login.html?next=/upload.html">兼容上传入口</a>
+      </nav>
+    </main>
+  </div>
 
   <script src="/assets/web-pure.js"></script>
   <script src="/assets/login.js"></script>
@@ -120,4 +122,3 @@
 </body>
 
 </html>
-

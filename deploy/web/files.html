@@ -23,27 +23,38 @@
   <link rel="stylesheet" href="/assets/admin.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar">
-      <strong>Telegram Drive</strong>
-      <nav style="margin-top:20px">
+      <a class="brand-lockup" href="/dashboard.html" aria-label="Telegram Drive 控制台首页">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Telegram Drive</span>
+      </a>
+      <nav class="sidebar-nav" aria-label="主导航">
         <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
-        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/files.html" data-nav="files" aria-current="page">文件列表</a>
         <a href="/shares.html" data-nav="shares">分享管理</a>
         <a href="/settings.html" data-nav="settings">服务设置</a>
         <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
         <a href="/docs.html" data-nav="docs">API 文档</a>
         <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
-        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
       </nav>
-      <p class="muted" style="margin-top:16px;font-size:0.8rem">Bot 模式仅支持批量删除（删索引）；批量移动需 User 模式。完整管理可用桌面端。</p>
+      <p class="sidebar-note">Bot 模式可管理索引；批量移动需要 User 模式。高级配置与 API 说明可在设置和文档中完成。</p>
     </aside>
-    <section class="content">
-      <h2>文件列表</h2>
-      <div id="service-banner" class="service-banner" hidden role="alert" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
+    <main id="main-content" class="content" tabindex="-1">
+      <header class="page-header">
+        <div class="page-header-copy">
+          <p class="eyebrow">Indexed storage</p>
+          <h2>文件列表</h2>
+          <p class="page-subtitle">检索 Telegram 存储索引，执行下载、分享与受控的批量操作。</p>
+        </div>
+      </header>
+      <div id="service-banner" class="service-banner" hidden role="alert" aria-live="assertive"></div>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-      <div class="toolbar">
-        <input type="search" id="search-input" placeholder="搜索文件名，回车查询…" class="toolbar-input" />
+      <div class="toolbar" role="search" aria-label="文件筛选与批量操作">
+        <label for="search-input" class="sr-only">搜索文件名</label>
+        <input type="search" id="search-input" placeholder="搜索文件名，按回车查询…" class="toolbar-input" autocomplete="off" />
         <button type="button" id="refresh-btn" class="btn-secondary btn-sm">刷新</button>
         <select id="bulk-move-folder" class="toolbar-input" aria-label="移动到文件夹" disabled>
           <option value="">Saved Messages</option>
@@ -55,7 +66,7 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th style="width:40px"><input type="checkbox" id="select-all" aria-label="全选" /></th>
+              <th class="select-column"><label for="select-all" class="sr-only">选择当前页全部文件</label><input type="checkbox" id="select-all" aria-label="选择当前页全部文件" /></th>
               <th>ID</th>
               <th>名称</th>
               <th>大小</th>
@@ -68,11 +79,13 @@
         </table>
       </div>
       <div id="pager" class="pager"></div>
-    </section>
+      <p id="file-action-status" class="sr-only" role="status" aria-live="polite"></p>
+    </main>
   </div>
   <script src="/assets/api-client.js"></script>
   <script src="/assets/web-pure.js"></script>
   <script src="/assets/share-domain.js"></script>
+  <script src="/assets/share-pure.js"></script>
   <script src="/assets/files-pure.js"></script>
   <script src="/assets/download-pure.js"></script>
   <script src="/assets/files-core.js"></script>

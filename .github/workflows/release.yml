@@ -1,0 +1,283 @@
+name: "Release"
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0, v1.0.1
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          # Extract the first version block from CHANGELOG.md (between first and second ## headings)
+          BODY=$(awk '/^## \[/{if(found) exit; found=1; next} found' CHANGELOG.md)
+          # Escape for GitHub Actions output
+          echo "BODY<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create-release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: ${{ steps.changelog.outputs.BODY }}
+          RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${process.env.RELEASE_VERSION}`,
+              name: `Telegram Drive v${process.env.RELEASE_VERSION}`,
+              body: process.env.RELEASE_BODY,
+              draft: true,
+              prerelease: false
+            });
+            return data.id
+
+  build-tauri:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows
+          - platform: windows-latest
+            args: ''
+            target: ''
+          
+          # Linux
+          - platform: ubuntu-22.04
+            args: ''
+            target: ''
+            
+          # macOS Intel
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+            target: 'x86_64-apple-darwin'
+          
+          # macOS Apple Silicon
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libfuse2
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Build the app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          projectPath: ./app
+          args: ${{ matrix.args }}
+
+      - name: Patch AppImage for cross-distro EGL compatibility
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+
+          APPIMAGE_DIR="app/src-tauri/target/release/bundle/appimage"
+          APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -name "*.AppImage" -type f 2>/dev/null | head -1)
+
+          if [ -z "$APPIMAGE" ]; then
+            echo "::warning::No .AppImage found under $APPIMAGE_DIR — skipping patch step"
+            exit 0
+          fi
+
+          echo "--- Found AppImage: $APPIMAGE ---"
+          chmod +x "$APPIMAGE"
+
+          # Download appimagetool
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -O appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # Extract the AppImage
+          "$APPIMAGE" --appimage-extract
+
+          # ── Strip bundled EGL / GL / GLVND libs that shadow host GPU drivers ──
+          STRIP_LIBS=(
+            libEGL.so      libEGL.so.1
+            libGL.so       libGL.so.1
+            libGLdispatch.so libGLdispatch.so.0
+            libGLX.so      libGLX.so.0
+            libGLESv2.so   libGLESv2.so.2
+          )
+          for lib in "${STRIP_LIBS[@]}"; do
+            find squashfs-root -name "$lib" -type f -delete -o -name "$lib" -type l -delete 2>/dev/null || true
+          done
+          echo "--- Stripped ${#STRIP_LIBS[@]} bundled GL/EGL library patterns ---"
+
+          # ── Detect inner binary name ──
+          # Stage 1: parse the .desktop file's Exec= line (most reliable)
+          INNER_BIN=$(find squashfs-root -maxdepth 2 -name "*.desktop" | \
+            xargs -I{} awk -F= '/^Exec=/{print $2; exit}' {} 2>/dev/null | \
+            awk '{print $1}' | xargs basename 2>/dev/null || true)
+          # Stage 2: first executable file in usr/bin
+          if [ -z "$INNER_BIN" ]; then
+            INNER_BIN=$(ls squashfs-root/usr/bin/ 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$INNER_BIN" ]; then
+            echo "::error::Could not detect inner binary name — aborting patch"
+            exit 1
+          fi
+          echo "--- Inner binary: $INNER_BIN ---"
+
+          # ── Write new AppRun ──
+          cat > squashfs-root/AppRun << 'APPRUN_EOF'
+          #!/usr/bin/env bash
+          # ── Telegram Drive — cross-distro AppRun wrapper ──
+          # Fixes EGL_BAD_ALLOC on Arch/Fedora/rolling-release distros by ensuring
+          # the host's GPU driver stack is used instead of bundled Ubuntu Mesa libs.
+          set -u
+
+          SELF="$(readlink -f "$0")"
+          APPDIR="${SELF%/*}"
+          export APPDIR
+
+          # ── 1. Locale: normalise to C.UTF-8 if current locale is not generated ──
+          if ! locale -a 2>/dev/null | grep -qi "^${LANG:-C}$"; then
+            export LANG="C.UTF-8"
+            export LC_ALL="C.UTF-8"
+          fi
+
+          # ── 2. Silence AT-SPI / atk-bridge warnings when no a11y bus is present ──
+          export NO_AT_BRIDGE=1
+
+          # ── 3. Auto-detect EGL platform ──
+          if [ -z "${EGL_PLATFORM:-}" ]; then
+            if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+              export EGL_PLATFORM=wayland
+            elif [ -n "${DISPLAY:-}" ]; then
+              export EGL_PLATFORM=x11
+            else
+              export EGL_PLATFORM=surfaceless
+            fi
+          fi
+
+          # ── 4. Point GLVND at system vendor ICDs ──
+          GLVND_DIRS=""
+          for d in /usr/share/glvnd/egl_vendor.d /etc/glvnd/egl_vendor.d; do
+            [ -d "$d" ] && GLVND_DIRS="${GLVND_DIRS:+$GLVND_DIRS:}$d"
+          done
+          if [ -n "$GLVND_DIRS" ]; then
+            export __EGL_VENDOR_LIBRARY_DIRS="$GLVND_DIRS"
+          fi
+
+          # ── 5. Preload first found system libEGL.so.1 ──
+          SYS_EGL=""
+          for p in /usr/lib/x86_64-linux-gnu/libEGL.so.1 \
+                   /usr/lib64/libEGL.so.1 \
+                   /usr/lib/libEGL.so.1; do
+            if [ -f "$p" ]; then
+              SYS_EGL="$p"
+              break
+            fi
+          done
+          if [ -n "$SYS_EGL" ]; then
+            export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$SYS_EGL"
+          fi
+
+          # ── 6. Software rendering fallback (opt-in via LIBGL_ALWAYS_SOFTWARE=1) ──
+          if [ "${LIBGL_ALWAYS_SOFTWARE:-0}" = "1" ]; then
+            export GALLIUM_DRIVER=llvmpipe
+            export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          fi
+
+          # ── 7. LD_LIBRARY_PATH: system paths BEFORE bundled paths ──
+          SYS_LIB_PATHS="/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib"
+          BUNDLED_PATHS="${APPDIR}/usr/lib:${APPDIR}/lib"
+          export LD_LIBRARY_PATH="${SYS_LIB_PATHS}:${BUNDLED_PATHS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+          # ── 8. Exec the inner binary ──
+          exec "${APPDIR}/usr/bin/__INNER_BIN__" "$@"
+          APPRUN_EOF
+
+          # Un-indent the heredoc (it was indented for YAML readability)
+          sed -i 's/^          //' squashfs-root/AppRun
+
+          # Inject the detected binary name
+          sed -i "s|__INNER_BIN__|${INNER_BIN}|g" squashfs-root/AppRun
+          chmod +x squashfs-root/AppRun
+
+          echo "--- New AppRun written and configured ---"
+
+          # ── Repack with gzip compression ──
+          # APPIMAGE_EXTRACT_AND_RUN=1 avoids needing the FUSE kernel module
+          # on GitHub Actions runners (appimagetool is itself an AppImage)
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 \
+            ./appimagetool-x86_64.AppImage --comp gzip squashfs-root "$APPIMAGE"
+
+          # Cleanup
+          rm -rf squashfs-root appimagetool-x86_64.AppImage
+
+          echo "::notice::AppImage patched successfully for cross-distro EGL compatibility"
+
+  publish-release:
+    needs: [create-release, build-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish Release
+        uses: actions/github-script@v7
+        env:
+          release_id: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: process.env.release_id,
+              draft: false,
+              prerelease: false
+            })

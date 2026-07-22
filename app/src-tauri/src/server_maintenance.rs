@@ -17,9 +17,22 @@ pub fn run_maintenance_pass(db: &DbConnection, config: &ServerConfig) {
         _ => {}
     }
     match crate::db::cleanup_stale_uploads(db) {
-        Ok(n) if n > 0 => log::info!("maintenance: removed {n} stale upload session(s)"),
+        Ok(c) if c.sessions_removed > 0 => {
+            log::info!(
+                "maintenance: removed {} stale upload session(s)",
+                c.sessions_removed
+            );
+            if !c.orphan_file_ids.is_empty() {
+                // H6: orphans logged for now; Telegram-channel purge is wired
+                // in P1-1 once the maintenance task holds a transport handle.
+                log::warn!(
+                    "maintenance: {} orphan TG message(s) from stale sessions not yet purged from channel",
+                    c.orphan_file_ids.len()
+                );
+            }
+        }
+        Ok(_) => {}
         Err(e) => log::warn!("maintenance: upload cleanup failed: {e}"),
-        _ => {}
     }
     if config.metadata_cache_enabled {
         match crate::metadata_cache::cleanup_stale(db, METADATA_MAX_AGE_SECS) {

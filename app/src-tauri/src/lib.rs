@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 pub mod access_lockout;
 pub mod admin_routes;
 pub mod api_routes;
+pub mod asset_locator;
 pub mod auth_routes;
 pub mod bot_pool;
 pub mod db;
@@ -35,6 +36,9 @@ pub mod logging;
 pub mod metadata_cache;
 pub mod metrics;
 pub mod password_kdf;
+pub mod postgres_control_plane;
+pub mod postgres_download_accounting;
+pub mod postgres_upload_saga;
 pub mod presigned_url;
 pub mod route_registry;
 pub mod secure_download;
@@ -57,12 +61,14 @@ pub mod chunk_index;
 pub mod desktop_api_server;
 pub mod download_counter;
 pub mod download_degradation;
+pub mod durable_scheduler;
 pub mod progress_distributed;
 pub mod session_backup;
 pub mod settings_routes;
 pub mod storage_factory;
 pub mod ui_settings;
 pub mod upload_progress;
+pub mod upload_saga_recovery;
 
 #[cfg(not(feature = "headless-server"))]
 use tauri::Manager;
@@ -181,6 +187,7 @@ pub fn run() {
                 peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 cancelled_transfers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 bot_pool: bot_pool.clone(),
+                user_probe_cache: Arc::new(commands::UserProbeCache::default()),
             });
             app.manage(bandwidth::BandwidthManager::new(app.handle()));
             app.manage(StreamConfig {

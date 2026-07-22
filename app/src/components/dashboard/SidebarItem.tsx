@@ -1,4 +1,4 @@
-import { useState, memo } from 'react';
+import { memo, useState } from 'react';
 import { Plus } from 'lucide-react';
 
 interface SidebarItemProps {
@@ -13,17 +13,21 @@ interface SidebarItemProps {
 }
 
 /**
- * SidebarItem - Pure DOM event-based drop handling
- *
+ * SidebarItem - Pure DOM event-based drop handling.
  * With Tauri's dragDropEnabled: false, DOM events work reliably.
- * This component handles internal file moves via standard React drag events.
  */
 export const SidebarItem = memo(function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop, onDelete, dropEnabled = true }: SidebarItemProps) {
     const [isOver, setIsOver] = useState(false);
+    const itemClassName = `group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150 ${active
+        ? 'bg-telegram-primary/10 text-telegram-primary'
+        : isOver
+            ? 'bg-telegram-primary/30 text-telegram-text ring-2 ring-telegram-primary scale-[1.02] shadow-lg'
+            : 'text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text'
+        }`;
 
     return (
-        <button
-            onClick={onClick}
+        <div
+            className="group relative"
             onDragEnter={(e) => {
                 if (!dropEnabled) return;
                 e.preventDefault();
@@ -38,11 +42,8 @@ export const SidebarItem = memo(function SidebarItem({ icon: Icon, label, active
             }}
             onDragLeave={(e) => {
                 if (!dropEnabled) return;
-                // Only clear if truly leaving (not entering a child element)
                 const rect = e.currentTarget.getBoundingClientRect();
-                const x = e.clientX;
-                const y = e.clientY;
-                if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+                if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
                     setIsOver(false);
                 }
             }}
@@ -50,29 +51,34 @@ export const SidebarItem = memo(function SidebarItem({ icon: Icon, label, active
                 e.preventDefault();
                 e.stopPropagation();
                 setIsOver(false);
-                if (!dropEnabled) return;
-                if (onDrop) onDrop(e);
+                if (dropEnabled) onDrop(e);
             }}
             onContextMenu={(e) => {
-                if (onDelete) {
-                    e.preventDefault();
-                    onDelete();
-                }
+                if (!onDelete) return;
+                e.preventDefault();
+                onDelete();
             }}
-            className={`group w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${active
-                ? 'bg-telegram-primary/10 text-telegram-primary'
-                : isOver
-                    ? 'bg-telegram-primary/30 text-telegram-text ring-2 ring-telegram-primary scale-[1.02] shadow-lg'
-                    : 'text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text'
-                }`}
         >
-            <Icon className={`w-4 h-4 ${isOver ? 'text-telegram-primary' : ''}`} />
-            <span className="flex-1 text-left truncate">{label}</span>
+            <button
+                type="button"
+                onClick={onClick}
+                aria-current={active ? 'page' : undefined}
+                className={itemClassName}
+            >
+                <Icon className={`h-4 w-4 ${isOver ? 'text-telegram-primary' : ''}`} aria-hidden="true" />
+                <span className="flex-1 truncate text-left">{label}</span>
+            </button>
             {onDelete && (
-                <div onClick={(e) => { e.stopPropagation(); onDelete(); }} className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400">
-                    <Plus className="w-3 h-3 rotate-45" />
-                </div>
+                <button
+                    type="button"
+                    onClick={onDelete}
+                    aria-label={`Delete folder ${label}`}
+                    title={`Delete folder ${label}`}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-telegram-subtext opacity-0 transition hover:text-red-400 focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                    <Plus className="h-3 w-3 rotate-45" aria-hidden="true" />
+                </button>
             )}
-        </button>
+        </div>
     );
 });

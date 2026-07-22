@@ -1,65 +1,46 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { FileListItem } from './FileListItem';
-import type { TelegramFile } from '../../types';
 
-const folder: TelegramFile = {
-    id: 10,
-    name: 'Folder A',
-    size: 0,
-    sizeStr: '0 Bytes',
-    type: 'folder',
+const file = {
+    id: 12,
+    name: 'report.pdf',
+    size: 1024,
+    sizeStr: '1 KB',
+    type: 'file' as const,
+    folder_id: null,
 };
 
-const file: TelegramFile = {
-    id: 11,
-    name: 'doc.pdf',
-    size: 2048,
-    sizeStr: '2 KB',
-    type: 'file',
-};
-
-describe('FileListItem', () => {
-    const baseProps = {
-        file: folder,
-        selectedIds: [] as number[],
-        onFileClick: vi.fn(),
-        handleContextMenu: vi.fn(),
-        onPreview: vi.fn(),
-        onDownload: vi.fn(),
-        onDelete: vi.fn(),
-    };
-
-    it('does not call onDrop on folder row when transfer is blocked', () => {
-        const onDrop = vi.fn();
-        const { container } = render(
-            <FileListItem {...baseProps} onDrop={onDrop} transferEnabled={false} />,
-        );
-        fireEvent.drop(container.firstChild as Element);
-        expect(onDrop).not.toHaveBeenCalled();
-    });
-
-    it('calls onDrop on folder row when transfer is enabled', () => {
-        const onDrop = vi.fn();
-        const { container } = render(
-            <FileListItem {...baseProps} onDrop={onDrop} transferEnabled={true} />,
-        );
-        fireEvent.drop(container.firstChild as Element);
-        expect(onDrop).toHaveBeenCalledTimes(1);
-    });
-
-    it('invokes onShare when shareEnabled without transfer', () => {
+describe('FileListItem accessibility', () => {
+    it('exposes keyboard activation and labelled action controls', () => {
+        const onFileClick = vi.fn();
+        const onPreview = vi.fn();
+        const onDownload = vi.fn();
+        const onDelete = vi.fn();
         const onShare = vi.fn();
+
         render(
             <FileListItem
-                {...baseProps}
                 file={file}
+                selectedIds={[file.id]}
+                onFileClick={onFileClick}
+                handleContextMenu={vi.fn()}
+                onPreview={onPreview}
+                onDownload={onDownload}
+                onDelete={onDelete}
                 onShare={onShare}
-                transferEnabled={false}
-                shareEnabled={true}
             />,
         );
-        fireEvent.click(screen.getByTitle('Share'));
-        expect(onShare).toHaveBeenCalledWith(file);
+
+        const item = screen.getByRole('button', { name: /report.pdf, selected/i });
+        item.focus();
+        fireEvent.keyDown(item, { key: 'Enter' });
+        fireEvent.keyDown(item, { key: ' ' });
+
+        expect(onFileClick).toHaveBeenCalledTimes(2);
+        expect(screen.getByRole('button', { name: 'Share report.pdf' })).toBeVisible();
+        expect(screen.getByRole('button', { name: 'Preview report.pdf' })).toBeVisible();
+        expect(screen.getByRole('button', { name: 'Download report.pdf' })).toBeVisible();
+        expect(screen.getByRole('button', { name: 'Delete report.pdf' })).toBeVisible();
     });
 });

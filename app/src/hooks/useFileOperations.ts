@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -11,6 +11,16 @@ import {
     planMoveGroups,
     pruneSelectedIdsAfterDelete,
 } from '../utils';
+import {
+    formatBulkDeleteConfirmMessage,
+    formatDeleteSuccessToast,
+    formatSingleDeleteConfirmMessage,
+} from '../lib/webPure';
+
+export interface DeleteFileResult {
+    deleted: boolean;
+    shares_revoked: number;
+}
 
 export function useFileOperations(
     activeFolderId: number | null,
@@ -30,10 +40,12 @@ export function useFileOperations(
         bulkMoveBlockedMessage?: string;
         onFilesRemoved?: (ids: number[]) => void;
         onFilesMoved?: (payload: MoveFilesPayload) => void;
+        transportMode?: string;
     },
 ) {
     const queryClient = useQueryClient();
     const { confirm } = useConfirm();
+    const downloadActionRef = useRef(false);
 
     const guardTransfer = useCallback((): boolean => {
         if (opts?.canTransfer && !opts.canTransfer()) {
@@ -91,13 +103,25 @@ export function useFileOperations(
 
     const handleDelete = useCallback(async (id: number) => {
         if (!guardDelete()) return;
-        if (!await confirm({ title: "Delete File", message: "Are you sure you want to delete this file?", confirmText: "Delete", variant: 'danger' })) return;
+        if (!await confirm({
+            title: '删除文件',
+            message: formatSingleDeleteConfirmMessage(opts?.transportMode),
+            confirmText: '删除',
+            variant: 'danger',
+        })) return;
 
         try {
-            await invoke('cmd_delete_file', { messageId: id, folderId: folderForId(id) });
+            const res = await invoke<DeleteFileResult>('cmd_delete_file', {
+                messageId: id,
+                folderId: folderForId(id),
+            });
+            if (!res.deleted) {
+                toast.error('未找到可删除的索引条目');
+                return;
+            }
             await invoke('cmd_delete_image_thumbnail', { messageId: id }).catch(() => {});
             queryClient.invalidateQueries({ queryKey: ['files'] });
-            toast.success("文件已删除");
+            toast.success(formatDeleteSuccessToast(1, res.shares_revoked));
             opts?.onFilesRemoved?.([id]);
         } catch (e) {
             reportError('Delete', e);
@@ -107,19 +131,31 @@ export function useFileOperations(
     const handleBulkDelete = useCallback(async () => {
         if (!guardDelete()) return;
         if (selectedIds.length === 0) return;
-        if (!await confirm({ title: "Delete Files", message: `Are you sure you want to delete ${selectedIds.length} files?`, confirmText: "Delete All", variant: 'danger' })) return;
+        if (!await confirm({
+            title: '批量删除',
+            message: formatBulkDeleteConfirmMessage(selectedIds.length, opts?.transportMode),
+            confirmText: '全部删除',
+            variant: 'danger',
+        })) return;
 
         let success = 0;
         let fail = 0;
+        let sharesRevoked = 0;
         let lastError = '';
         const removedIds: number[] = [];
 
         for (const id of selectedIds) {
             try {
-                await invoke('cmd_delete_file', { messageId: id, folderId: folderForId(id) });
+                const res = await invoke<DeleteFileResult>('cmd_delete_file', {
+                    messageId: id,
+                    folderId: folderForId(id),
+                });
                 await invoke('cmd_delete_image_thumbnail', { messageId: id }).catch(() => {});
-                success++;
-                removedIds.push(id);
+                if (res.deleted) {
+                    success++;
+                    removedIds.push(id);
+                }
+                sharesRevoked += res.shares_revoked;
             } catch (e) {
                 fail++;
                 lastError = String(e);
@@ -132,7 +168,7 @@ export function useFileOperations(
         if (removedIds.length > 0) {
             opts?.onFilesRemoved?.(removedIds);
         }
-        if (success > 0) toast.success(`已删除 ${success} 个文件`);
+        if (success > 0) toast.success(formatDeleteSuccessToast(success, sharesRevoked));
         if (fail > 0) {
             toast.error(`删除 ${fail} 个文件失败`);
             if (onSessionError && isSessionLostError(lastError)) {
@@ -144,15 +180,26 @@ export function useFileOperations(
     const handleBulkDownload = useCallback(async () => {
         if (!guardDownload()) return;
         if (selectedIds.length === 0) return;
-
-        const targetFiles = displayedFiles.filter((f) => selectedIds.includes(f.id));
-        if (queueBulkDownload) {
-            await queueBulkDownload(targetFiles, activeFolderId);
-            setSelectedIds([]);
+        if (downloadActionRef.current) {
+            toast.info('下载任务正在加入队列，请勿重复提交');
             return;
         }
-        toast.error('下载队列不可用');
-    }, [guardDownload, selectedIds, displayedFiles, queueBulkDownload, activeFolderId, setSelectedIds]);
+
+        const targetFiles = displayedFiles.filter((f) => selectedIds.includes(f.id));
+        if (!queueBulkDownload) {
+            toast.error('下载队列不可用');
+            return;
+        }
+        downloadActionRef.current = true;
+        try {
+            await queueBulkDownload(targetFiles, activeFolderId);
+            setSelectedIds([]);
+        } catch (e) {
+            reportError('Download', e);
+        } finally {
+            downloadActionRef.current = false;
+        }
+    }, [guardDownload, selectedIds, displayedFiles, queueBulkDownload, activeFolderId, setSelectedIds, reportError]);
 
     const handleBulkMove = useCallback(async (targetFolderId: number | null, onSuccess?: () => void) => {
         if (!guardBulkMove()) return;
@@ -193,12 +240,23 @@ export function useFileOperations(
             toast.info("文件夹为空");
             return;
         }
-        if (queueBulkDownload) {
-            await queueBulkDownload(displayedFiles, activeFolderId);
+        if (downloadActionRef.current) {
+            toast.info('下载任务正在加入队列，请勿重复提交');
             return;
         }
-        toast.error('下载队列不可用');
-    }, [guardDownload, displayedFiles, queueBulkDownload, activeFolderId]);
+        if (!queueBulkDownload) {
+            toast.error('下载队列不可用');
+            return;
+        }
+        downloadActionRef.current = true;
+        try {
+            await queueBulkDownload(displayedFiles, activeFolderId);
+        } catch (e) {
+            reportError('Download', e);
+        } finally {
+            downloadActionRef.current = false;
+        }
+    }, [guardDownload, displayedFiles, queueBulkDownload, activeFolderId, reportError]);
 
     return {
         handleDelete,

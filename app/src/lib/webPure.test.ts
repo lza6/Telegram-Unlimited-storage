@@ -9,6 +9,14 @@ import {
     formatRebuildIndexBackgroundFailureMessage,
     shouldShowBotOnboarding,
     shouldShowUserOnboarding,
+    isWebApiReachable,
+    isWebTransportReady,
+    isWebDbMutationReady,
+    bulkDeleteRequiresTransport,
+    SHARES_INVALIDATE_STORAGE_KEY,
+    formatBulkDeleteConfirmMessage,
+    formatDeleteSuccessToast,
+    formatSingleDeleteConfirmMessage,
 } from './webPure';
 
 describe('safeNext', () => {
@@ -115,5 +123,60 @@ describe('web onboarding cards', () => {
         expect(shouldShowUserOnboarding('user', false, false)).toBe(true);
         expect(shouldShowUserOnboarding('user', true, false)).toBe(false);
         expect(shouldShowUserOnboarding('bot', false, false)).toBe(false);
+    });
+});
+
+describe('web readiness gates', () => {
+    it('detects API reachability from health payload', () => {
+        expect(isWebApiReachable(null)).toBe(false);
+        expect(isWebApiReachable({ ready: true })).toBe(false);
+        expect(isWebApiReachable({ version: '4.0.0', ready: false })).toBe(true);
+    });
+
+    it('requires user auth when transport is user', () => {
+        const health = { ready: true, transport_mode: 'user', version: '4' };
+        expect(isWebTransportReady(health, { connected: false })).toBe(false);
+        expect(isWebTransportReady(health, { connected: true })).toBe(true);
+    });
+
+    it('allows bot transport when health.ready', () => {
+        const health = { ready: true, transport_mode: 'bot', version: '4' };
+        expect(isWebTransportReady(health, { connected: false })).toBe(true);
+    });
+
+    it('allows DB mutations when API reachable even if transport down', () => {
+        expect(isWebDbMutationReady({ version: '4', ready: false })).toBe(true);
+    });
+
+    it('bulk delete transport requirement follows mode', () => {
+        expect(bulkDeleteRequiresTransport('user')).toBe(true);
+        expect(bulkDeleteRequiresTransport('bot')).toBe(false);
+    });
+});
+
+describe('delete UX and cross-tab share invalidation', () => {
+    it('uses stable storage key for share list refresh', () => {
+        expect(SHARES_INVALIDATE_STORAGE_KEY).toBe('td-shares-invalidate');
+    });
+
+    it('confirm message mentions share revocation per mode', () => {
+        expect(formatBulkDeleteConfirmMessage(3, 'user')).toContain('Telegram');
+        expect(formatBulkDeleteConfirmMessage(3, 'user')).toContain('分享');
+        expect(formatBulkDeleteConfirmMessage(2, 'bot')).toContain('索引');
+        expect(formatBulkDeleteConfirmMessage(2, 'bot')).toContain('分享');
+    });
+
+    it('success toast mentions share revocation', () => {
+        expect(formatDeleteSuccessToast(1)).toContain('分享');
+        expect(formatDeleteSuccessToast(5)).toContain('5');
+        expect(formatDeleteSuccessToast(0)).toContain('没有');
+        expect(formatDeleteSuccessToast(2, 3)).toContain('已撤销 3 条');
+        expect(formatDeleteSuccessToast(1, 0)).toBe('已删除 1 条');
+    });
+
+    it('single delete confirm mentions mode and shares', () => {
+        expect(formatSingleDeleteConfirmMessage('user')).toContain('Telegram');
+        expect(formatSingleDeleteConfirmMessage('bot')).toContain('索引');
+        expect(formatSingleDeleteConfirmMessage('bot')).toContain('分享');
     });
 });

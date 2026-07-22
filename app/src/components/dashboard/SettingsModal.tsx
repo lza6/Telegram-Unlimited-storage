@@ -124,6 +124,15 @@ export function SettingsModal({
         }
     }, [isOpen, activeTab, fetchShares]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        const onInvalidate = () => {
+            if (activeTab === 'sharing') fetchShares();
+        };
+        window.addEventListener('td-shares-invalidate', onInvalidate);
+        return () => window.removeEventListener('td-shares-invalidate', onInvalidate);
+    }, [isOpen, activeTab, fetchShares]);
+
     const handleRevokeShare = async (id: string) => {
         const ok = await confirm({
             title: 'Revoke Shareable Link',
@@ -173,6 +182,10 @@ export function SettingsModal({
     const [transportSwitching, setTransportSwitching] = useState(false);
     const [apiPort, setApiPort] = useState('8550');
     const [apiLoading, setApiLoading] = useState(false);
+    const apiMutationInFlight = useRef(false);
+    useEffect(() => {
+        if (!apiLoading) apiMutationInFlight.current = false;
+    }, [apiLoading]);
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
     const [keyCopied, setKeyCopied] = useState(false);
     const [localPwdCopied, setLocalPwdCopied] = useState(false);
@@ -464,6 +477,8 @@ export function SettingsModal({
     }, [isOpen, activeTab]);
 
     const handleApiToggle = async () => {
+        if (apiMutationInFlight.current) return;
+        apiMutationInFlight.current = true;
         setApiLoading(true);
         try {
             const port = parseInt(apiPort, 10);
@@ -489,12 +504,14 @@ export function SettingsModal({
     };
 
     const handlePortApply = async () => {
+        if (apiMutationInFlight.current) return;
         const port = parseInt(apiPort, 10);
         if (isNaN(port) || port < 1024 || port > 65535) {
             toast.error('Port must be between 1024 and 65535');
             return;
         }
         if (port === apiSettings.port) return;
+        apiMutationInFlight.current = true;
         setApiLoading(true);
         try {
             const result = await invoke<ApiSettings>('cmd_update_api_settings', {
@@ -511,6 +528,9 @@ export function SettingsModal({
     };
 
     const handleGenerateKey = async () => {
+        if (apiMutationInFlight.current) return;
+        apiMutationInFlight.current = true;
+        setApiLoading(true);
         const ok = await confirm({
             title: 'Generate API Key',
             message: apiSettings.key_set
@@ -519,15 +539,20 @@ export function SettingsModal({
             confirmText: apiSettings.key_set ? 'Regenerate' : 'Generate',
             variant: apiSettings.key_set ? 'danger' : 'info',
         });
-        if (!ok) return;
+        if (!ok) {
+            setApiLoading(false);
+            return;
+        }
         try {
             const key = await invoke<string>('cmd_regenerate_api_key');
             setGeneratedKey(key);
             setKeyCopied(false);
             setApiSettings(prev => ({ ...prev, key_set: true }));
             toast.success('API key generated');
+            setApiLoading(false);
         } catch (e) {
             toast.error(`Failed to generate key: ${e}`);
+            setApiLoading(false);
         }
     };
 
@@ -555,19 +580,27 @@ export function SettingsModal({
     };
 
     const handleRegenerateLocalPwd = async () => {
+        if (apiMutationInFlight.current) return;
+        apiMutationInFlight.current = true;
+        setApiLoading(true);
         const ok = await confirm({
             title: 'Regenerate Local Access Password',
             message: 'Scripts using the current X-Access-Pwd header will stop working until updated.',
             confirmText: 'Regenerate',
             variant: 'danger',
         });
-        if (!ok) return;
+        if (!ok) {
+            setApiLoading(false);
+            return;
+        }
         try {
             const pwd = await invoke<string>('cmd_regenerate_local_access_pwd');
             setApiSettings(prev => ({ ...prev, local_access_pwd: pwd }));
             toast.success('Local access password regenerated');
+            setApiLoading(false);
         } catch (e) {
             toast.error(`Failed: ${e}`);
+            setApiLoading(false);
         }
     };
 

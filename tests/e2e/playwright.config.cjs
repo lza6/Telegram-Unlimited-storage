@@ -19,7 +19,7 @@ module.exports = defineConfig({
     : useApiServer
       ? {
           command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${headlessScript}" -RepoRoot "${repoRoot}" -Port 1334`,
-          url: 'http://127.0.0.1:1334/api/v1/health',
+          url: 'http://127.0.0.1:1334/health/live',
           reuseExistingServer: false,
           timeout: 300_000,
         }

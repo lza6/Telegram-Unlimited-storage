@@ -62,13 +62,13 @@ $errors = @()
 # Test 1: Health Check
 Write-Step "Test 1: Health Check"
 try {
-    $health = Invoke-RestMethod -Uri "$BaseUrl/api/v1/health" -Method Get -Headers $headers -TimeoutSec $TimeoutSec
-    if ($health.status -eq "ok") {
-        Write-Pass "Health check passed: status=ok"
+    $health = Invoke-RestMethod -Uri "$BaseUrl/health/ready" -Method Get -Headers $headers -TimeoutSec $TimeoutSec
+    if ($health.status -eq "ok" -and $health.ready -eq $true) {
+        Write-Pass "Readiness check passed: status=ok, ready=true"
         Write-Info "Telegram connected: $($health.telegram_connected)"
         Write-Info "Ready: $($health.ready)"
     } else {
-        Write-Fail "Health check failed: status=$($health.status)"
+        Write-Fail "Readiness check failed: status=$($health.status), ready=$($health.ready)"
         $errors += "health-check"
     }
 } catch {

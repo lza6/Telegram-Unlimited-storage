@@ -91,7 +91,7 @@ docker build -t telegram-drive-server:4.0 .
 
 copy .env.example .env
 
-# 首次配置清单、Bot/User 两种模式说明见 docs/ENVIRONMENT-SETUP.md
+# 首次配置清单、Bot/User 两种模式说明请参阅 `.env.example` 与 `docs/DEPLOYMENT-PRODUCTION.md`。
 # 编辑 .env：TELEGRAM_API_ID、TELEGRAM_API_HASH、ACCESS_PWD、API_KEY
 
 # 可选 PORT=1334（默认已是 1334）

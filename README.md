@@ -65,10 +65,8 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 
 - 快速开始：[README-DOCKER.md](README-DOCKER.md)
 - 生产 / 高并发：[docs/DEPLOYMENT-PRODUCTION.md](docs/DEPLOYMENT-PRODUCTION.md)
-- 闭环审计记录：[docs/AUDIT-CLOSURE.md](docs/AUDIT-CLOSURE.md)（第三十九轮：Connection Hook 测试 + E2E API 管线）
-- 深度审查（R62 终局）：[docs/FINAL-AUDIT-R62.md](docs/FINAL-AUDIT-R62.md) ·（R61）：[docs/FINAL-AUDIT-R61.md](docs/FINAL-AUDIT-R61.md) ·（R60）：[docs/FINAL-AUDIT-R60.md](docs/FINAL-AUDIT-R60.md) · E2E 增量：[docs/E2E-CHECKPOINTS.md](docs/E2E-CHECKPOINTS.md)
-- 扩展建议：[docs/EXTENSION-UX-R37.md](docs/EXTENSION-UX-R37.md)
-- TDD 计划：[docs/ROUND-25-TDD.md](docs/ROUND-25-TDD.md) · [docs/ROUND-16-TDD.md](docs/ROUND-16-TDD.md)
+- E2E 检查点：[docs/E2E-CHECKPOINTS.md](docs/E2E-CHECKPOINTS.md)
+- Web/Headless 预发布范围、实际验证与已知限制：[GitHub Releases](https://github.com/lza6/Telegram-Unlimited-storage/releases)
 - 桌面 REST 与 Headless 差异：[docs/DESKTOP-API.md](docs/DESKTOP-API.md)
 
 Web 控制台（`deploy/web`）提供**上传、文件列表（下载/分享）、分享管理、传输模式、分享域名与 Headless 网络开关**。**Bot 模式**：下载/上传需传输就绪；**分享创建/撤销与 Bot 批量删除**仅需 API 可达（DB 操作，R58）。Bot 删除会同时清除 `file_assets` 与 `bot_file_map`，并撤销该文件的全部活跃分享（R60）；删除 API/桌面命令返回 `shares_revoked`，Web/桌面 toast 会显示精确撤销条数（R62）。删除成功后 Web 分享管理页会通过 storage/visibility 事件自动刷新（R61）。分享创建在 Bot 模式下要求 `bot_file_map` 存在，失败时 Web/桌面会给出可行动中文提示（R59–R60）。深度文件操作请用**桌面端**或 **REST API**。Web 与后端：**上传/下载**经 `ensureTransportReady()`（原 `ensureServiceReady`）；**分享 CRUD / Bot 批量删除**经 `ensureApiAvailable()`（R58）。`dashboard.html` 与 `upload.html` 共用 `page-readiness.js`；登录页与 Telegram 登录均用 `safeNext()` 防开放重定向。桌面端启动时 `connectionStatus=checking`，首检通过前禁止传输；8550/14201 传输模式通过 `transport_mode.json` 同步。`GET /api/v1/settings` 返回 `effective_share_link_base`（Headless 与 API 同端口；桌面 REST 为流媒体 **14201**）；另含 `effective_share_base_url` 供桌面流媒体参考。

@@ -9,8 +9,46 @@ permissions:
   contents: read
 
 jobs:
+  validate-release-version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Match tag to package metadata
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const tag = process.env.TAG_NAME;
+          const expected = tag.startsWith('v') ? tag.slice(1) : '';
+          const values = {
+            'app/package.json': JSON.parse(fs.readFileSync('app/package.json', 'utf8')).version,
+            'app/src-tauri/Cargo.toml': (fs.readFileSync('app/src-tauri/Cargo.toml', 'utf8')
+              .match(/^version\s*=\s*"([^"]+)"/m) || [])[1],
+            'app/src-tauri/tauri.conf.json': JSON.parse(
+              fs.readFileSync('app/src-tauri/tauri.conf.json', 'utf8'),
+            ).version,
+          };
+          const mismatches = Object.entries(values)
+            .filter(([, version]) => version !== expected)
+            .map(([path, version]) => path + '=' + (version || '<missing>'));
+
+          if (!expected || mismatches.length > 0) {
+            console.error('Release tag ' + tag + ' must equal v<version> in all release metadata.');
+            console.error(mismatches.join(', '));
+            process.exit(1);
+          }
+          console.log('Release metadata matches ' + tag + '.');
+          NODE
+
   quality:
     name: Quality gate
+    needs: validate-release-version
     uses: ./.github/workflows/docker-api.yml
     permissions:
       contents: read

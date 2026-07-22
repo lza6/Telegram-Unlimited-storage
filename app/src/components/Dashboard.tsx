@@ -156,6 +156,9 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         closePreviewIfRemoved(removedIds);
         searchHandleFilesRemoved(removedIds);
         previewHandleFilesRemoved(removedIds);
+        window.dispatchEvent(
+            new CustomEvent('td-shares-invalidate', { detail: { messageIds: removedIds } }),
+        );
     }, [closePreviewIfRemoved, searchHandleFilesRemoved, previewHandleFilesRemoved]);
 
     const handleFilesMoved = useCallback((payload: MoveFilesPayload) => {
@@ -184,6 +187,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         handleBulkMove, handleDownloadFolder,
     } = useFileOperations(activeFolderId, selectedIds, setSelectedIds, displayedFiles, queueBulkDownload, onSessionError, {
         ...transferOpts,
+        transportMode,
         onFilesRemoved: handleFilesRemoved,
         onFilesMoved: handleFilesMoved,
     });
@@ -212,6 +216,14 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         };
     });
 
+    const uploadLiveSummary = (() => {
+        const active = uploadQueue.filter((item) => item.status === 'pending' || item.status === 'uploading').length;
+        const failed = uploadQueue.filter((item) => item.status === 'error' || item.status === 'cancelled').length;
+        if (active > 0) return `${active} 个上传任务正在处理`;
+        if (failed > 0) return `${failed} 个上传任务需要重试或人工处理`;
+        if (uploadQueue.some((item) => item.status === 'success')) return '上传任务已完成，可在文件列表生成或复制直链';
+        return '';
+    })();
     const handleSelectAll = useCallback(() => {
         setSelectedIds(displayedFiles.map(f => f.id));
     }, [displayedFiles]);
@@ -569,6 +581,9 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             )}
 
 
+            <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                {uploadLiveSummary}
+            </div>
             <BatchProgressPanel
                 tasks={uploadTasks}
                 onCancel={(id) => cancelUploadItem(id)}

@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSettings } from '../../context/SettingsContext';
 import { isSessionLostError } from '../../utils/sessionError';
+import { formatShareCreateErrorMessage } from '../../lib/sharePure';
 
 interface ShareDialogProps {
     file: TelegramFile;
@@ -67,7 +68,7 @@ export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMess
 
             setShareInfo(res);
         } catch (err: any) {
-            const errMsg = String(err);
+            const errMsg = formatShareCreateErrorMessage(err);
             setError(errMsg);
             if (onSessionError && isSessionLostError(errMsg)) {
                 onSessionError(errMsg);

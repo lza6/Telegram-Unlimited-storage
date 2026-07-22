@@ -81,3 +81,84 @@ export function shouldShowUserOnboarding(
 ): boolean {
     return transportMode === 'user' && !connected && !dismissed;
 }
+
+export type WebHealthSnapshot = {
+    ready?: boolean;
+    version?: string;
+    transport_mode?: string;
+};
+
+export type WebAuthSnapshot = {
+    connected?: boolean;
+    transport_mode?: string;
+};
+
+/** Health endpoint responded with a parseable API payload */
+export function isWebApiReachable(health: WebHealthSnapshot | null | undefined): boolean {
+    return !!health && typeof health.version === 'string';
+}
+
+/** Upload / download require Telegram transport ready */
+export function isWebTransportReady(
+    health: WebHealthSnapshot | null | undefined,
+    auth: WebAuthSnapshot | null | undefined,
+): boolean {
+    if (!health?.ready) return false;
+    if ((health.transport_mode || '').toLowerCase() === 'user') {
+        return !!auth?.connected;
+    }
+    return true;
+}
+
+/** Share create/revoke and Bot bulk delete are DB-only — API up is enough */
+export function isWebDbMutationReady(health: WebHealthSnapshot | null | undefined): boolean {
+    return isWebApiReachable(health);
+}
+
+export function bulkDeleteRequiresTransport(transportMode: string | null | undefined): boolean {
+    return (transportMode || '').toLowerCase() === 'user';
+}
+
+/** localStorage key — bump to notify other Web tabs that share list may be stale */
+export const SHARES_INVALIDATE_STORAGE_KEY = 'td-shares-invalidate';
+
+export function formatBulkDeleteConfirmMessage(
+    count: number,
+    transportMode: string | null | undefined,
+): string {
+    const mode = (transportMode || 'bot').toLowerCase();
+    const shareNote = '相关分享链接将一并撤销。';
+    if (mode === 'user') {
+        return `确定删除选中的 ${count} 个文件？User 模式下将同时删除 Telegram 消息，${shareNote}`;
+    }
+    return `确定删除选中的 ${count} 条索引？Bot 模式下 Telegram 消息不会被删除，${shareNote}`;
+}
+
+export function formatSingleDeleteConfirmMessage(
+    transportMode: string | null | undefined,
+): string {
+    const mode = (transportMode || 'user').toLowerCase();
+    const shareNote = '相关分享链接将一并撤销。';
+    if (mode === 'bot') {
+        return `确定删除此文件索引？Telegram 消息不会被删除，${shareNote}`;
+    }
+    return `确定删除此文件？将同时删除 Telegram 消息，${shareNote}`;
+}
+
+export function formatDeleteSuccessToast(
+    deletedCount: number,
+    sharesRevoked?: number | null,
+): string {
+    if (deletedCount <= 0) return '没有可删除的条目';
+    let sharePart: string;
+    if (sharesRevoked != null) {
+        sharePart =
+            sharesRevoked > 0
+                ? `，已撤销 ${sharesRevoked} 条分享链接`
+                : '';
+    } else {
+        sharePart = '，相关分享链接已一并撤销';
+    }
+    if (deletedCount === 1) return `已删除 1 条${sharePart}`;
+    return `已删除 ${deletedCount} 条${sharePart}`;
+}

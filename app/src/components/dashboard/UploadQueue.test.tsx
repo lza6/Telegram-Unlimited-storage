@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { UploadQueue } from '../../components/dashboard/UploadQueue';
+import { describeUploadState, UploadQueue } from '../../components/dashboard/UploadQueue';
 import type { QueueItem } from '../../types';
 
 // Mock QueueItem data factory
@@ -85,5 +85,29 @@ describe('UploadQueue', () => {
             <UploadQueue items={items} onClearFinished={vi.fn()} onCancelAll={vi.fn()} onCancelItem={vi.fn()} onRetryItem={vi.fn()} />
         );
         expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    });
+    it.each([
+        ['UPLOAD_IN_PROGRESS', '同一上传正在处理中'],
+        ['UPLOAD_RECONCILIATION_REQUIRED', '正在等待数据库对账'],
+        ['UPLOAD_COMPENSATION_PENDING', '等待补偿处理'],
+        ['MANUAL_REVIEW', '需要人工审查'],
+        ['SCHEDULER_COOLDOWN', '排队或限流冷却'],
+    ])('maps backend state %s to actionable text', (error, expected) => {
+        expect(describeUploadState(makeItem({ status: 'error', error }))).toContain(expected);
+    });
+
+    it('announces retry-safe attention state and keeps Windows file name', () => {
+        render(
+            <UploadQueue
+                items={[makeItem({ path: 'C:\\uploads\\movie.mp4', status: 'error', error: 'UPLOAD_RECONCILIATION_REQUIRED' })]}
+                onClearFinished={vi.fn()}
+                onCancelAll={vi.fn()}
+                onCancelItem={vi.fn()}
+                onRetryItem={vi.fn()}
+            />,
+        );
+        expect(screen.getByText('movie.mp4')).toBeInTheDocument();
+        expect(screen.getByRole('status')).toHaveTextContent('复用原任务标识');
+        expect(screen.getByRole('img', { name: /数据库对账/ })).toBeInTheDocument();
     });
 });

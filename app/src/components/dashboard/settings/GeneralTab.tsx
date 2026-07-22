@@ -224,6 +224,8 @@ export function GeneralTab(props: GeneralTabProps) {
                             value={apiPort}
                             onChange={e => onSetApiPort(e.target.value)}
                             onBlur={onPortApply}
+                            aria-label="API server port"
+                            disabled={apiLoading}
                             onKeyDown={e => { if (e.key === 'Enter') onPortApply(); }}
                             className="w-20 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-center focus:outline-none focus:border-telegram-primary/50 transition"
                         />
@@ -240,7 +242,9 @@ export function GeneralTab(props: GeneralTabProps) {
                             <button
                                 type="button"
                                 onClick={onRegenerateLocalPwd}
-                                className="text-xs text-telegram-subtext hover:text-telegram-text"
+                                aria-label="Regenerate local access password"
+                                disabled={apiLoading}
+                                className="text-xs text-telegram-subtext hover:text-telegram-text disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 Regenerate
                             </button>
@@ -275,7 +279,9 @@ export function GeneralTab(props: GeneralTabProps) {
                         </div>
                         <button
                             onClick={onGenerateKey}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition"
+                            aria-label={apiSettings.key_set ? 'Regenerate API key' : 'Generate API key'}
+                            disabled={apiLoading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <RefreshCw className="w-3 h-3" />
                             {apiSettings.key_set ? 'Regenerate' : 'Generate'}

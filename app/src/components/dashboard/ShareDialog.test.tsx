@@ -76,4 +76,23 @@ describe('ShareDialog', () => {
         fireEvent.click(btn);
         expect(invoke).not.toHaveBeenCalled();
     });
+
+    it('shows actionable error when bot_file_map missing', async () => {
+        vi.mocked(invoke).mockRejectedValueOnce(
+            'File is not registered for Bot download (missing bot_file_map)',
+        );
+
+        render(
+            <ShareDialog
+                file={baseFile}
+                activeFolderId={7}
+                shareReady={true}
+                onClose={vi.fn()}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: /Generate Shareable Link/i }));
+
+        expect(await screen.findByText(/Bot 下载映射/)).toBeTruthy();
+    });
 });

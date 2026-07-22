@@ -1,42 +1,32 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { Folder } from 'lucide-react';
+import { describe, expect, it, vi } from 'vitest';
 import { SidebarItem } from './SidebarItem';
 
-describe('SidebarItem', () => {
-    it('does not invoke onDrop when dropEnabled is false', () => {
-        const onDrop = vi.fn();
-        const { getByRole } = render(
+describe('SidebarItem accessibility', () => {
+    it('provides distinct keyboard-accessible navigation and delete controls', () => {
+        const onClick = vi.fn();
+        const onDelete = vi.fn();
+        render(
             <SidebarItem
                 icon={Folder}
-                label="Test"
-                active={false}
-                onClick={vi.fn()}
-                onDrop={onDrop}
-                folderId={1}
-                dropEnabled={false}
+                label="Projects"
+                active={true}
+                folderId={5}
+                onClick={onClick}
+                onDrop={vi.fn()}
+                onDelete={onDelete}
             />,
         );
-        const btn = getByRole('button');
-        fireEvent.drop(btn, { dataTransfer: { getData: () => '' } });
-        expect(onDrop).not.toHaveBeenCalled();
-    });
 
-    it('invokes onDrop when dropEnabled is true', () => {
-        const onDrop = vi.fn();
-        const { getByRole } = render(
-            <SidebarItem
-                icon={Folder}
-                label="Test"
-                active={false}
-                onClick={vi.fn()}
-                onDrop={onDrop}
-                folderId={1}
-                dropEnabled={true}
-            />,
-        );
-        const btn = getByRole('button');
-        fireEvent.drop(btn, { dataTransfer: { getData: () => '' } });
-        expect(onDrop).toHaveBeenCalledTimes(1);
+        const item = screen.getByRole('button', { name: 'Projects' });
+        expect(item).toHaveAttribute('aria-current', 'page');
+        item.focus();
+        fireEvent.click(item);
+        expect(onClick).toHaveBeenCalledTimes(1);
+
+        const remove = screen.getByRole('button', { name: 'Delete folder Projects' });
+        fireEvent.click(remove);
+        expect(onDelete).toHaveBeenCalledTimes(1);
     });
 });

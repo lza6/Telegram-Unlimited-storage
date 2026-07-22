@@ -133,7 +133,12 @@ describe('useFileOperations', () => {
     it('deletes file when confirmed and online', async () => {
         const setSelectedIds = vi.fn();
         const onFilesRemoved = vi.fn();
-        mockInvoke.mockResolvedValue(undefined);
+        mockInvoke.mockImplementation((cmd: string) => {
+            if (cmd === 'cmd_delete_file') {
+                return Promise.resolve({ deleted: true, shares_revoked: 1 });
+            }
+            return Promise.resolve(undefined);
+        });
         const { result } = renderHook(
             () =>
                 useFileOperations(10, [], setSelectedIds, sampleFiles, undefined, undefined, {
@@ -151,7 +156,7 @@ describe('useFileOperations', () => {
             messageId: 1,
             folderId: 10,
         });
-        expect(toast.success).toHaveBeenCalledWith('文件已删除');
+        expect(toast.success).toHaveBeenCalledWith('已删除 1 条，已撤销 1 条分享链接');
         expect(onFilesRemoved).toHaveBeenCalledWith([1]);
     });
 
@@ -179,6 +184,7 @@ describe('useFileOperations', () => {
             if (cmd === 'cmd_delete_file') {
                 deleteCalls += 1;
                 if (deleteCalls === 2) return Promise.reject(new Error('fail'));
+                return Promise.resolve({ deleted: true, shares_revoked: 0 });
             }
             return Promise.resolve(undefined);
         });
@@ -408,5 +414,44 @@ describe('useFileOperations', () => {
         });
 
         expect(toast.error).toHaveBeenCalledWith('下载队列不可用');
+    });
+    it('prevents duplicate bulk download submission while enqueue is pending', async () => {
+        let resolveQueue!: () => void;
+        const queueBulkDownload = vi.fn(() => new Promise<void>((resolve) => { resolveQueue = resolve; }));
+        const { result } = renderHook(
+            () => useFileOperations(10, [1], vi.fn(), sampleFiles, queueBulkDownload, undefined, {
+                canDownload: () => true,
+            }),
+            { wrapper },
+        );
+
+        let first!: Promise<void>;
+        await act(async () => {
+            first = result.current.handleBulkDownload();
+            await Promise.resolve();
+            await result.current.handleBulkDownload();
+        });
+        expect(queueBulkDownload).toHaveBeenCalledTimes(1);
+        expect(toast.info).toHaveBeenCalledWith('下载任务正在加入队列，请勿重复提交');
+        await act(async () => {
+            resolveQueue();
+            await first;
+        });
+    });
+
+    it('reports queue failure and releases download submission lock', async () => {
+        const queueBulkDownload = vi.fn()
+            .mockRejectedValueOnce(new Error('accounting unavailable'))
+            .mockResolvedValueOnce(undefined);
+        const { result } = renderHook(
+            () => useFileOperations(10, [1], vi.fn(), sampleFiles, queueBulkDownload, undefined, {
+                canDownload: () => true,
+            }),
+            { wrapper },
+        );
+        await act(async () => { await result.current.handleBulkDownload(); });
+        await act(async () => { await result.current.handleBulkDownload(); });
+        expect(queueBulkDownload).toHaveBeenCalledTimes(2);
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Download failed'));
     });
 });

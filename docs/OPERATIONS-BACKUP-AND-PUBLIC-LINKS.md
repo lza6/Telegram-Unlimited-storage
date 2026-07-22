@@ -25,6 +25,8 @@ scripts\native\backup-postgres-to-telegram-dry-run.bat
 python scripts\native\restore_telegram_backup.py --input "<下载的.tdbak或分片目录>" --output "<不存在的输出目录>"
 ```
 
+运行前需要 Python 3、`cryptography`（用于 AES-GCM）以及 PostgreSQL `pg_dump`（只在备份 PostgreSQL 时需要）。脚本从 `.env` 读取配置；不要把 `.env`、备份状态或导出的 `.tdbak` 提交到 Git。
+
 备份工具会：
 
 1. 用 `pg_dump --format=custom --compress=9` 导出 PostgreSQL 控制面；
@@ -34,9 +36,9 @@ python scripts\native\restore_telegram_backup.py --input "<下载的.tdbak或分
 5. 以保守的 45 MiB 分片上传到已配置的私有 Telegram 存储频道，并发送完成回执；
 6. 明文快照和未加密 ZIP 无论成功、失败或 `--keep-local` 均清除。`--keep-local` 仅保留加密 `.tdbak` 材料用于恢复演练；每个备份的 Telegram message ID、分片哈希、完成状态或回滚失败会写入被 Git 忽略的 `data/backup-state/`。
 
-`BACKUP_ENCRYPTION_KEY` 已在本机 `.env` 生成且被 Git 忽略。下载备份后必须先使用恢复工具校验 SHA-256；恢复工具只解密/验证/导出文件，不会自动覆盖数据库。
+部署者必须在被 Git 忽略的 `.env` 中生成并安全保存 `BACKUP_ENCRYPTION_KEY`。下载备份后必须先使用恢复工具校验 SHA-256；恢复工具只解密/验证/导出文件，不会自动覆盖数据库。
 
-本轮真实证据：2026-07-19 已成功创建并上传一个加密备份到已配置存储频道；随后从本地演练副本完成解密和完整性校验。未输出 token、频道 ID、加密密钥或备份内容。
+历史受控环境曾完成一次加密上传与恢复完整性演练；该历史证据不替代任何部署环境的凭据、容量、恢复时间和权限验收，也未公开 token、频道 ID、加密密钥或备份内容。
 
 ## 不能混淆的事实
 

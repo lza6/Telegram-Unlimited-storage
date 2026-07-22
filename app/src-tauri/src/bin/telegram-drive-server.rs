@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         cancelled_transfers: Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
         bot_pool: bot_pool.clone(),
+        user_probe_cache: Arc::new(app_lib::commands::UserProbeCache::default()),
     });
 
     let db = app_lib::db::init_db_at(&config.data_dir)?;
@@ -117,6 +118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::error!("Telegram bootstrap: {e}");
     }
 
+    let _upload_saga_recovery = app_lib::upload_saga_recovery::spawn_upload_saga_recovery(
+        config.clone(),
+        runtime.tg_state.clone(),
+        runtime.net_config.clone(),
+        runtime.db.clone(),
+        runtime.transport.clone(),
+    );
     let server = start_unified_server(config.clone(), runtime.clone()).await?;
     let handle = server.handle();
 

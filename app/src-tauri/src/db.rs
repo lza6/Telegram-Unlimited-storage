@@ -1,13 +1,37 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
-pub type DbConnection = Arc<Mutex<sqlite::Connection>>;
+/// r2d2 connection manager for the `sqlite` crate.
+#[derive(Debug)]
+pub struct SqliteConnectionManager {
+    db_path: std::path::PathBuf,
+}
+
+impl r2d2::ManageConnection for SqliteConnectionManager {
+    type Connection = sqlite::Connection;
+    type Error = sqlite::Error;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        sqlite::open(&self.db_path)
+    }
+
+    fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        conn.execute("SELECT 1").map(|_| ())
+    }
+
+    fn has_broken(&self, _: &mut Self::Connection) -> bool {
+        false
+    }
+}
+
+pub type DbConnection = Arc<r2d2::Pool<SqliteConnectionManager>>;
 
 pub fn init_db_at(data_dir: &Path) -> Result<DbConnection, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let db_path = data_dir.join("shares.db");
-    open_db(db_path)
+    init_pool(db_path)
 }
 
 pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
@@ -15,8 +39,18 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
     init_db_at(&dir)
 }
 
-fn open_db(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
-    let conn = sqlite::open(db_path).map_err(|e| e.to_string())?;
+fn init_pool(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
+    let manager = SqliteConnectionManager { db_path };
+    let pool = r2d2::Pool::builder()
+        .max_size(8)
+        .min_idle(Some(2))
+        .connection_timeout(Duration::from_secs(5))
+        .build(manager)
+        .map_err(|e| e.to_string())?;
+
+    // Run schema migrations on one pool connection.
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let _ = conn.execute("PRAGMA journal_mode = WAL;");
 
     // Shared links table
     conn.execute(
@@ -104,8 +138,8 @@ fn open_db(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
     init_file_asset_tables(&conn)?;
     init_app_meta_table(&conn)?;
 
-    log::info!("SQLite database initialized successfully using sqlite crate.");
-    Ok(Arc::new(Mutex::new(conn)))
+    log::info!("SQLite connection pool initialized (size 8) using sqlite crate.");
+    Ok(Arc::new(pool))
 }
 
 // ── Tenants (API keys → tenant_id) ───────────────────────────────────────
@@ -125,7 +159,7 @@ pub fn init_tenant_tables(conn: &sqlite::Connection) -> Result<(), String> {
 }
 
 pub fn count_tenants(db_pool: &DbConnection) -> Result<usize, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT COUNT(*) AS c FROM tenants WHERE enabled = 1")
         .map_err(|e| e.to_string())?;
@@ -142,7 +176,7 @@ pub fn upsert_tenant(
     api_key_hash: String,
     display_name: Option<&str>,
 ) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
     let mut stmt = conn
         .prepare(
@@ -162,11 +196,26 @@ pub fn upsert_tenant(
     Ok(())
 }
 
+pub fn upgrade_tenant_api_key_hash(
+    db_pool: &DbConnection,
+    tenant_id: &str,
+    new_hash: &str,
+) -> Result<(), String> {
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("UPDATE tenants SET api_key_hash = ? WHERE tenant_id = ?")
+        .map_err(|e| e.to_string())?;
+    stmt.bind((1, new_hash)).map_err(|e| e.to_string())?;
+    stmt.bind((2, tenant_id)).map_err(|e| e.to_string())?;
+    stmt.next().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn find_tenant_id_by_api_key(
     db_pool: &DbConnection,
     plaintext_key: &str,
 ) -> Result<Option<String>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT tenant_id, api_key_hash FROM tenants WHERE enabled = 1")
         .map_err(|e| e.to_string())?;
@@ -177,7 +226,20 @@ pub fn find_tenant_id_by_api_key(
         let hash = stmt
             .read::<String, _>("api_key_hash")
             .map_err(|e| e.to_string())?;
-        if crate::commands::api_settings::verify_key(plaintext_key, &hash) {
+        let (valid, should_upgrade) =
+            crate::commands::api_settings::verify_key_with_upgrade(plaintext_key, &hash);
+        if valid {
+            if should_upgrade {
+                let new_hash = crate::commands::api_settings::hash_key_public(plaintext_key);
+                // Drop the prepared statement/lock before writing to avoid deadlock
+                drop(stmt);
+                drop(conn);
+                if let Err(e) = upgrade_tenant_api_key_hash(db_pool, &id, &new_hash) {
+                    log::warn!("Failed to upgrade tenant API key hash: {e}");
+                } else {
+                    log::info!("Upgraded tenant {} API key hash to Argon2id", id);
+                }
+            }
             return Ok(Some(id));
         }
     }
@@ -223,7 +285,7 @@ pub fn upsert_file_asset(
     file_name: &str,
     file_size: i64,
 ) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
     let mut stmt = conn
         .prepare(
@@ -247,11 +309,52 @@ pub fn upsert_file_asset(
     Ok(())
 }
 
+/// Batch upsert file assets using a single transaction.
+pub fn upsert_file_assets_batch(
+    db_pool: &DbConnection,
+    assets: &[(i32, Option<i64>, &str, &str, i64)],
+) -> Result<usize, String> {
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+
+    // Begin transaction
+    conn.execute("BEGIN TRANSACTION").map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO file_assets (message_id, folder_id, owner_id, file_name, file_size, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(message_id) DO UPDATE SET
+               folder_id = excluded.folder_id,
+               owner_id = excluded.owner_id,
+               file_name = excluded.file_name,
+               file_size = excluded.file_size",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut count = 0;
+    for (message_id, folder_id, owner_id, file_name, file_size) in assets {
+        stmt.reset();
+        stmt.bind((1, *message_id as i64)).map_err(|e| e.to_string())?;
+        stmt.bind((2, *folder_id)).map_err(|e| e.to_string())?;
+        stmt.bind((3, *owner_id)).map_err(|e| e.to_string())?;
+        stmt.bind((4, *file_name)).map_err(|e| e.to_string())?;
+        stmt.bind((5, *file_size)).map_err(|e| e.to_string())?;
+        stmt.bind((6, now)).map_err(|e| e.to_string())?;
+        stmt.next().map_err(|e| e.to_string())?;
+        count += 1;
+    }
+
+    // Commit transaction
+    conn.execute("COMMIT").map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
 pub fn get_file_asset(
     db_pool: &DbConnection,
     message_id: i32,
 ) -> Result<Option<FileAssetRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT message_id, folder_id, owner_id, file_name, file_size, created_at
@@ -290,7 +393,7 @@ pub fn list_file_assets_by_owner(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<FileAssetRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT message_id, folder_id, owner_id, file_name, file_size, created_at
@@ -329,7 +432,7 @@ pub fn list_all_file_assets(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<FileAssetRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT message_id, folder_id, owner_id, file_name, file_size, created_at
@@ -393,7 +496,7 @@ pub fn list_file_assets_scoped(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<FileAssetRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut sql = String::from(
         "SELECT message_id, folder_id, owner_id, file_name, file_size, created_at FROM file_assets WHERE 1=1",
     );
@@ -453,7 +556,7 @@ pub fn count_file_assets_scoped(
     has_folder_scope: bool,
     name_contains: Option<&str>,
 ) -> Result<usize, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut sql = String::from("SELECT COUNT(*) FROM file_assets WHERE 1=1");
     if owner_id.is_some() {
         sql.push_str(" AND owner_id = ?");
@@ -520,7 +623,7 @@ pub fn init_app_meta_table(conn: &sqlite::Connection) -> Result<(), String> {
 }
 
 fn set_app_meta(db_pool: &DbConnection, key: &str, value: &str) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "INSERT INTO app_meta (key, value) VALUES (?, ?)
@@ -534,7 +637,7 @@ fn set_app_meta(db_pool: &DbConnection, key: &str, value: &str) -> Result<(), St
 }
 
 fn get_app_meta(db_pool: &DbConnection, key: &str) -> Result<Option<String>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT value FROM app_meta WHERE key = ?")
         .map_err(|e| e.to_string())?;
@@ -566,7 +669,7 @@ pub fn delete_all_file_assets_for_owner(
     db_pool: &DbConnection,
     owner_id: &str,
 ) -> Result<usize, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("DELETE FROM file_assets WHERE owner_id = ?")
         .map_err(|e| e.to_string())?;
@@ -581,7 +684,7 @@ pub fn delete_file_assets_in_folder(
     folder_id: Option<i64>,
     owner_id: &str,
 ) -> Result<usize, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let changed = if let Some(fid) = folder_id {
         let mut stmt = conn
             .prepare("DELETE FROM file_assets WHERE owner_id = ? AND folder_id = ?")
@@ -606,7 +709,7 @@ pub fn delete_file_asset_by_name(
     owner_id: &str,
     file_name: &str,
 ) -> Result<bool, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("DELETE FROM file_assets WHERE owner_id = ? AND file_name = ?")
         .map_err(|e| e.to_string())?;
@@ -622,7 +725,7 @@ pub fn delete_file_asset(
     message_id: i32,
     owner_id: Option<&str>,
 ) -> Result<bool, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let changed = if let Some(owner) = owner_id {
         let mut stmt = conn
             .prepare("DELETE FROM file_assets WHERE message_id = ? AND owner_id = ?")
@@ -654,7 +757,7 @@ pub fn search_file_assets(
     limit: usize,
 ) -> Result<Vec<FileAssetRecord>, String> {
     let pattern = format!("%{}%", query.replace('%', "").replace('_', ""));
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let sql = match (owner_id, has_folder_scope, folder_id) {
         (Some(_), true, Some(_)) => {
             "SELECT message_id, folder_id, owner_id, file_name, file_size, created_at
@@ -724,7 +827,7 @@ pub fn search_file_assets(
 // ── Expired shares cleanup ────────────────────────────────────────────────
 
 pub fn cleanup_expired_shares(db_pool: &DbConnection) -> Result<usize, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
     let mut stmt = conn
         .prepare("UPDATE shared_links SET revoked = 1 WHERE expires_at IS NOT NULL AND expires_at < ? AND revoked = 0")
@@ -754,7 +857,7 @@ pub fn create_upload_session(
     filename: &str,
     total_chunks: i32,
 ) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
     let expires = now + 86400 * 7; // 7 days
 
@@ -789,7 +892,7 @@ pub fn record_upload_chunk(
     file_id: &str,
     sha256: &str,
 ) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("UPDATE upload_chunks SET file_id = ?, sha256 = ?, status = 'uploaded' WHERE session_id = ? AND chunk_index = ?")
         .map_err(|e| e.to_string())?;
@@ -806,7 +909,7 @@ pub fn get_upload_session_chunks(
     db_pool: &DbConnection,
     session_id: &str,
 ) -> Result<Vec<UploadChunkRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT chunk_index, file_id, sha256, status FROM upload_chunks WHERE session_id = ? ORDER BY chunk_index")
         .map_err(|e| e.to_string())?;
@@ -832,7 +935,7 @@ pub fn get_upload_session_summary(
     db_pool: &DbConnection,
     session_id: &str,
 ) -> Result<Option<(i32, String, String)>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT total_chunks, status, filename FROM upload_sessions WHERE session_id = ?")
         .map_err(|e| e.to_string())?;
@@ -858,7 +961,7 @@ pub fn get_upload_session_manifest_file_id(
     db_pool: &DbConnection,
     session_id: &str,
 ) -> Result<Option<String>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT manifest_file_id FROM upload_sessions WHERE session_id = ?")
         .map_err(|e| e.to_string())?;
@@ -879,7 +982,7 @@ pub fn complete_upload_session(
     session_id: &str,
     manifest_file_id: &str,
 ) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("UPDATE upload_sessions SET status = 'completed', manifest_file_id = ? WHERE session_id = ?")
         .map_err(|e| e.to_string())?;
@@ -892,7 +995,7 @@ pub fn complete_upload_session(
 
 /// Clean up stale upload sessions older than expiry.
 pub fn cleanup_stale_uploads(db_pool: &DbConnection) -> Result<usize, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
     // Delete chunks first (foreign key constraint)
@@ -943,7 +1046,7 @@ pub fn upsert_bot_file_map(
     caption: Option<&str>,
     bot_pool_index: u32,
 ) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
     let mut stmt = conn
         .prepare(
@@ -977,7 +1080,7 @@ pub fn get_bot_file_map(
     db_pool: &DbConnection,
     message_id: i32,
 ) -> Result<Option<BotFileRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT message_id, telegram_file_id, file_name, file_size, caption, bot_pool_index FROM bot_file_map WHERE message_id = ?",
@@ -1016,7 +1119,7 @@ pub fn list_bot_files(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<BotFileRecord>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT message_id, telegram_file_id, file_name, file_size, caption, bot_pool_index FROM bot_file_map ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -1054,6 +1157,7 @@ pub fn list_bot_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     fn temp_db() -> DbConnection {
         let dir = std::env::temp_dir().join(format!("td-db-test-{}", uuid::Uuid::new_v4()));
@@ -1077,6 +1181,62 @@ mod tests {
         upsert_tenant(&db, "acme", hash, Some("Acme")).expect("tenant");
         let id = find_tenant_id_by_api_key(&db, "secret-key").expect("find");
         assert_eq!(id.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn tenant_legacy_api_key_hash_upgrades_on_verify() {
+        let db = temp_db();
+        let key = "legacy-tenant-key";
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        upsert_tenant(&db, "legacy-corp", legacy_hash, Some("Legacy")).expect("tenant");
+
+        // First verification succeeds and triggers upgrade
+        let id = find_tenant_id_by_api_key(&db, key).expect("find");
+        assert_eq!(id.as_deref(), Some("legacy-corp"));
+
+        // Hash in DB should now be Argon2id
+        {
+            let conn = db.get().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT api_key_hash FROM tenants WHERE tenant_id = ?")
+                .unwrap();
+            stmt.bind((1, "legacy-corp")).unwrap();
+            assert!(matches!(stmt.next().unwrap(), sqlite::State::Row));
+            let upgraded = stmt.read::<String, _>("api_key_hash").unwrap();
+            assert!(upgraded.starts_with(crate::password_kdf::ARGON2_MARKER));
+        }
+
+        // Second verification still succeeds with the upgraded hash
+        let id2 = find_tenant_id_by_api_key(&db, key).expect("find again");
+        assert_eq!(id2.as_deref(), Some("legacy-corp"));
+    }
+
+    #[test]
+    fn tenant_legacy_api_key_wrong_key_does_not_upgrade() {
+        let db = temp_db();
+        let key = "legacy-tenant-key";
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        upsert_tenant(&db, "legacy-corp", legacy_hash, Some("Legacy")).expect("tenant");
+
+        let id = find_tenant_id_by_api_key(&db, "wrong-key").expect("find");
+        assert_eq!(id, None);
+
+        {
+            let conn = db.get().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT api_key_hash FROM tenants WHERE tenant_id = ?")
+                .unwrap();
+            stmt.bind((1, "legacy-corp")).unwrap();
+            assert!(matches!(stmt.next().unwrap(), sqlite::State::Row));
+            let hash = stmt.read::<String, _>("api_key_hash").unwrap();
+            assert!(!hash.starts_with(crate::password_kdf::ARGON2_MARKER));
+        }
     }
 
     #[test]

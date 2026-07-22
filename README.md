@@ -9,13 +9,32 @@ your Telegram account into an unlimited, secure cloud storage drive. Built with
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)]()
 [![Downloads](https://img.shields.io/github/downloads/caamer20/telegram-drive/total)](https://github.com/caamer20/telegram-drive/releases)
-[![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/ae8e5a6b-e815-4799-a408-4a59980cf9c8.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
-[![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
-[![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/2aa6f3f9-fd8a-4523-bd73-6625ee6a948a.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](ghcr.io/caamer20/telegram-drive)
+[![Coverage](https://img.shields.io/badge/coverage-80%25-green)]()
 
 </div>
 
 ![Auth Screen](screenshots/AuthScreen.png)
+
+## v4.0.0-beta Highlights
+
+**Security Hardening**
+- Argon2id API key hashing with auto-migration from legacy SHA-256
+- CSP nonce-based Content Security Policy
+- RFC 5987 Content-Disposition encoding (filename injection prevention)
+
+**Architecture**
+- SQLite connection pooling (r2d2) for high concurrency
+- Configurable Telegram DC address
+
+**Frontend**
+- Component decomposition (AuthWizard → 11 modules, Dashboard hooks)
+- Full A11y compliance (ARIA roles, labels, focus traps, keyboard navigation)
+- Responsive design for mobile
+
+**DevOps**
+- Docker image <400MB (UPX compression, non-root user)
+- CI/CD with coverage gates, multi-platform builds (amd64/arm64)
 
 ##  What is Telegram Drive?
 

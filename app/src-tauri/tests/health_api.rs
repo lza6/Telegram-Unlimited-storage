@@ -1,6 +1,7 @@
 use actix_web::{test, web, App};
 use app_lib::api_routes::{self, ApiState};
 use app_lib::auth_routes::AuthRouteState;
+use app_lib::bot_pool::BotPool;
 use app_lib::commands::TelegramState;
 use app_lib::server_config::test_config;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +19,7 @@ fn empty_tg_state() -> Arc<TelegramState> {
         runner_count: Arc::new(AtomicU32::new(0)),
         peer_cache: Arc::new(RwLock::new(HashMap::new())),
         cancelled_transfers: Arc::new(RwLock::new(HashSet::new())),
+        bot_pool: Arc::new(BotPool::new(vec![])),
     })
 }
 

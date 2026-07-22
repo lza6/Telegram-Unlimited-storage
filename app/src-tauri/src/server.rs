@@ -4,6 +4,7 @@ use crate::http_middleware::ShareBruteForceLimiter;
 use crate::vpn_optimizer::NetworkConfig;
 use actix_cors::Cors;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::middleware::Compress;
 use grammers_client::types::Media;
 
 use std::sync::Arc;
@@ -460,6 +461,7 @@ pub async fn start_server(
             .allow_any_header();
 
         App::new()
+            .wrap(Compress::default())
             .wrap(cors)
             .app_data(state_data.clone())
             .app_data(token_data.clone())

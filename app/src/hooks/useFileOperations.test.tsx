@@ -17,8 +17,8 @@ vi.mock('../context/ConfirmContext', () => ({
 const wrapper = createHookWrapper();
 
 const sampleFiles: TelegramFile[] = [
-    { id: 1, name: 'a.txt', folder_id: 10 },
-    { id: 2, name: 'b.txt', folder_id: 10 },
+    { id: 1, name: 'a.txt', folder_id: 10, size: 10, sizeStr: '10 B' },
+    { id: 2, name: 'b.txt', folder_id: 10, size: 20, sizeStr: '20 B' },
 ];
 
 describe('useFileOperations', () => {
@@ -325,8 +325,8 @@ describe('useFileOperations', () => {
             })
             .mockRejectedValueOnce(new Error('group two failed'));
         const multiFolderFiles: TelegramFile[] = [
-            { id: 1, name: 'a.txt', folder_id: 10 },
-            { id: 2, name: 'b.txt', folder_id: 11 },
+            { id: 1, name: 'a.txt', folder_id: 10, size: 10, sizeStr: '10 B' },
+            { id: 2, name: 'b.txt', folder_id: 11, size: 20, sizeStr: '20 B' },
         ];
         const { result } = renderHook(
             () =>
@@ -357,8 +357,8 @@ describe('useFileOperations', () => {
             })
             .mockRejectedValueOnce(new Error('group two failed'));
         const multiFolderFiles: TelegramFile[] = [
-            { id: 1, name: 'a.txt', folder_id: 10 },
-            { id: 2, name: 'b.txt', folder_id: 11 },
+            { id: 1, name: 'a.txt', folder_id: 10, size: 10, sizeStr: '10 B' },
+            { id: 2, name: 'b.txt', folder_id: 11, size: 20, sizeStr: '20 B' },
         ];
         const { result } = renderHook(
             () =>

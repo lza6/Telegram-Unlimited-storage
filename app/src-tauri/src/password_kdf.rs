@@ -6,7 +6,7 @@ use argon2::{
 };
 use sha2::{Digest, Sha256};
 
-const ARGON2_MARKER: &str = "$argon2";
+pub const ARGON2_MARKER: &str = "$argon2";
 
 fn legacy_sha256_hex(input: &[u8]) -> String {
     let mut hasher = Sha256::new();

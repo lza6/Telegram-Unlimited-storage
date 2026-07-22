@@ -6,6 +6,7 @@ interface UseKeyboardShortcutsProps {
     onEscape: () => void;
     onSearch: () => void;
     onEnter?: () => void;
+    onToggleHelp?: () => void;
     /** Navigation shortcuts (Escape, search) */
     enabled?: boolean;
     /** Select-all shortcut */
@@ -22,6 +23,7 @@ export function useKeyboardShortcuts({
     onEscape,
     onSearch,
     onEnter,
+    onToggleHelp,
     enabled = true,
     transferEnabled = true,
     deleteEnabled = transferEnabled,
@@ -80,7 +82,14 @@ export function useKeyboardShortcuts({
             onEnter?.();
             return;
         }
-    }, [enabled, transferEnabled, deleteEnabled, previewEnabled, onSelectAll, onDelete, onEscape, onSearch, onEnter]);
+
+        // ? - Toggle help
+        if (e.key === '?') {
+            e.preventDefault();
+            onToggleHelp?.();
+            return;
+        }
+    }, [enabled, transferEnabled, deleteEnabled, previewEnabled, onSelectAll, onDelete, onEscape, onSearch, onEnter, onToggleHelp]);
 
     useEffect(() => {
         window.addEventListener('keydown', handleKeyDown);

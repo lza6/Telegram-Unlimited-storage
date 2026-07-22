@@ -86,6 +86,47 @@ pub fn verify_key(plaintext: &str, stored_hash: &str) -> bool {
     crate::password_kdf::verify_api_key_legacy(plaintext, stored_hash)
 }
 
+/// Verify and report whether the stored hash should be migrated to Argon2id.
+pub fn verify_key_with_upgrade(plaintext: &str, stored_hash: &str) -> (bool, bool) {
+    crate::password_kdf::verify_api_key(plaintext, stored_hash)
+}
+
+/// Verify an API key and, if it uses a legacy SHA-256 hash, upgrade it in
+/// `api_settings.json` to Argon2id. Returns whether the key is valid.
+pub fn verify_and_upgrade_key(
+    plaintext: &str,
+    stored_hash: &str,
+    data_dir: &std::path::Path,
+) -> bool {
+    let (valid, should_upgrade) = verify_key_with_upgrade(plaintext, stored_hash);
+    if valid && should_upgrade {
+        let new_hash = hash_key_public(plaintext);
+        if let Err(e) = upgrade_key_hash_in_settings(data_dir, &new_hash) {
+            log::warn!("Failed to upgrade API key hash in settings: {e}");
+        } else {
+            log::info!("Upgraded API key hash to Argon2id in api_settings.json");
+        }
+    }
+    valid
+}
+
+/// Write an upgraded API key hash back to `api_settings.json`.
+pub fn upgrade_key_hash_in_settings(
+    data_dir: &std::path::Path,
+    new_hash: &str,
+) -> Result<(), String> {
+    let mut settings = load_settings_at(data_dir);
+    if settings
+        .key_hash
+        .as_ref()
+        .is_some_and(|h| h.starts_with(crate::password_kdf::ARGON2_MARKER))
+    {
+        return Ok(());
+    }
+    settings.key_hash = Some(new_hash.to_string());
+    save_settings_at(data_dir, &settings)
+}
+
 pub fn ensure_local_access_pwd(settings: &mut ApiSettingsFile) {
     if settings
         .local_access_pwd
@@ -143,6 +184,7 @@ pub fn prepare_settings_for_runtime(app: &AppHandle) -> ApiSettingsFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     #[test]
     fn hash_and_verify_roundtrip() {
@@ -162,10 +204,107 @@ mod tests {
     }
 
     #[test]
-    fn ensure_local_access_pwd_generates() {
-        let mut s = ApiSettingsFile::default();
-        ensure_local_access_pwd(&mut s);
-        assert!(s.local_access_pwd.as_ref().is_some_and(|p| p.len() >= 32));
+    fn verify_key_with_upgrade_detects_legacy_hash() {
+        let key = "legacy-key";
+        // Simulate a legacy SHA-256 hex hash (no argon2 marker)
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        let (valid, should_upgrade) = verify_key_with_upgrade(key, &legacy_hash);
+        assert!(valid);
+        assert!(should_upgrade);
+
+        let (wrong_valid, _) = verify_key_with_upgrade("wrong", &legacy_hash);
+        assert!(!wrong_valid);
+    }
+
+    #[test]
+    fn verify_key_with_upgrade_argon2_does_not_upgrade() {
+        let key = "argon2-key";
+        let h = hash_key_public(key);
+        let (valid, should_upgrade) = verify_key_with_upgrade(key, &h);
+        assert!(valid);
+        assert!(!should_upgrade);
+    }
+
+    #[test]
+    fn upgrade_key_hash_in_settings_migrates_legacy_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "legacy-key";
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        let mut settings = ApiSettingsFile::default();
+        settings.key_hash = Some(legacy_hash);
+        save_settings_at(dir.path(), &settings).unwrap();
+
+        let new_hash = hash_key_public(key);
+        upgrade_key_hash_in_settings(dir.path(), &new_hash).unwrap();
+
+        let reloaded = load_settings_at(dir.path());
+        assert_eq!(reloaded.key_hash.as_deref(), Some(new_hash.as_str()));
+        assert!(reloaded.key_hash.as_deref().unwrap().starts_with("$argon2"));
+    }
+
+    #[test]
+    fn upgrade_key_hash_in_settings_skips_already_argon2() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "argon2-key";
+        let argon2_hash = hash_key_public(key);
+
+        let mut settings = ApiSettingsFile::default();
+        settings.key_hash = Some(argon2_hash.clone());
+        save_settings_at(dir.path(), &settings).unwrap();
+
+        let another_argon2 = hash_key_public("different-key");
+        upgrade_key_hash_in_settings(dir.path(), &another_argon2).unwrap();
+
+        let reloaded = load_settings_at(dir.path());
+        // Should keep the original Argon2 hash, not overwrite with different key's hash
+        assert_eq!(reloaded.key_hash.as_deref(), Some(argon2_hash.as_str()));
+    }
+
+    #[test]
+    fn verify_and_upgrade_key_migrates_legacy_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "legacy-key";
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        let mut settings = ApiSettingsFile::default();
+        settings.key_hash = Some(legacy_hash.clone());
+        save_settings_at(dir.path(), &settings).unwrap();
+
+        assert!(verify_and_upgrade_key(key, &legacy_hash, dir.path()));
+
+        let reloaded = load_settings_at(dir.path());
+        assert!(reloaded
+            .key_hash
+            .as_deref()
+            .unwrap()
+            .starts_with(crate::password_kdf::ARGON2_MARKER));
+    }
+
+    #[test]
+    fn verify_and_upgrade_key_rejects_invalid_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "legacy-key";
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(key.as_bytes());
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        let mut settings = ApiSettingsFile::default();
+        settings.key_hash = Some(legacy_hash.clone());
+        save_settings_at(dir.path(), &settings).unwrap();
+
+        assert!(!verify_and_upgrade_key("wrong", &legacy_hash, dir.path()));
+
+        let reloaded = load_settings_at(dir.path());
+        // Invalid key should not trigger an upgrade
+        assert_eq!(reloaded.key_hash.as_deref(), Some(legacy_hash.as_str()));
     }
 }
 

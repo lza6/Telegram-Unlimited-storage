@@ -18,6 +18,20 @@ vi.mock('framer-motion', () => ({
     },
 }));
 
+class IntersectionObserverMock {
+    observe = vi.fn();
+    unobserve = vi.fn();
+    disconnect = vi.fn();
+}
+
+beforeEach(() => {
+    Object.defineProperty(window, 'IntersectionObserver', {
+        writable: true,
+        configurable: true,
+        value: IntersectionObserverMock,
+    });
+});
+
 const baseFile: TelegramFile = {
     id: 42,
     name: 'photo.png',

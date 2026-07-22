@@ -1,27 +1,31 @@
 # syntax=docker/dockerfile:1.4
 #
-# 基础镜像：固定版本号（禁止 latest）
-#   rust:1.85-bookworm  /  debian:bookworm-slim
-# 本地开发（推荐）：Volume 挂载 + cargo watch，改代码不 docker build
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build   # 仅首次/依赖变更
-#   .\scripts\dev-up.ps1
-# 生产/交付：全量镜像
-#   docker compose up -d --build
-# 增量 docker build（仅 CI 或不用 dev compose 时）：
-#   .\scripts\dev-build-rust.ps1
+# Telegram Drive Server - Optimized Production Image
+# Target: <400MB (from ~800MB)
 #
-# 层分离：Cargo.lock → deps(cook) → COPY src → build
-# 注意：target 在 cache mount 中，必须把二进制 cp 到 /export 才能被下一阶段 COPY
+# Build: docker build -t telegram-drive-server:4.0 --target runtime .
+# Dev:   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#        .\scripts\dev-up.ps1
+#
+# Techniques:
+#   1. Multi-stage build (chef → deps → builder → runtime)
+#   2. UPX binary compression (~40-60% size reduction)
+#   3. debian:bookworm-slim minimal runtime
+#   4. Cache mounts for Cargo registry/target
+#   5. Strip debug symbols
+#   6. Non-root user for security
 
 ARG RUST_VERSION=1.85-bookworm
 ARG DEBIAN_VERSION=bookworm-slim
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage: base - Rust toolchain + build deps
+# ═══════════════════════════════════════════════════════════════════════════
 FROM rust:${RUST_VERSION} AS base
 WORKDIR /build
+# Headless server only — no GTK/WebKit dependencies (saves ~300MB in build stage)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
-    libwebkit2gtk-4.1-dev libgtk-3-dev \
-    libayatana-appindicator3-dev librsvg2-dev \
+    pkg-config libssl-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS chef-bin
@@ -52,9 +56,16 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=td-car
     cargo chef cook --release --recipe-path recipe.json \
     -p app --bin telegram-drive-server --features headless-server
 
-# ── 业务层：只 COPY src + 链接（改 .rs 时主要耗时在此，复用 target 缓存）──
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage: builder - Compile server binary with UPX compression
+# ═══════════════════════════════════════════════════════════════════════════
 FROM deps AS builder
 WORKDIR /build/app/src-tauri
+
+# Install UPX for binary compression (saves ~40-60% binary size)
+RUN apt-get update && apt-get install -y --no-install-recommends upx \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY app/src-tauri/src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=td-cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=td-cargo-git \
@@ -62,7 +73,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=td-car
     cargo build --release -p app --bin telegram-drive-server --features headless-server \
     && mkdir -p /export \
     && cp target/release/telegram-drive-server /export/telegram-drive-server \
-    && strip /export/telegram-drive-server
+    && strip /export/telegram-drive-server \
+    && upx --best --lzma /export/telegram-drive-server
 
 # ── 开发层：依赖预编译 + cargo watch，源码通过 Volume 挂载，改 .rs 自动重编 ──
 FROM deps AS dev
@@ -83,21 +95,45 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --retries=5 \
 CMD ["cargo", "watch", "--poll", "-d", "5", "-w", "src", "-w", "build.rs", \
      "-s", "cargo run --bin telegram-drive-server --features headless-server"]
 
-# ── 运行时：无 Rust 工具链 ──
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage: runtime - Minimal production image
+# ═══════════════════════════════════════════════════════════════════════════
 FROM debian:${DEBIAN_VERSION} AS runtime
-# Headless API only — no GTK/WebKit (saves ~200MB vs desktop deps)
+
+# Install only essential runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /tmp/* /var/tmp/*
+
+# Create non-root user for security
+RUN groupadd -r telegram && useradd -r -g telegram telegram
 
 WORKDIR /app
-COPY --from=builder /export/telegram-drive-server /app/telegram-drive-server
-COPY deploy/web /app/deploy/web
-COPY docs /app/docs
 
-ENV DATA_DIR=/data STATIC_DIR=/app/deploy/web DOCS_DIR=/app/docs PORT=1334 BIND_HOST=0.0.0.0
+# Copy compressed binary
+COPY --from=builder --chown=telegram:telegram /export/telegram-drive-server /app/telegram-drive-server
+
+# Copy static web assets
+COPY --chown=telegram:telegram deploy/web /app/deploy/web
+COPY --chown=telegram:telegram docs /app/docs
+
+# Create data directory with proper permissions
+RUN mkdir -p /data && chown telegram:telegram /data
+
+ENV DATA_DIR=/data \
+    STATIC_DIR=/app/deploy/web \
+    DOCS_DIR=/app/docs \
+    PORT=1334 \
+    BIND_HOST=0.0.0.0
+
 EXPOSE 1334
 VOLUME ["/data"]
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD curl -fsS http://127.0.0.1:1334/api/v1/health || exit 1
+
+# Run as non-root user
+USER telegram
+
 CMD ["/app/telegram-drive-server"]

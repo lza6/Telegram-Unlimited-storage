@@ -62,7 +62,7 @@ pub fn require_admin_or_api_key(req: &HttpRequest, config: &ServerConfig) -> Opt
     }
     if let Some(key) = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()) {
         if let Some(ref hash) = config.api_key_hash {
-            if crate::commands::api_settings::verify_key(key, hash) {
+            if crate::commands::api_settings::verify_and_upgrade_key(key, hash, &config.data_dir) {
                 return None;
             }
         }

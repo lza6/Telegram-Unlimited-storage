@@ -1,15 +1,82 @@
-use actix_web::body::{EitherBody, MessageBody};
+use actix_web::body::{to_bytes, BoxBody, EitherBody, MessageBody};
 use actix_web::dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::http::header;
 use actix_web::HttpMessage;
 use actix_web::HttpResponse;
 use futures_util::future::LocalBoxFuture;
+use rand::RngCore;
 use std::collections::HashMap;
 use std::future::{ready, Ready};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::server_config::RateLimitConfig;
+
+/// Per-request CSP nonce stored in request extensions so handlers/templates can reuse it.
+pub struct CspNonce(pub String);
+
+/// Generate a random 16-byte nonce for CSP.
+fn generate_csp_nonce() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Build a CSP header that uses a nonce for scripts/styles while keeping
+/// `unsafe-inline` for style attributes (used by the web console static pages).
+fn build_csp(nonce: &str) -> String {
+    format!(
+        "default-src 'self'; script-src 'self' 'nonce-{nonce}' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' 'nonce-{nonce}'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'self'; form-action 'self';",
+    )
+}
+
+/// Inject a `nonce` attribute into inline `<script>` and `<style>` opening tags
+/// so that modern browsers can execute them under a nonce-based CSP.
+fn inject_nonce(html: &str, nonce: &str) -> String {
+    let mut out = String::with_capacity(html.len() + nonce.len() * 4);
+    let mut i = 0;
+    while i < html.len() {
+        match html[i..].find('<') {
+            Some(pos) => {
+                let absolute = i + pos;
+                out.push_str(&html[i..absolute + 1]);
+                i = absolute + 1;
+
+                let tag_lower = html[i..].chars().take(6).collect::<String>().to_lowercase();
+                let tag = if tag_lower.starts_with("script") {
+                    Some("script")
+                } else if tag_lower.starts_with("style") {
+                    Some("style")
+                } else {
+                    None
+                };
+
+                if let Some(tag_name) = tag {
+                    let tag_len = tag_name.len();
+                    // Only inject into the opening tag, not closing `</script>`.
+                    if let Some(end_rel) = html[i + tag_len..].find('>') {
+                        let end = i + tag_len + end_rel;
+                        let tag_content = &html[i..end];
+                        if !tag_content.contains("nonce=") {
+                            out.push_str(tag_content);
+                            out.push_str(&format!(" nonce=\"{}\"", nonce));
+                            out.push('>');
+                        } else {
+                            out.push_str(&html[i..end + 1]);
+                        }
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+            None => {
+                out.push_str(&html[i..]);
+                break;
+            }
+        }
+    }
+    out
+}
 
 /// Constant-time string comparison to prevent timing attacks.
 /// Compares up to max(a.len(), b.len()) bytes to avoid leaking length info.
@@ -35,7 +102,7 @@ where
     S::Future: 'static,
     B: MessageBody + 'static,
 {
-    type Response = ServiceResponse<EitherBody<B>>;
+    type Response = ServiceResponse<BoxBody>;
     type Error = actix_web::Error;
     type InitError = ();
     type Transform = SecurityHeadersMiddleware<S>;
@@ -56,13 +123,15 @@ where
     S::Future: 'static,
     B: MessageBody + 'static,
 {
-    type Response = ServiceResponse<EitherBody<B>>;
+    type Response = ServiceResponse<BoxBody>;
     type Error = actix_web::Error;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     forward_ready!(service);
 
-    fn call(&self, req: ServiceRequest) -> Self::Future {
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        let nonce = generate_csp_nonce();
+        req.extensions_mut().insert(CspNonce(nonce.clone()));
         let fut = self.service.call(req);
         Box::pin(async move {
             let mut res = fut.await?;
@@ -78,22 +147,48 @@ where
                 header::HeaderName::from_static("referrer-policy"),
                 header::HeaderValue::from_static("strict-origin-when-cross-origin"),
             );
-            // CSP: restrict to self-hosted resources only.
-            // Note: Swagger UI (if used) should be served from /docs static files
-            // rather than loaded from external CDN. If external CDN is required,
-            // add its domain to script-src and style-src explicitly.
-            res.headers_mut().insert(
-                header::HeaderName::from_static("content-security-policy"),
-                header::HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'self'; form-action 'self';",
-                ),
-            );
+            // CSP: nonce-based for scripts/styles; style attributes still allowed via
+            // 'unsafe-inline' for the web console static pages.
+            let csp = build_csp(&nonce);
+            let is_html = res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.starts_with("text/html"))
+                .unwrap_or(false);
+
+            let res = if is_html {
+                let req_clone = res.request().clone();
+                let status = res.status();
+                let mut headers = res.headers().clone();
+                let body = res.into_body();
+                let bytes = to_bytes(body).await.map_err(|_| {
+                    actix_web::error::ErrorInternalServerError(
+                        "failed to read response body for CSP nonce injection",
+                    )
+                })?;
+                let html = String::from_utf8_lossy(&bytes);
+                let modified = inject_nonce(&html, &nonce);
+                let mut new_res = HttpResponse::with_body(status, BoxBody::new(modified));
+                std::mem::swap(new_res.headers_mut(), &mut headers);
+                ServiceResponse::new(req_clone, new_res)
+            } else {
+                res.map_body(|_, body| BoxBody::new(body))
+            };
+
+            let mut res = res;
+            if let Ok(v) = header::HeaderValue::from_str(&csp) {
+                res.headers_mut().insert(
+                    header::HeaderName::from_static("content-security-policy"),
+                    v,
+                );
+            }
             // Permissions-Policy: disable unnecessary browser features
             res.headers_mut().insert(
                 header::HeaderName::from_static("permissions-policy"),
                 header::HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=()"),
             );
-            Ok(res.map_into_left_body())
+            Ok(res)
         })
     }
 }
@@ -464,5 +559,51 @@ mod tests {
         assert!(limiter.check_api_key("key-a").is_ok());
         assert!(limiter.check_api_key("key-a").is_err());
         assert!(limiter.check_api_key("key-b").is_ok());
+    }
+
+    #[test]
+    fn csp_nonce_is_hex_and_unique() {
+        let a = generate_csp_nonce();
+        let b = generate_csp_nonce();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn csp_header_contains_nonce_and_restricts_external_scripts() {
+        let nonce = generate_csp_nonce();
+        let csp = build_csp(&nonce);
+        assert!(csp.contains(&format!("'nonce-{nonce}'")));
+        assert!(csp.contains("script-src 'self'"));
+        assert!(csp.contains("https://unpkg.com"));
+        assert!(csp.contains("https://cdn.jsdelivr.net"));
+        assert!(!csp.contains("'unsafe-eval'"));
+    }
+
+    #[test]
+    fn inject_nonce_adds_nonce_to_inline_tags() {
+        let html = "<script>alert(1)</script><style>body{}</style>";
+        let nonce = "abc123";
+        let out = inject_nonce(html, nonce);
+        assert!(out.contains("<script nonce=\"abc123\">"));
+        assert!(out.contains("<style nonce=\"abc123\">"));
+        assert!(out.contains("</script>"));
+        assert!(out.contains("</style>"));
+    }
+
+    #[test]
+    fn inject_nonce_does_not_duplicate_existing_nonce() {
+        let html = "<script nonce=\"old\">alert(1)</script>";
+        let out = inject_nonce(html, "new");
+        assert!(out.contains("nonce=\"old\""));
+        assert!(!out.contains("nonce=\"new\""));
+    }
+
+    #[test]
+    fn inject_nonce_ignores_closing_tags() {
+        let html = "<script></script>";
+        let out = inject_nonce(html, "n");
+        assert_eq!(out.matches("nonce=").count(), 1);
     }
 }

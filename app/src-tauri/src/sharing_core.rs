@@ -58,7 +58,7 @@ pub fn create_share(
         (None, None)
     };
 
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "INSERT INTO shared_links (id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked, created_at, owner_id)
@@ -100,7 +100,7 @@ pub fn list_shares(
     base_url: &str,
     owner_id: Option<&str>,
 ) -> Result<Vec<ShareInfo>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = if let Some(owner) = owner_id {
         let mut s = conn
             .prepare(
@@ -145,7 +145,7 @@ pub fn list_shares(
 }
 
 pub fn revoke_share(db_pool: &DbConnection, id: &str) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("UPDATE shared_links SET revoked = 1 WHERE id = ?")
         .map_err(|e| e.to_string())?;
@@ -160,7 +160,7 @@ pub fn revoke_share_for_owner(
     id: &str,
     owner_id: &str,
 ) -> Result<bool, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
     let mut check = conn
         .prepare("SELECT owner_id FROM shared_links WHERE id = ? AND revoked = 0")
         .map_err(|e| e.to_string())?;

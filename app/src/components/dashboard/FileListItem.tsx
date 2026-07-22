@@ -43,11 +43,6 @@ export const FileListItem = memo(function FileListItem({
     const [isDragOver, setIsDragOver] = useState(false);
     const isFolder = file.type === 'folder';
 
-    const guardAction = (action: () => void) => {
-        if (!transferEnabled) return;
-        action();
-    };
-
     return (
         <div
             onClick={(e) => onFileClick(e, file.id)}

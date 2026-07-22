@@ -113,14 +113,27 @@
     return '&pwd=' + encodeURIComponent(accessPwd);
   }
 
-  async function subscribeUploadProgress(sessionId, onProgress, pwd) {
+  async function subscribeUploadProgress(sessionId, onProgress, pwd, onStatusChange) {
     if (!sessionId) return null;
     var authQ = await fetchUploadProgressAuthQuery(sessionId, pwd);
+
+    // Connection status indicator support
+    function notifyStatus(status, detail) {
+      if (typeof onStatusChange === 'function') {
+        onStatusChange({ status: status, detail: detail || '' });
+      }
+    }
 
     if (typeof EventSource !== 'undefined') {
       var url = '/upload_events?session_id=' + encodeURIComponent(sessionId) + authQ;
       var source = new EventSource(url);
       var pollTimer = null;
+
+      notifyStatus('connecting', 'SSE');
+
+      source.onopen = function () {
+        notifyStatus('connected', 'SSE');
+      };
 
       source.onmessage = function (ev) {
         try {
@@ -129,17 +142,21 @@
           if (data.status === 'failed') {
             source.close();
             if (pollTimer) clearInterval(pollTimer);
+            notifyStatus('closed', 'upload failed');
           } else if (data.status === 'completed') {
             source.close();
             if (pollTimer) clearInterval(pollTimer);
+            notifyStatus('closed', 'upload completed');
           }
         } catch (e) {
           console.warn('upload progress parse failed', e);
         }
       };
       source.onerror = function () {
+        notifyStatus('error', 'SSE disconnected, falling back to polling');
         source.close();
         if (!pollTimer && authQ && (authQ.indexOf('token=') >= 0 || authQ.indexOf('pwd=') >= 0)) {
+          notifyStatus('reconnecting', 'polling fallback');
           var pollFailCount = 0;
           pollTimer = setInterval(function () {
             fetch('/upload_status?session_id=' + encodeURIComponent(sessionId) + authQ)
@@ -150,10 +167,12 @@
                   if (pollFailCount >= 3 && typeof TdApi !== 'undefined' && TdApi.showToast) {
                     TdApi.showToast('无法获取上传进度，请查看文件行状态', 'err');
                     clearInterval(pollTimer);
+                    notifyStatus('error', 'polling failed after 3 attempts');
                   }
                   return;
                 }
                 pollFailCount = 0;
+                notifyStatus('connected', 'polling');
                 if (typeof onProgress === 'function') {
                   onProgress({
                     uploaded_chunks: data.uploaded_chunks,
@@ -164,6 +183,7 @@
                 }
                 if (data.status === 'completed' || data.status === 'failed') {
                   clearInterval(pollTimer);
+                  notifyStatus('closed', data.status);
                 }
               })
               .catch(function () {
@@ -171,6 +191,7 @@
                 if (pollFailCount >= 3 && typeof TdApi !== 'undefined' && TdApi.showToast) {
                   TdApi.showToast('无法获取上传进度，请查看文件行状态', 'err');
                   clearInterval(pollTimer);
+                  notifyStatus('error', 'polling failed after 3 attempts');
                 }
               });
           }, 2000);
@@ -180,6 +201,7 @@
         close: function () {
           source.close();
           if (pollTimer) clearInterval(pollTimer);
+          notifyStatus('closed', 'manual close');
         },
       };
     }
@@ -189,8 +211,16 @@
       var wsUrl = proto + '//' + location.host + '/upload_ws?session_id=' + encodeURIComponent(sessionId) + authQ;
       var ws = new WebSocket(wsUrl);
       var wsPollTimer = null;
+
+      notifyStatus('connecting', 'WebSocket');
+
+      ws.onopen = function () {
+        notifyStatus('connected', 'WebSocket');
+      };
+
       function beginWsStatusPoll() {
         if (wsPollTimer || !authQ || (authQ.indexOf('token=') < 0 && authQ.indexOf('pwd=') < 0)) return;
+        notifyStatus('reconnecting', 'polling fallback');
         var pollFailCount = 0;
         wsPollTimer = setInterval(function () {
           fetch('/upload_status?session_id=' + encodeURIComponent(sessionId) + authQ)
@@ -201,10 +231,12 @@
                 if (pollFailCount >= 3 && typeof TdApi !== 'undefined' && TdApi.showToast) {
                   TdApi.showToast('无法获取上传进度，请查看文件行状态', 'err');
                   clearInterval(wsPollTimer);
+                  notifyStatus('error', 'polling failed after 3 attempts');
                 }
                 return;
               }
               pollFailCount = 0;
+              notifyStatus('connected', 'polling');
               if (typeof onProgress === 'function') {
                 onProgress({
                   uploaded_chunks: data.uploaded_chunks,
@@ -215,6 +247,7 @@
               }
               if (data.status === 'completed' || data.status === 'failed') {
                 clearInterval(wsPollTimer);
+                notifyStatus('closed', data.status);
               }
             })
             .catch(function () {
@@ -222,6 +255,7 @@
               if (pollFailCount >= 3 && typeof TdApi !== 'undefined' && TdApi.showToast) {
                 TdApi.showToast('无法获取上传进度，请查看文件行状态', 'err');
                 clearInterval(wsPollTimer);
+                notifyStatus('error', 'polling failed after 3 attempts');
               }
             });
         }, 2000);
@@ -232,19 +266,27 @@
           if (typeof onProgress === 'function') onProgress(data);
           if (data.status === 'completed' || data.status === 'failed') {
             ws.close();
+            notifyStatus('closed', data.status);
           }
         } catch (e) {
           console.warn('upload ws parse failed', e);
         }
       };
       ws.onerror = function () {
+        notifyStatus('error', 'WebSocket error, falling back to polling');
         ws.close();
         beginWsStatusPoll();
+      };
+      ws.onclose = function () {
+        if (!wsPollTimer) {
+          notifyStatus('closed', 'WebSocket closed');
+        }
       };
       return {
         close: function () {
           ws.close();
           if (wsPollTimer) clearInterval(wsPollTimer);
+          notifyStatus('closed', 'manual close');
         },
       };
     }
@@ -391,6 +433,35 @@
       const statusEl = document.getElementById('status-' + fileId);
       const progressBar = document.getElementById('bar-' + fileId);
       const folderId = getUploadFolderId(options);
+      const startTime = Date.now();
+
+      function formatTime(seconds) {
+        if (seconds <= 0 || !Number.isFinite(seconds)) return '';
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = Math.floor(seconds % 60);
+        if (hrs > 0) return hrs + '小时' + (mins > 0 ? mins + '分' : '') + (secs > 0 ? secs + '秒' : '');
+        if (mins > 0) return mins + '分' + (secs > 0 ? secs + '秒' : '');
+        return secs + '秒';
+      }
+
+      function onConnStatusChange(conn) {
+        if (options.connectionStatusSelector) {
+          const connEl = document.querySelector(options.connectionStatusSelector);
+          if (connEl) {
+            const labels = {
+              connecting: '连接中',
+              connected: '已连接',
+              reconnecting: '重连中',
+              error: '连接断开',
+              closed: '已关闭',
+            };
+            connEl.textContent = labels[conn.status] || conn.status;
+            connEl.className = 'conn-status conn-' + conn.status;
+            connEl.title = conn.detail || '';
+          }
+        }
+      }
 
       if (file.size <= CHUNK_SIZE) {
         statusEl.textContent = '上传中…';
@@ -419,10 +490,20 @@
           return;
         }
         if (ev.uploaded_chunks != null && ev.total_chunks > 0) {
-          progressBar.style.width = (ev.uploaded_chunks / ev.total_chunks) * 100 + '%';
-          statusEl.textContent = '上传分片 ' + ev.uploaded_chunks + '/' + ev.total_chunks + '…';
+          const percent = (ev.uploaded_chunks / ev.total_chunks) * 100;
+          progressBar.style.width = percent + '%';
+          const elapsed = (Date.now() - startTime) / 1000;
+          const bytesUploaded = ev.uploaded_chunks * CHUNK_SIZE;
+          const speed = elapsed > 0 ? bytesUploaded / elapsed : 0;
+          const speedStr = speed > 0 ? formatSize(speed) + '/s' : '';
+          const remaining = speed > 0 ? ((ev.total_chunks - ev.uploaded_chunks) * CHUNK_SIZE) / speed : 0;
+          const remainingStr = remaining > 0 ? formatTime(remaining) : '';
+          let statusText = '上传分片 ' + ev.uploaded_chunks + '/' + ev.total_chunks;
+          if (speedStr) statusText += ' · ' + speedStr;
+          if (remainingStr) statusText += ' · 剩余 ' + remainingStr;
+          statusEl.textContent = statusText;
         }
-      }, pwd);
+      }, pwd, onConnStatusChange);
 
       try {
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
@@ -444,8 +525,18 @@
             const data = await response.json();
             chunkIds[chunkIndex] = data.file_id;
             uploadedChunks++;
-            progressBar.style.width = (uploadedChunks / totalChunks) * 100 + '%';
-            statusEl.textContent = '上传分片 ' + uploadedChunks + '/' + totalChunks + '…';
+            const percent = (uploadedChunks / totalChunks) * 100;
+            progressBar.style.width = percent + '%';
+            const elapsed = (Date.now() - startTime) / 1000;
+            const bytesUploaded = uploadedChunks * CHUNK_SIZE;
+            const speed = elapsed > 0 ? bytesUploaded / elapsed : 0;
+            const speedStr = speed > 0 ? formatSize(speed) + '/s' : '';
+            const remaining = speed > 0 ? ((totalChunks - uploadedChunks) * CHUNK_SIZE) / speed : 0;
+            const remainingStr = remaining > 0 ? formatTime(remaining) : '';
+            let statusText = '上传分片 ' + uploadedChunks + '/' + totalChunks;
+            if (speedStr) statusText += ' · ' + speedStr;
+            if (remainingStr) statusText += ' · 剩余 ' + remainingStr;
+            statusEl.textContent = statusText;
           });
           uploadTasks.push(task);
         }

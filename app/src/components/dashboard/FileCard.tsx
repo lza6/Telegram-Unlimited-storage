@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { useState, useEffect, memo } from 'react';
+import { useState, useEffect, memo, useRef } from 'react';
 import { Folder, Eye, Trash2, Share2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../types';
@@ -55,10 +55,38 @@ export const FileCard = memo(function FileCard({
     const [isDragOver, setIsDragOver] = useState(false);
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
+    const [isVisible, setIsVisible] = useState(false);
+    const cardRef = useRef<HTMLDivElement>(null);
 
-    // Lazy load thumbnail for image files
+    // Swipe-to-delete state
+    const [swipeOffset, setSwipeOffset] = useState(0);
+    const [isSwiping, setIsSwiping] = useState(false);
+    const touchStartX = useRef(0);
+    const touchStartY = useRef(0);
+    const SWIPE_THRESHOLD = 80;
+    const MAX_SWIPE = 120;
+
+    // Lazy load thumbnail for image files (with intersection observer)
     useEffect(() => {
         if (isFolder || !isImageFile(file.name) || !previewEnabled) return;
+        if (!cardRef.current) return;
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting) {
+                    setIsVisible(true);
+                }
+            },
+            { rootMargin: '100px' }
+        );
+
+        observer.observe(cardRef.current);
+        return () => observer.disconnect();
+    }, [isFolder, file.name, previewEnabled]);
+
+    // Load thumbnail when visible
+    useEffect(() => {
+        if (!isVisible || thumbnail) return;
 
         let cancelled = false;
         setThumbnailLoading(true);
@@ -77,23 +105,55 @@ export const FileCard = memo(function FileCard({
         });
 
         return () => { cancelled = true; };
-    }, [file.id, file.name, peerFolderId, isFolder, previewEnabled]);
+    }, [isVisible, thumbnail, file.id, peerFolderId]);
 
     const guardPreview = (action: () => void) => {
         if (!previewEnabled) return;
         action();
     };
 
-    const guardTransfer = (action: () => void) => {
-        if (!transferEnabled) return;
-        action();
+    // Touch handlers for swipe-to-delete (mobile only)
+    const handleTouchStart = (e: React.TouchEvent) => {
+        touchStartX.current = e.touches[0].clientX;
+        touchStartY.current = e.touches[0].clientY;
+        setIsSwiping(true);
+    };
+
+    const handleTouchMove = (e: React.TouchEvent) => {
+        if (!isSwiping) return;
+        const deltaX = e.touches[0].clientX - touchStartX.current;
+        const deltaY = e.touches[0].clientY - touchStartY.current;
+
+        // Only allow horizontal swipe
+        if (Math.abs(deltaY) > Math.abs(deltaX) * 2) {
+            setIsSwiping(false);
+            setSwipeOffset(0);
+            return;
+        }
+
+        // Only allow left swipe for delete
+        if (deltaX < 0 && deleteEnabled) {
+            const offset = Math.max(deltaX, -MAX_SWIPE);
+            setSwipeOffset(offset);
+        }
+    };
+
+    const handleTouchEnd = () => {
+        setIsSwiping(false);
+        if (swipeOffset < -SWIPE_THRESHOLD && deleteEnabled) {
+            onDelete();
+        }
+        setSwipeOffset(0);
     };
 
     return (
         <div
-            className="relative"
+            className="relative overflow-hidden"
             onContextMenu={onContextMenu}
             onClick={onClick}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
             onDragOver={(e) => {
                 if (isFolder && transferEnabled) {
                     e.preventDefault();
@@ -117,9 +177,28 @@ export const FileCard = memo(function FileCard({
                 }
             }}
         >
+            {/* Swipe delete indicator background */}
+            {swipeOffset < -10 && (
+                <div
+                    className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-500 text-white w-24 transition-opacity"
+                    style={{ opacity: Math.min(1, Math.abs(swipeOffset) / SWIPE_THRESHOLD) }}
+                >
+                    <Trash2 className="w-6 h-6" />
+                </div>
+            )}
             <motion.div
+                ref={cardRef}
                 layout
                 draggable={transferEnabled && !isFolder}
+                role="button"
+                aria-label={`${isFolder ? 'Folder' : 'File'}: ${file.name}`}
+                tabIndex={0}
+                onKeyDown={(e: any) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        if (onClick) onClick(e);
+                    }
+                }}
                 onDragStart={(e: any) => {
                     if (!transferEnabled || isFolder) {
                         e.preventDefault();
@@ -136,7 +215,11 @@ export const FileCard = memo(function FileCard({
                 className={`group cursor-pointer bg-telegram-surface rounded-xl overflow-hidden border hover:shadow-[0_4px_20px_rgba(0,0,0,0.2)] transition-all relative
                 ${isSelected ? 'border-telegram-primary bg-telegram-primary/5 ring-1 ring-telegram-primary' : 'border-telegram-border hover:border-telegram-primary/50'}
                 ${isDragOver ? 'ring-2 ring-telegram-primary bg-telegram-primary/20 scale-105' : ''}`}
-                style={height ? { height: `${height}px` } : { aspectRatio: '4/3' }}
+                style={{
+                    ...(height ? { height: `${height}px` } : { aspectRatio: '4/3' }),
+                    transform: `translateX(${swipeOffset}px)`,
+                    transition: isSwiping ? 'none' : 'transform 0.2s ease-out',
+                }}
             >
                 {/* Thumbnail or Icon */}
                 {thumbnail ? (

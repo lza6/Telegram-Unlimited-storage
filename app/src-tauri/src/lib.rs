@@ -242,6 +242,18 @@ pub fn run() {
                 .ok()
                 .map(std::path::PathBuf::from)
                 .unwrap_or(desktop_data_dir);
+            let keepalive_dc_addr = match server_config::ServerConfig::from_env() {
+                Ok(c) => c.tg_dc_addr,
+                Err(_) => server_config::for_desktop_api(
+                    stream_data_dir.clone(),
+                    STREAM_PORT,
+                    None,
+                    STREAM_PORT,
+                    None,
+                )
+                .tg_dc_addr
+                .clone(),
+            };
             std::thread::spawn(move || {
                 let sys = actix_rt::System::new();
                 sys.block_on(async move {
@@ -311,10 +323,8 @@ pub fn run() {
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
                         // TCP ping to Telegram DC2 (best-effort)
-                        let dc_addr: std::net::SocketAddr = std::env::var("TG_DC_ADDR")
-                            .unwrap_or_else(|_| "149.154.167.50:443".to_string())
-                            .parse()
-                            .unwrap_or_else(|_| {
+                        let dc_addr: std::net::SocketAddr =
+                            keepalive_dc_addr.parse().unwrap_or_else(|_| {
                                 "149.154.167.50:443".parse().expect("default DC addr")
                             });
                         let _ = tauri::async_runtime::spawn_blocking(move || {

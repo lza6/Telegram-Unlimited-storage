@@ -121,7 +121,7 @@ pub fn raw_file_id_download_allowed(req: &HttpRequest, config: &ServerConfig) ->
 fn api_key_from_request(req: &HttpRequest, config: &ServerConfig) -> Option<()> {
     let hash = config.api_key_hash.as_ref()?;
     let key = req.headers().get("X-API-Key")?.to_str().ok()?;
-    if api_settings::verify_key(key, hash) {
+    if api_settings::verify_and_upgrade_key(key, hash, &config.data_dir) {
         Some(())
     } else {
         None

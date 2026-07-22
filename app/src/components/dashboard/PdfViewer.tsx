@@ -26,6 +26,7 @@ interface PdfViewerProps {
 }
 
 export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: PdfViewerProps) {
+    const peerFolderId = file.folder_id ?? activeFolderId ?? null;
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [numPages, setNumPages] = useState<number>(0);
@@ -53,7 +54,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         setPdf(null);
         setNumPages(0);
 
-        const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
+        const folderIdParam = peerFolderId !== null ? peerFolderId.toString() : 'home';
         const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`;
 
         const loadingTask = pdfjsLib.getDocument(streamUrl);
@@ -85,7 +86,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             cancelled = true;
             loadingTask.destroy();
         };
-    }, [streamInfo, activeFolderId, file.id]);
+    }, [streamInfo, peerFolderId, file.id]);
 
     // Cleanup PDF document on unmount
     useEffect(() => {

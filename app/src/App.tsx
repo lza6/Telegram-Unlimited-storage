@@ -1,9 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AuthWizard } from "./components/AuthWizard";
-import { Dashboard } from "./components/Dashboard";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
@@ -14,6 +12,9 @@ import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { DropZoneProvider } from "./contexts/DropZoneContext";
+
+const AuthWizard = lazy(() => import("./components/AuthWizard").then(m => ({ default: m.AuthWizard })));
+const Dashboard = lazy(() => import("./components/Dashboard").then(m => ({ default: m.Dashboard })));
 
 const queryClient = new QueryClient();
 
@@ -101,9 +102,13 @@ function AppContent() {
       />
       <Toaster theme={theme} position="bottom-center" />
       {authStatus === "authenticated" ? (
-        <Dashboard onLogout={() => setAuthStatus("unauthenticated")} />
+        <Suspense fallback={<div className="h-screen w-screen flex items-center justify-center bg-telegram-bg"><div className="w-8 h-8 border-2 border-telegram-primary/30 border-t-telegram-primary rounded-full animate-spin" /></div>}>
+          <Dashboard onLogout={() => setAuthStatus("unauthenticated")} />
+        </Suspense>
       ) : (
-        <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
+        <Suspense fallback={<div className="h-screen w-screen flex items-center justify-center bg-telegram-bg"><div className="w-8 h-8 border-2 border-telegram-primary/30 border-t-telegram-primary rounded-full animate-spin" /></div>}>
+          <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
+        </Suspense>
       )}
     </main>
   );

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Plus } from 'lucide-react';
 
 interface SidebarItemProps {
@@ -9,33 +9,35 @@ interface SidebarItemProps {
     onDrop: (e: React.DragEvent) => void;
     onDelete?: () => void;
     folderId: number | null;
+    dropEnabled?: boolean;
 }
 
 /**
  * SidebarItem - Pure DOM event-based drop handling
- * 
+ *
  * With Tauri's dragDropEnabled: false, DOM events work reliably.
  * This component handles internal file moves via standard React drag events.
  */
-export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop, onDelete }: SidebarItemProps) {
+export const SidebarItem = memo(function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop, onDelete, dropEnabled = true }: SidebarItemProps) {
     const [isOver, setIsOver] = useState(false);
 
     return (
         <button
             onClick={onClick}
             onDragEnter={(e) => {
+                if (!dropEnabled) return;
                 e.preventDefault();
                 e.stopPropagation();
                 setIsOver(true);
             }}
             onDragOver={(e) => {
+                if (!dropEnabled) return;
                 e.preventDefault();
                 e.stopPropagation();
                 e.dataTransfer.dropEffect = 'move';
             }}
             onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                if (!dropEnabled) return;
                 // Only clear if truly leaving (not entering a child element)
                 const rect = e.currentTarget.getBoundingClientRect();
                 const x = e.clientX;
@@ -48,6 +50,7 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                 e.preventDefault();
                 e.stopPropagation();
                 setIsOver(false);
+                if (!dropEnabled) return;
                 if (onDrop) onDrop(e);
             }}
             onContextMenu={(e) => {
@@ -71,5 +74,5 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                 </div>
             )}
         </button>
-    )
-}
+    );
+});

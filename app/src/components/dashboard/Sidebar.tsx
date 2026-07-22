@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { HardDrive, Folder, Plus, RefreshCw, LogOut } from 'lucide-react';
+import { HardDrive, Folder, Plus, RefreshCw, LogOut, X } from 'lucide-react';
 import { SidebarItem } from './SidebarItem';
 import { BandwidthWidget } from './BandwidthWidget';
 import { TelegramFolder, BandwidthStats } from '../../types';
+import type { ConnectionStatus } from '../../types/connection';
+import { connectionStatusLabel } from '../../types/connection';
 
 interface SidebarProps {
     folders: TelegramFolder[];
@@ -13,15 +15,26 @@ interface SidebarProps {
     onCreate: (name: string) => Promise<void>;
     isSyncing: boolean;
     isConnected: boolean;
+    connectionStatus?: ConnectionStatus;
     onSync: () => void;
     onLogout: () => void;
     bandwidth: BandwidthStats | null;
+    collapsed?: boolean;
+    onToggle?: () => void;
 }
 
 export function Sidebar({
     folders, activeFolderId, setActiveFolderId, onDrop, onDelete, onCreate,
-    isSyncing, isConnected, onSync, onLogout, bandwidth
+    isSyncing, isConnected, connectionStatus, onSync, onLogout, bandwidth, collapsed, onToggle
 }: SidebarProps) {
+    const status: ConnectionStatus = connectionStatus ?? (isConnected ? 'online' : 'session_lost');
+    const dropEnabled = status === 'online';
+    const statusDotClass =
+        status === 'online'
+            ? 'bg-green-500 animate-pulse'
+            : status === 'session_lost'
+              ? 'bg-yellow-500'
+              : 'bg-red-500';
     const [showNewFolderInput, setShowNewFolderInput] = useState(false);
     const [newFolderName, setNewFolderName] = useState("");
 
@@ -37,7 +50,17 @@ export function Sidebar({
     }
 
     return (
-        <aside className="w-64 bg-telegram-surface border-r border-telegram-border flex flex-col" onClick={e => e.stopPropagation()}>
+        <aside className={`${collapsed ? 'hidden' : 'flex'} md:flex w-64 bg-telegram-surface border-r border-telegram-border flex-col fixed md:relative inset-y-0 left-0 z-[90]`} onClick={e => e.stopPropagation()}>
+            {/* Mobile close button */}
+            {onToggle && (
+                <button
+                    onClick={onToggle}
+                    className="md:hidden absolute top-4 right-4 p-1 text-telegram-subtext hover:text-telegram-text"
+                    aria-label="Close sidebar"
+                >
+                    <X className="w-5 h-5" />
+                </button>
+            )}
             <div className="p-4 flex items-center gap-2">
                 <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
                 <span className="font-bold text-lg text-telegram-text tracking-tight">Telegram Drive</span>
@@ -52,6 +75,7 @@ export function Sidebar({
                     onClick={() => setActiveFolderId(null)}
                     onDrop={(e: React.DragEvent) => onDrop(e, null)}
                     folderId={null}
+                    dropEnabled={dropEnabled}
                 />
                 {folders.map(folder => (
                     <SidebarItem
@@ -63,6 +87,7 @@ export function Sidebar({
                         onDrop={(e: React.DragEvent) => onDrop(e, folder.id)}
                         onDelete={() => onDelete(folder.id, folder.name)}
                         folderId={folder.id}
+                        dropEnabled={dropEnabled}
                     />
                 ))}
             </nav>
@@ -84,8 +109,10 @@ export function Sidebar({
                     </div>
                 ) : (
                     <button
-                        onClick={() => setShowNewFolderInput(true)}
-                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text transition-colors border border-dashed border-telegram-border"
+                        onClick={() => status === 'online' && setShowNewFolderInput(true)}
+                        disabled={status !== 'online'}
+                        title={status !== 'online' ? connectionStatusLabel(status) : undefined}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text transition-colors border border-dashed border-telegram-border disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         <Plus className="w-4 h-4" />
                         Create Folder
@@ -95,16 +122,16 @@ export function Sidebar({
 
             <div className="p-4 border-t border-telegram-border">
                 <div className="flex items-center gap-2 text-telegram-subtext text-xs">
-                    <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-                    <span>{isConnected ? 'Connected to Telegram' : 'Disconnected from Telegram'}</span>
+                    <div className={`w-2 h-2 rounded-full ${statusDotClass}`}></div>
+                    <span>{connectionStatusLabel(status)}</span>
                 </div>
 
                 <div className="flex gap-2 mt-4">
                     <button
                         onClick={onSync}
-                        disabled={isSyncing}
-                        className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-blue-500 hover:text-blue-600 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        title="Scan for existing folders"
+                        disabled={isSyncing || status !== 'online'}
+                        className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-blue-500 hover:text-blue-600 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors ${isSyncing || status !== 'online' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title={status !== 'online' ? 'Telegram session required to scan folders' : 'Scan for existing folders'}
                     >
                         <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
                         {isSyncing ? 'Syncing...' : 'Sync'}

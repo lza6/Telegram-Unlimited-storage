@@ -1,3 +1,16 @@
+export interface MoveFilesResult {
+    moved: number;
+    oldMessageIds: number[];
+    newMessageIds: number[];
+    targetFolderId: number | null;
+}
+
+export interface MoveFilesPayload {
+    oldIds: number[];
+    newIds: number[];
+    targetFolderId: number | null;
+}
+
 export interface TelegramFile {
     id: number;
     name: string;

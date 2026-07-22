@@ -6,7 +6,14 @@ interface UseKeyboardShortcutsProps {
     onEscape: () => void;
     onSearch: () => void;
     onEnter?: () => void;
+    /** Navigation shortcuts (Escape, search) */
     enabled?: boolean;
+    /** Select-all shortcut */
+    transferEnabled?: boolean;
+    /** Delete shortcut — Bot index delete when User session offline */
+    deleteEnabled?: boolean;
+    /** Enter preview shortcut — mirrors previewReady */
+    previewEnabled?: boolean;
 }
 
 export function useKeyboardShortcuts({
@@ -15,7 +22,10 @@ export function useKeyboardShortcuts({
     onEscape,
     onSearch,
     onEnter,
-    enabled = true
+    enabled = true,
+    transferEnabled = true,
+    deleteEnabled = transferEnabled,
+    previewEnabled = transferEnabled,
 }: UseKeyboardShortcutsProps) {
 
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -36,6 +46,7 @@ export function useKeyboardShortcuts({
 
         // Cmd/Ctrl + A - Select All
         if (isMod && e.key === 'a') {
+            if (!transferEnabled) return;
             e.preventDefault();
             onSelectAll();
             return;
@@ -50,6 +61,7 @@ export function useKeyboardShortcuts({
 
         // Delete / Backspace - Delete selected
         if (e.key === 'Delete' || e.key === 'Backspace') {
+            if (!deleteEnabled) return;
             e.preventDefault();
             onDelete();
             return;
@@ -63,11 +75,12 @@ export function useKeyboardShortcuts({
         }
         // Enter - Open / Preview
         if (e.key === 'Enter') {
+            if (!previewEnabled) return;
             e.preventDefault();
             onEnter?.();
             return;
         }
-    }, [enabled, onSelectAll, onDelete, onEscape, onSearch, onEnter]);
+    }, [enabled, transferEnabled, deleteEnabled, previewEnabled, onSelectAll, onDelete, onEscape, onSearch, onEnter]);
 
     useEffect(() => {
         window.addEventListener('keydown', handleKeyDown);

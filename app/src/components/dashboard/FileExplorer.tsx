@@ -3,6 +3,7 @@ import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileCard } from './FileCard';
 import { EmptyState } from './EmptyState';
+import { SkeletonGrid, SkeletonList } from './SkeletonLoader';
 import { TelegramFile, TelegramFolder } from '../../types';
 import { ContextMenu } from './ContextMenu';
 import { FileListItem } from './FileListItem';
@@ -31,6 +32,16 @@ interface FileExplorerProps {
     onDragEnd?: () => void;
     onShare?: (file: TelegramFile) => void;
     folders?: TelegramFolder[];
+    sessionOnline?: boolean;
+    downloadReady?: boolean;
+    previewReady?: boolean;
+    shareReady?: boolean;
+    deleteReady?: boolean;
+    transferBlockedMessage?: string;
+    downloadBlockedMessage?: string;
+    previewBlockedMessage?: string;
+    shareBlockedMessage?: string;
+    isGlobalSearch?: boolean;
 }
 
 
@@ -63,8 +74,18 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
     onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare,
-    folders
+    folders, sessionOnline = true, downloadReady = sessionOnline, previewReady = downloadReady, shareReady = downloadReady, deleteReady = sessionOnline,
+    transferBlockedMessage, downloadBlockedMessage, previewBlockedMessage, shareBlockedMessage, isGlobalSearch = false,
 }: FileExplorerProps) {
+    const blockedTitle = transferBlockedMessage || 'Session not ready';
+    const downloadBlockedTitle = downloadBlockedMessage || blockedTitle;
+    const previewBlockedTitle = previewBlockedMessage || downloadBlockedTitle;
+    const shareBlockedTitle = shareBlockedMessage || downloadBlockedTitle;
+    const guardUpload = (fn: () => void) => {
+        if (!sessionOnline) return;
+        fn();
+    };
+
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
@@ -102,8 +123,12 @@ export function FileExplorer({
     }, [files, sortField, sortDirection]);
 
     const handlePreviewRequest = useCallback((file: TelegramFile) => {
+        if (file.type === 'folder') {
+            onFileClick({ preventDefault: () => { }, stopPropagation: () => { } } as React.MouseEvent, file.id);
+            return;
+        }
         onPreview(file, sortedFiles);
-    }, [onPreview, sortedFiles]);
+    }, [onPreview, onFileClick, sortedFiles]);
 
 
     const gridRows = useMemo(() => {
@@ -163,21 +188,33 @@ export function FileExplorer({
 
     if (loading) {
         return (
-            <div className="flex-1 p-6 flex justify-center items-center text-telegram-subtext flex-col gap-4">
-                <div className="w-8 h-8 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
-                Loading your files...
+            <div className="flex-1 p-6 overflow-auto">
+                {viewMode === 'grid' ? <SkeletonGrid /> : <SkeletonList />}
             </div>
-        )
+        );
     }
 
     if (error) {
-        return <div className="flex-1 p-6 flex justify-center items-center text-red-400">Error loading files</div>
+        const message = error instanceof Error ? error.message : String(error);
+        return (
+            <div className="flex-1 p-6 flex flex-col justify-center items-center text-red-400 gap-2">
+                <span>Error loading files</span>
+                <span className="text-xs text-red-400/80 max-w-md text-center break-words">{message}</span>
+            </div>
+        );
     }
 
     if (files.length === 0) {
+        if (isGlobalSearch && !loading) {
+            return (
+                <div className="flex-1 p-6 overflow-auto">
+                    <EmptyState onUpload={() => guardUpload(onManualUpload)} uploadEnabled={sessionOnline} blockedTitle={blockedTitle} variant="search" />
+                </div>
+            );
+        }
         return (
             <div className="flex-1 p-6 overflow-auto">
-                <EmptyState onUpload={onManualUpload} />
+                <EmptyState onUpload={() => guardUpload(onManualUpload)} uploadEnabled={sessionOnline} blockedTitle={blockedTitle} />
             </div>
         );
     }
@@ -238,8 +275,10 @@ export function FileExplorer({
                                             return (
                                                 <button
                                                     key="upload"
-                                                    onClick={(e) => { e.stopPropagation(); onManualUpload(); }}
-                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group"
+                                                    onClick={(e) => { e.stopPropagation(); guardUpload(onManualUpload); }}
+                                                    disabled={!sessionOnline}
+                                                    title={!sessionOnline ? blockedTitle : undefined}
+                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-telegram-border disabled:hover:text-telegram-subtext"
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
                                                     <Plus className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
@@ -251,8 +290,10 @@ export function FileExplorer({
                                             return (
                                                 <button
                                                     key="upload-folder"
-                                                    onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
-                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group"
+                                                    onClick={(e) => { e.stopPropagation(); guardUpload(onFolderUpload); }}
+                                                    disabled={!sessionOnline}
+                                                    title={!sessionOnline ? blockedTitle : undefined}
+                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-telegram-border disabled:hover:text-telegram-subtext"
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
                                                     <FolderUp className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
@@ -271,12 +312,22 @@ export function FileExplorer({
                                                 onDelete={() => onDelete(file.id)}
                                                 onDownload={() => onDownload(file.id, file.name)}
                                                 onPreview={() => handlePreviewRequest(file)}
+                                                onShare={onShare && file.type !== 'folder' ? () => onShare(file) : undefined}
                                                 onDrop={onDrop}
                                                 onDragStart={onDragStart}
                                                 onDragEnd={onDragEnd}
                                                 activeFolderId={activeFolderId}
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
+                                                transferEnabled={sessionOnline}
+                                                previewEnabled={previewReady}
+                                                downloadEnabled={downloadReady}
+                                                shareEnabled={shareReady}
+                                                deleteEnabled={deleteReady}
+                                                blockedTitle={blockedTitle}
+                                                downloadBlockedTitle={downloadBlockedTitle}
+                                                previewBlockedTitle={previewBlockedTitle}
+                                                shareBlockedTitle={shareBlockedTitle}
                                             />
                                         );
                                     })}
@@ -316,8 +367,10 @@ export function FileExplorer({
                                         style={{ transform: `translateY(${virtualItem.start}px)` }}
                                     >
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); onManualUpload(); }}
-                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
+                                            onClick={(e) => { e.stopPropagation(); guardUpload(onManualUpload); }}
+                                            disabled={!sessionOnline}
+                                            title={!sessionOnline ? blockedTitle : undefined}
+                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full disabled:opacity-40 disabled:cursor-not-allowed"
                                         >
                                             <div className="w-5 h-5 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
                                             <span className="text-sm font-medium">Upload File...</span>
@@ -333,8 +386,10 @@ export function FileExplorer({
                                         style={{ transform: `translateY(${virtualItem.start}px)` }}
                                     >
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
-                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
+                                            onClick={(e) => { e.stopPropagation(); guardUpload(onFolderUpload); }}
+                                            disabled={!sessionOnline}
+                                            title={!sessionOnline ? blockedTitle : undefined}
+                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full disabled:opacity-40 disabled:cursor-not-allowed"
                                         >
                                             <div className="w-5 h-5 flex items-center justify-center"><FolderUp className="w-4 h-4" /></div>
                                             <span className="text-sm font-medium">Upload Folder...</span>
@@ -360,6 +415,16 @@ export function FileExplorer({
                                         onPreview={handlePreviewRequest}
                                         onDownload={onDownload}
                                         onDelete={onDelete}
+                                        onShare={onShare}
+                                        transferEnabled={sessionOnline}
+                                        previewEnabled={previewReady}
+                                        downloadEnabled={downloadReady}
+                                        shareEnabled={shareReady}
+                                        deleteEnabled={deleteReady}
+                                        blockedTitle={blockedTitle}
+                                        downloadBlockedTitle={downloadBlockedTitle}
+                                        previewBlockedTitle={previewBlockedTitle}
+                                        shareBlockedTitle={shareBlockedTitle}
                                     />
                                 </div>
                             );
@@ -396,6 +461,15 @@ export function FileExplorer({
                     } : undefined}
                     folders={folders}
                     activeFolderId={activeFolderId}
+                    transferEnabled={sessionOnline}
+                    previewEnabled={previewReady}
+                    downloadEnabled={downloadReady}
+                    shareEnabled={shareReady}
+                    deleteEnabled={deleteReady}
+                    blockedTitle={blockedTitle}
+                    downloadBlockedTitle={downloadBlockedTitle}
+                    previewBlockedTitle={previewBlockedTitle}
+                    shareBlockedTitle={shareBlockedTitle}
                 />
             )}
         </div>

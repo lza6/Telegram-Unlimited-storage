@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Store } from '@tauri-apps/plugin-store';
 import { useQueryClient } from '@tanstack/react-query';
@@ -6,6 +6,9 @@ import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFolder } from '../types';
 import { useNetworkStatus } from './useNetworkStatus';
+
+import { isSessionLostError } from '../utils/sessionError';
+import { canTransferFiles, classifyConnectionStatus, connectionStatusLabel, type ConnectionStatus } from '../types/connection';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
     const queryClient = useQueryClient();
@@ -15,7 +18,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
     const [store, setStore] = useState<Store | null>(null);
     const [isSyncing, setIsSyncing] = useState(false);
-    const [isConnected, setIsConnected] = useState(true);
+    const [isConnected, setIsConnected] = useState(false);
+    const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('checking');
 
 
     const networkIsOnline = useNetworkStatus();
@@ -41,9 +45,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 const savedActiveFolderId = await _store.get<number | null>('activeFolderId');
                 if (savedActiveFolderId !== undefined) setActiveFolderId(savedActiveFolderId);
 
-                // Connection is already live — just mark connected and refresh files
-                setIsConnected(true);
-                queryClient.invalidateQueries({ queryKey: ['files'] });
+                // Files refresh after first cmd_check_connection (see refreshConnection effect)
             } catch {
                 // store not available
             }
@@ -53,17 +55,46 @@ export function useTelegramConnection(onLogoutParent: () => void) {
 
 
     useEffect(() => {
-        setIsConnected(networkIsOnline);
+        let cancelled = false;
+        const refreshConnection = async () => {
+            if (!networkIsOnline) {
+                if (!cancelled) {
+                    setConnectionStatus('network_offline');
+                    setIsConnected(false);
+                }
+                return;
+            }
+            try {
+                const tgOk = await invoke<boolean>('cmd_check_connection');
+                if (!cancelled) {
+                    const status = classifyConnectionStatus(true, tgOk);
+                    setConnectionStatus(status);
+                    setIsConnected(tgOk);
+                    if (tgOk) {
+                        queryClient.invalidateQueries({ queryKey: ['files'] });
+                    }
+                }
+            } catch {
+                if (!cancelled) {
+                    setConnectionStatus('session_lost');
+                    setIsConnected(false);
+                }
+            }
+        };
+        refreshConnection();
+        const interval = setInterval(refreshConnection, 30_000);
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
     }, [networkIsOnline]);
 
 
-    const isNetworkError = (error: string): boolean => {
-        const keywords = ['timeout', 'connection', 'network', 'socket', 'disconnected', 'EOF', 'ECONNREFUSED', 'overflow'];
-        return keywords.some(k => error.toLowerCase().includes(k.toLowerCase()));
-    };
+    const isNetworkError = isSessionLostError;
 
-    const forceLogout = async () => {
+    const forceLogout = useCallback(async () => {
         setIsConnected(false);
+        setConnectionStatus('session_lost');
         try {
             await invoke('cmd_clean_cache').catch(() => { });
             if (store) {
@@ -75,9 +106,9 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         } catch {
             // best effort cleanup
         }
-        toast.error("Connection lost. Please log in again.");
+        toast.error("连接已断开，请重新登录");
         onLogoutParent();
-    };
+    }, [onLogoutParent, store]);
 
 
     const handleLogout = async () => {
@@ -94,12 +125,21 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             }
             onLogoutParent();
         } catch {
-            toast.error("Error signing out");
+            toast.error("退出登录失败");
             onLogoutParent();
         }
     };
 
+    const requireOnline = (): boolean => {
+        if (!canTransferFiles(connectionStatus)) {
+            toast.error(connectionStatusLabel(connectionStatus));
+            return false;
+        }
+        return true;
+    };
+
     const handleSyncFolders = async () => {
+        if (!requireOnline()) return;
         if (!store) return;
         setIsSyncing(true);
         try {
@@ -116,18 +156,35 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 setFolders(merged);
                 await store.set('folders', merged);
                 await store.save();
-                toast.success(`Scan complete. Found ${added} new folders.`);
+            }
+
+            const persisted =
+                (await store.get<TelegramFolder[]>('folders')) ?? merged;
+            const folderIds: (number | null)[] = [null, ...persisted.map(f => f.id)];
+            const rebuilt = await invoke<{ folders_scanned: number; files_indexed: number }>(
+                'cmd_rebuild_file_index',
+                { folderIds },
+            );
+            queryClient.invalidateQueries({ queryKey: ['files'] });
+
+            if (added > 0) {
+                toast.success(
+                    `扫描完成。新增 ${added} 个文件夹。已索引 ${rebuilt.files_indexed} 个文件，${rebuilt.folders_scanned} 个文件夹`,
+                );
             } else {
-                toast.info("Scan complete. No new folders found.");
+                toast.success(
+                    `同步完成。已索引 ${rebuilt.files_indexed} 个文件，${rebuilt.folders_scanned} 个文件夹`,
+                );
             }
         } catch {
-            toast.error("Sync failed");
+            toast.error("同步失败");
         } finally {
             setIsSyncing(false);
         }
     };
 
     const handleCreateFolder = async (name: string) => {
+        if (!requireOnline()) return;
         if (!store) return;
         try {
             const newFolder = await invoke<TelegramFolder>('cmd_create_folder', { name });
@@ -135,14 +192,16 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             setFolders(updated);
             await store.set('folders', updated);
             await store.save();
-            toast.success(`Folder "${name}" created.`);
+            queryClient.invalidateQueries({ queryKey: ['files'] });
+            toast.success(`文件夹 "${name}" 已创建`);
         } catch (e) {
-            toast.error("Failed to create folder: " + e);
+            toast.error("创建文件夹失败: " + e);
             throw e;
         }
     };
 
     const handleFolderDelete = async (folderId: number, folderName: string) => {
+        if (!requireOnline()) return;
         if (!await confirm({
             title: "Delete Folder",
             message: `Are you sure you want to delete "${folderName}"?\nThis will delete the channel on Telegram.`,
@@ -159,7 +218,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 await store.save();
             }
             if (activeFolderId === folderId) setActiveFolderId(null);
-            toast.success(`Folder "${folderName}" deleted.`);
+            queryClient.invalidateQueries({ queryKey: ['files'] });
+            toast.success(`文件夹 "${folderName}" 已删除`);
         } catch (e: unknown) {
             const errStr = String(e);
             if (errStr.includes("not found")) {
@@ -178,7 +238,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                     if (activeFolderId === folderId) setActiveFolderId(null);
                 }
             } else {
-                toast.error(`Failed to delete folder: ${e}`);
+                toast.error(`删除文件夹失败: ${e}`);
             }
         }
     };
@@ -199,6 +259,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         setActiveFolderId: handleSetActiveFolderId,
         isSyncing,
         isConnected,
+        connectionStatus,
         handleLogout,
         handleSyncFolders,
         handleCreateFolder,

@@ -1,15 +1,23 @@
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { Plus, Link, Copy, Check, Shield, Clock, AlertCircle } from 'lucide-react';
 import { TelegramFile, ShareInfo } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useSettings } from '../../context/SettingsContext';
+import { isSessionLostError } from '../../utils/sessionError';
 
 interface ShareDialogProps {
     file: TelegramFile;
+    activeFolderId: number | null;
+    shareReady: boolean;
+    shareBlockedMessage?: string;
+    onSessionError?: (message: string) => void;
     onClose: () => void;
 }
 
-export function ShareDialog({ file, onClose }: ShareDialogProps) {
+export function ShareDialog({ file, activeFolderId, shareReady, shareBlockedMessage, onSessionError, onClose }: ShareDialogProps) {
+    const { settings, updateSetting } = useSettings();
     const [password, setPassword] = useState('');
     const [requirePassword, setRequirePassword] = useState(false);
     const [expiryType, setExpiryType] = useState<'never' | '1h' | '1d' | '7d' | 'custom'>('1d');
@@ -19,12 +27,19 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
     const [error, setError] = useState<string | null>(null);
     const [shareInfo, setShareInfo] = useState<ShareInfo | null>(null);
     const [copied, setCopied] = useState(false);
-    const [customDomain, setCustomDomain] = useState('');
 
     const handleGenerate = async () => {
+        if (!shareReady) {
+            setError(shareBlockedMessage || 'Share service is not ready');
+            return;
+        }
         setLoading(true);
         setError(null);
         try {
+            if (requirePassword && !password.trim()) {
+                throw new Error('Please enter a password or turn off password protection');
+            }
+
             let expiryHours: number | null = null;
             if (expiryType === '1h') expiryHours = 1;
             else if (expiryType === '1d') expiryHours = 24;
@@ -37,11 +52,13 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                 expiryHours = parsed;
             }
 
-            const pwdParam = requirePassword && password.trim() ? password : null;
+            const pwdParam = requirePassword ? password.trim() : null;
+
+            const shareFolderId = file.folder_id ?? activeFolderId;
 
             const res = await invoke<ShareInfo>('cmd_create_share', {
-                folderId: null, // Always file-level for now
-                messageId: file.id, // In Telegram Drive, file.id is the message id
+                folderId: shareFolderId,
+                messageId: file.id,
                 fileName: file.name,
                 fileSize: file.size,
                 password: pwdParam,
@@ -50,7 +67,11 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
 
             setShareInfo(res);
         } catch (err: any) {
-            setError(err.toString());
+            const errMsg = String(err);
+            setError(errMsg);
+            if (onSessionError && isSessionLostError(errMsg)) {
+                onSessionError(errMsg);
+            }
         } finally {
             setLoading(false);
         }
@@ -58,11 +79,10 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
 
     const getDisplayLink = () => {
         if (!shareInfo) return '';
-        if (customDomain.trim()) {
+        if (settings.globalDomain.trim()) {
             try {
-                // Replace the host part (localhost:14201) with the custom domain
                 const url = new URL(shareInfo.link);
-                return `${url.protocol}//${customDomain.trim()}${url.pathname}`;
+                return `${url.protocol}//${settings.globalDomain.trim()}${url.pathname}`;
             } catch {
                 return shareInfo.link;
             }
@@ -70,24 +90,27 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
         return shareInfo.link;
     };
 
-    const handleCopy = () => {
+    const handleCopy = async () => {
         const link = getDisplayLink();
-        if (link) {
-            navigator.clipboard.writeText(link);
+        if (!link) return;
+        try {
+            await navigator.clipboard.writeText(link);
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+        } catch {
+            toast.error('复制失败，请手动选择链接');
         }
     };
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-            <div className="bg-telegram-surface border border-telegram-border rounded-xl w-[420px] shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150" onClick={e => e.stopPropagation()}>
+            <div role="dialog" aria-modal="true" aria-labelledby="share-title" className="bg-telegram-surface border border-telegram-border rounded-xl w-full max-w-[420px] mx-4 shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150" onClick={e => e.stopPropagation()}>
                 <div className="p-4 border-b border-telegram-border flex justify-between items-center">
-                    <h3 className="text-telegram-text font-medium flex items-center gap-2">
+                    <h3 id="share-title" className="text-telegram-text font-medium flex items-center gap-2">
                         <Link className="w-5 h-5 text-telegram-primary" />
                         Share File
                     </h3>
-                    <button onClick={onClose} className="text-telegram-subtext hover:text-telegram-text">
+                    <button onClick={onClose} aria-label="Close" className="text-telegram-subtext hover:text-telegram-text">
                         <Plus className="w-5 h-5 rotate-45" />
                     </button>
                 </div>
@@ -213,8 +236,9 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
 
                             <button
                                 onClick={handleGenerate}
-                                disabled={loading}
-                                className="w-full bg-telegram-primary hover:bg-telegram-primary-hover text-white text-sm font-medium py-2.5 rounded-lg shadow-lg hover:shadow-telegram-primary/20 transition-all flex items-center justify-center gap-2 mt-4"
+                                disabled={loading || !shareReady}
+                                title={!shareReady ? (shareBlockedMessage || 'Share not ready') : undefined}
+                                className="w-full bg-telegram-primary hover:bg-telegram-primary-hover text-white text-sm font-medium py-2.5 rounded-lg shadow-lg hover:shadow-telegram-primary/20 transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                                 {loading ? (
                                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
@@ -263,10 +287,11 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                     <input
                                         type="text"
                                         placeholder="e.g. 100.115.22.45 or tailscale-pc:14201"
-                                        value={customDomain}
-                                        onChange={(e) => setCustomDomain(e.target.value)}
+                                        value={settings.globalDomain}
+                                        onChange={(e) => updateSetting('globalDomain', e.target.value)}
                                         className="flex-1 bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-1.5 text-xs text-telegram-text focus:outline-none focus:border-telegram-primary placeholder:text-telegram-subtext/40"
                                     />
+                                    <p className="text-[10px] text-telegram-subtext">Also editable in Settings → Sharing</p>
                                 </div>
                             </div>
 

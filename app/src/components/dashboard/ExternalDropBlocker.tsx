@@ -1,21 +1,67 @@
 import { useState, useEffect } from 'react';
 import { Upload } from 'lucide-react';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 
 /**
- * ExternalDropBlocker - Intercepts external file drops and shows a helpful message
- * 
- * Since Tauri's native drag-drop is disabled, we need to prevent the browser's
- * default behavior (which would show file contents) and instead guide users
- * to use the Upload button.
+ * External drop handler — Tauri OS file paths enqueue upload; browser dev falls back to Upload button.
  */
-export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => void }) {
+export function ExternalDropBlocker({
+    onUploadPaths,
+    onUploadClick,
+    uploadEnabled = true,
+    onUploadBlocked,
+}: {
+    onUploadPaths: (paths: string[]) => void;
+    onUploadClick: () => void;
+    uploadEnabled?: boolean;
+    onUploadBlocked?: () => void;
+}) {
     const [showMessage, setShowMessage] = useState(false);
+    const [tauriDropSupported, setTauriDropSupported] = useState(false);
 
     useEffect(() => {
+        let unlisten: UnlistenFn | undefined;
+        let cancelled = false;
+
+        (async () => {
+            try {
+                const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+                const webview = getCurrentWebview();
+                unlisten = await webview.onDragDropEvent((event) => {
+                    if (event.payload.type === 'enter') {
+                        setShowMessage(true);
+                    } else if (event.payload.type === 'leave') {
+                        setShowMessage(false);
+                    } else if (event.payload.type === 'drop') {
+                        setShowMessage(false);
+                        const paths = event.payload.paths ?? [];
+                        if (paths.length > 0) {
+                            if (uploadEnabled) {
+                                onUploadPaths(paths);
+                            } else {
+                                onUploadBlocked?.();
+                            }
+                        }
+                    }
+                });
+                if (!cancelled) setTauriDropSupported(true);
+            } catch {
+                // Vite dev in browser — DOM fallback below
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+            unlisten?.();
+        };
+    }, [onUploadPaths, uploadEnabled, onUploadBlocked]);
+
+    useEffect(() => {
+        if (tauriDropSupported) return;
+
         let hideTimeout: ReturnType<typeof setTimeout>;
 
         const handleDragOver = (e: DragEvent) => {
-            // Check if this is an external file drag (from Finder)
             if (e.dataTransfer?.types.includes('Files')) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -25,20 +71,22 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
         };
 
         const handleDragLeave = (e: DragEvent) => {
-            // Only hide if leaving the window entirely
-            if (e.clientX <= 0 || e.clientY <= 0 ||
-                e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+            if (
+                e.clientX <= 0 || e.clientY <= 0 ||
+                e.clientX >= window.innerWidth || e.clientY >= window.innerHeight
+            ) {
                 hideTimeout = setTimeout(() => setShowMessage(false), 100);
             }
         };
 
         const handleDrop = (e: DragEvent) => {
-            // Block external file drops
             if (e.dataTransfer?.types.includes('Files')) {
                 e.preventDefault();
                 e.stopPropagation();
-                // Keep message visible briefly so user sees it
                 setTimeout(() => setShowMessage(false), 2000);
+                if (!uploadEnabled) {
+                    onUploadBlocked?.();
+                }
             }
         };
 
@@ -52,12 +100,14 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
             document.removeEventListener('drop', handleDrop, true);
             clearTimeout(hideTimeout);
         };
-    }, []);
+    }, [tauriDropSupported, uploadEnabled, onUploadBlocked]);
 
     if (!showMessage) return null;
 
+    const isTauri = tauriDropSupported;
+
     return (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center pointer-events-none">
             <div className="glass bg-telegram-surface border border-telegram-border rounded-2xl p-8 max-w-md mx-4 shadow-2xl pointer-events-auto">
                 <div className="flex flex-col items-center text-center gap-4">
                     <div className="w-16 h-16 rounded-full bg-telegram-primary/20 flex items-center justify-center">
@@ -65,25 +115,30 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-telegram-text mb-2">
-                            Use the Upload Button
+                            {isTauri ? 'Release to Upload' : 'Use the Upload Button'}
                         </h3>
                         <p className="text-telegram-subtext text-sm">
-                            To upload files, please use the <strong>Upload</strong> button in the toolbar.
-                            <br />
-                            <span className="text-xs opacity-70 mt-2 block">
-                                Drag-and-drop from Finder is not supported.
-                            </span>
+                            {isTauri ? (
+                                <>松开鼠标将文件加入上传队列。</>
+                            ) : (
+                                <>
+                                    To upload in browser dev, use the <strong>Upload</strong> button in the toolbar.
+                                </>
+                            )}
                         </p>
                     </div>
-                    <button
-                        onClick={() => {
-                            setShowMessage(false);
-                            onUploadClick();
-                        }}
-                        className="mt-2 px-6 py-2 bg-telegram-primary text-white rounded-lg font-medium hover:bg-telegram-primary/90 transition-colors"
-                    >
-                        Open Upload Dialog
-                    </button>
+                    {!isTauri && (
+                        <button
+                            onClick={() => {
+                                setShowMessage(false);
+                                if (uploadEnabled) onUploadClick();
+                            }}
+                            disabled={!uploadEnabled}
+                            className="mt-2 px-6 py-2 bg-telegram-primary text-white rounded-lg font-medium hover:bg-telegram-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            Open Upload Dialog
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

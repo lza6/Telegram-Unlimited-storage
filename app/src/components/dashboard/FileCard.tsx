@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
-import { useState, useEffect } from 'react';
-import { Folder, Eye, Trash2 } from 'lucide-react';
+import { useState, useEffect, memo } from 'react';
+import { Folder, Eye, Trash2, Share2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../types';
 import { FileTypeIcon } from '../FileTypeIcon';
@@ -10,6 +10,7 @@ interface FileCardProps {
     onDelete: () => void;
     onDownload: () => void;
     onPreview?: () => void;
+    onShare?: () => void;
     isSelected: boolean;
     onClick?: (e: React.MouseEvent) => void;
     onContextMenu?: (e: React.MouseEvent) => void;
@@ -19,6 +20,15 @@ interface FileCardProps {
     activeFolderId?: number | null;
     height?: number;
     onToggleSelection?: () => void;
+    transferEnabled?: boolean;
+    previewEnabled?: boolean;
+    downloadEnabled?: boolean;
+    shareEnabled?: boolean;
+    deleteEnabled?: boolean;
+    blockedTitle?: string;
+    downloadBlockedTitle?: string;
+    previewBlockedTitle?: string;
+    shareBlockedTitle?: string;
 }
 
 // Check if file is an image type that can have a thumbnail
@@ -27,22 +37,35 @@ function isImageFile(filename: string): boolean {
     return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
 }
 
-export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection }: FileCardProps) {
+export const FileCard = memo(function FileCard({
+    file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd,
+    activeFolderId, height, onToggleSelection,
+    transferEnabled = true,
+    previewEnabled = transferEnabled,
+    downloadEnabled = transferEnabled,
+    shareEnabled = transferEnabled,
+    deleteEnabled = transferEnabled,
+    blockedTitle,
+    downloadBlockedTitle,
+    previewBlockedTitle,
+    shareBlockedTitle,
+}: FileCardProps) {
     const isFolder = file.type === 'folder';
+    const peerFolderId = file.folder_id ?? activeFolderId ?? null;
     const [isDragOver, setIsDragOver] = useState(false);
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
 
     // Lazy load thumbnail for image files
     useEffect(() => {
-        if (isFolder || !isImageFile(file.name)) return;
+        if (isFolder || !isImageFile(file.name) || !previewEnabled) return;
 
         let cancelled = false;
         setThumbnailLoading(true);
 
         invoke<string>('cmd_get_thumbnail', {
             messageId: file.id,
-            folderId: activeFolderId
+            folderId: peerFolderId
         }).then((result) => {
             if (!cancelled && result) {
                 setThumbnail(result);
@@ -54,7 +77,17 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
         });
 
         return () => { cancelled = true; };
-    }, [file.id, file.name, activeFolderId, isFolder]);
+    }, [file.id, file.name, peerFolderId, isFolder, previewEnabled]);
+
+    const guardPreview = (action: () => void) => {
+        if (!previewEnabled) return;
+        action();
+    };
+
+    const guardTransfer = (action: () => void) => {
+        if (!transferEnabled) return;
+        action();
+    };
 
     return (
         <div
@@ -62,21 +95,21 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
             onContextMenu={onContextMenu}
             onClick={onClick}
             onDragOver={(e) => {
-                if (isFolder) {
+                if (isFolder && transferEnabled) {
                     e.preventDefault();
                     e.stopPropagation();
                     if (!isDragOver) setIsDragOver(true);
                 }
             }}
             onDragLeave={(e) => {
-                if (isFolder) {
+                if (isFolder && transferEnabled) {
                     e.preventDefault();
                     e.stopPropagation();
                     setIsDragOver(false);
                 }
             }}
             onDrop={(e) => {
-                if (isFolder && onDrop) {
+                if (isFolder && onDrop && transferEnabled) {
                     e.preventDefault();
                     e.stopPropagation();
                     setIsDragOver(false);
@@ -86,8 +119,12 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
         >
             <motion.div
                 layout
-                draggable={!isFolder}
+                draggable={transferEnabled && !isFolder}
                 onDragStart={(e: any) => {
+                    if (!transferEnabled || isFolder) {
+                        e.preventDefault();
+                        return;
+                    }
                     if (onDragStart) onDragStart(file.id);
                     e.dataTransfer.setData("application/x-telegram-file-id", file.id.toString());
                     e.dataTransfer.effectAllowed = 'move';
@@ -126,9 +163,19 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
 
                 {/* Selection Checkmark */}
                 <div
+                    role="checkbox"
+                    aria-checked={isSelected}
+                    aria-label={`Select ${file.name}`}
+                    tabIndex={0}
                     onClick={(e) => {
                         e.stopPropagation();
                         if (onToggleSelection) onToggleSelection();
+                    }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            if (onToggleSelection) onToggleSelection();
+                        }
                     }}
                     className={`absolute top-2 left-2 w-5 h-5 rounded-full border flex items-center justify-center transition-all z-10 cursor-pointer ${isSelected ? 'bg-telegram-primary border-telegram-primary' : 'border-white/50 bg-black/30 opacity-0 group-hover:opacity-100'}`}
                 >
@@ -143,17 +190,22 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
 
                 {/* Quick actions on hover */}
                 <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-10">
-                    <button onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-telegram-primary hover:text-white text-white/70" title="Preview">
+                    {!isFolder && onShare && (
+                        <button onClick={(e) => { e.stopPropagation(); if (shareEnabled) onShare(); }} disabled={!shareEnabled} title={!shareEnabled ? (shareBlockedTitle || blockedTitle) : 'Share'} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-blue-500 hover:text-white text-white/70 disabled:opacity-40 disabled:cursor-not-allowed" aria-label={`Share ${file.name}`}>
+                            <Share2 className="w-3 h-3" />
+                        </button>
+                    )}
+                    <button onClick={(e) => { e.stopPropagation(); guardPreview(() => { if (onPreview) onPreview(); }); }} disabled={!previewEnabled} title={!previewEnabled ? (previewBlockedTitle || blockedTitle) : (isFolder ? 'Open' : 'Preview')} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-telegram-primary hover:text-white text-white/70 disabled:opacity-40 disabled:cursor-not-allowed" aria-label={isFolder ? `Open ${file.name}` : `Preview ${file.name}`}>
                         <Eye className="w-3 h-3" />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); onDownload() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-green-500 hover:text-white text-white/70" title="Download">
+                    <button onClick={(e) => { e.stopPropagation(); if (downloadEnabled) onDownload(); }} disabled={!downloadEnabled} title={!downloadEnabled ? (downloadBlockedTitle || blockedTitle) : 'Download'} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-green-500 hover:text-white text-white/70 disabled:opacity-40 disabled:cursor-not-allowed" aria-label={`Download ${file.name}`}>
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-red-500 hover:text-white text-white/70" title="Delete">
+                    <button onClick={(e) => { e.stopPropagation(); if (deleteEnabled) onDelete(); }} disabled={!deleteEnabled} title={!deleteEnabled ? blockedTitle : 'Delete'} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-red-500 hover:text-white text-white/70 disabled:opacity-40 disabled:cursor-not-allowed" aria-label={`Delete ${file.name}`}>
                         <Trash2 className="w-3 h-3" />
                     </button>
                 </div>
             </motion.div>
         </div>
-    )
-}
+    );
+});

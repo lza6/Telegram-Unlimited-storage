@@ -65,6 +65,7 @@ interface PreviewModalProps {
 }
 
 export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, totalItems, nextFile, prevFile, activeFolderId }: PreviewModalProps) {
+    const peerFolderId = file.folder_id ?? activeFolderId ?? null;
     const [src, setSrc] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -75,11 +76,11 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
     useEffect(() => {
         setRetryCount(0);
         setReloadNonce(0);
-    }, [file.id, activeFolderId]);
+    }, [file.id, peerFolderId]);
 
     useEffect(() => {
         const load = async () => {
-            const key = getPreviewCacheKey(file.id, activeFolderId);
+            const key = getPreviewCacheKey(file.id, peerFolderId);
             const shouldBypassCache = reloadNonce > 0;
             const requestId = ++latestRequestRef.current;
             const cachedSrc = shouldBypassCache ? null : getCachedPreview(key);
@@ -97,7 +98,7 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
             try {
                 const path = await invoke<string>('cmd_get_preview', {
                     messageId: file.id,
-                    folderId: activeFolderId
+                    folderId: peerFolderId
                 });
                 if (requestId !== latestRequestRef.current) return;
 
@@ -122,19 +123,20 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
             }
         };
         load();
-    }, [file, activeFolderId, reloadNonce]);
+    }, [file, peerFolderId, reloadNonce]);
 
     useEffect(() => {
         const candidates = [nextFile, prevFile].filter((f): f is TelegramFile => !!f && isSafeToPrefetch(f.name));
 
         candidates.forEach((candidate) => {
-            const key = getPreviewCacheKey(candidate.id, activeFolderId);
+            const candidateFolderId = candidate.folder_id ?? activeFolderId ?? null;
+            const key = getPreviewCacheKey(candidate.id, candidateFolderId);
             if (getCachedPreview(key) || pendingPrefetch.has(key)) return;
 
             pendingPrefetch.add(key);
             invoke<string>('cmd_get_preview', {
                 messageId: candidate.id,
-                folderId: activeFolderId
+                folderId: candidateFolderId
             }).then((path) => {
                 if (!path) return;
                 const normalized = path.startsWith('data:') ? path : convertFileSrc(path);
@@ -230,7 +232,7 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
                                 className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl bg-black"
                                 alt="Preview"
                                 onError={() => {
-                                    const key = getPreviewCacheKey(file.id, activeFolderId);
+                                    const key = getPreviewCacheKey(file.id, peerFolderId);
                                     forgetPreview(key);
 
                                     if (retryCount < 1) {

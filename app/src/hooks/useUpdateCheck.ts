@@ -11,7 +11,10 @@ interface UpdateState {
     version: string | null;
 }
 
+import { useSettings } from '../context/SettingsContext';
+
 export function useUpdateCheck() {
+    const { settings } = useSettings();
     const [state, setState] = useState<UpdateState>({
         checking: false,
         available: false,
@@ -86,11 +89,12 @@ export function useUpdateCheck() {
     }, []);
 
     useEffect(() => {
+        if (!settings.autoUpdate) return;
         const timer = setTimeout(() => {
             checkForUpdates().catch(console.error);
         }, 5000);
         return () => clearTimeout(timer);
-    }, [checkForUpdates]);
+    }, [checkForUpdates, settings.autoUpdate]);
 
     return {
         ...state,

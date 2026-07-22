@@ -1,30 +1,40 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles } from 'lucide-react';
+import { X, RotateCcw, Globe, Shield, Zap, Link } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
+import { buildTelegramLoginCandidates } from '../../lib/filesPure';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../context/SettingsContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { ShareInfo } from '../../types';
+import { GeneralTab, ProxyTab, VpnTab, SharingTab } from './settings';
+import type { ApiSettings, ApiHealthSnapshot, TransportInfoSnapshot } from './settings';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
-}
-
-interface ApiSettings {
-    enabled: boolean;
-    port: number;
-    key_set: boolean;
-    running: boolean;
+    sessionOnline?: boolean;
+    shareReady?: boolean;
+    transferBlockedMessage?: string;
+    shareBlockedMessage?: string;
+    onTransportSwitched?: () => void;
 }
 
 type SettingsTab = 'general' | 'proxy' | 'vpn' | 'sharing';
 
-export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    const { settings, updateSetting, resetSettings } = useSettings();
+export function SettingsModal({
+    isOpen,
+    onClose,
+    sessionOnline = false,
+    shareReady = sessionOnline,
+    transferBlockedMessage,
+    shareBlockedMessage,
+    onTransportSwitched,
+}: SettingsModalProps) {
+    const { settings, resetSettings } = useSettings();
     const { confirm } = useConfirm();
     const [clearing, setClearing] = useState(false);
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
@@ -94,7 +104,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [shares, setShares] = useState<ShareInfo[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [copiedId, setCopiedId] = useState<string | null>(null);
-    const [globalDomain, setGlobalDomain] = useState('');
+    const proxySyncedOnce = useRef(false);
 
     const fetchShares = useCallback(async () => {
         setRefreshing(true);
@@ -132,36 +142,187 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     };
 
-    const handleCopyShare = (id: string) => {
+    const handleCopyShare = async (id: string) => {
         const share = shares.find(s => s.id === id);
         if (!share) return;
-        
-        let link = `http://localhost:14201/d/${share.id}`;
-        if (globalDomain.trim()) {
-            link = `http://${globalDomain.trim()}/d/${share.id}`;
+
+        let link = share.link;
+        if (settings.globalDomain.trim()) {
+            try {
+                const url = new URL(link);
+                link = `${url.protocol}//${settings.globalDomain.trim()}${url.pathname}`;
+            } catch {
+                link = `http://${settings.globalDomain.trim()}/d/${share.id}`;
+            }
         }
-        
-        navigator.clipboard.writeText(link);
-        setCopiedId(share.id);
-        setTimeout(() => setCopiedId(null), 2000);
+
+        try {
+            await navigator.clipboard.writeText(link);
+            setCopiedId(share.id);
+            setTimeout(() => setCopiedId(null), 2000);
+        } catch {
+            toast.error('复制失败，请手动选择链接');
+        }
     };
 
     // API settings state
     const [apiSettings, setApiSettings] = useState<ApiSettings>({ enabled: false, port: 8550, key_set: false, running: false });
+    const [apiHealth, setApiHealth] = useState<ApiHealthSnapshot | null>(null);
+    const [apiHealthError, setApiHealthError] = useState<string | null>(null);
+    const [transportInfo, setTransportInfo] = useState<TransportInfoSnapshot | null>(null);
+    const [transportSwitching, setTransportSwitching] = useState(false);
     const [apiPort, setApiPort] = useState('8550');
     const [apiLoading, setApiLoading] = useState(false);
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
     const [keyCopied, setKeyCopied] = useState(false);
+    const [localPwdCopied, setLocalPwdCopied] = useState(false);
+
+    const fetchTransportInfo = useCallback(async () => {
+        if (!apiSettings.running || !apiSettings.local_access_pwd) {
+            setTransportInfo(null);
+            return;
+        }
+        try {
+            const res = await fetch(`http://127.0.0.1:${apiSettings.port}/api/v1/transport`, {
+                headers: { 'X-Access-Pwd': apiSettings.local_access_pwd },
+            });
+            if (res.ok) {
+                setTransportInfo(await res.json());
+            } else {
+                setTransportInfo(null);
+            }
+        } catch {
+            setTransportInfo(null);
+        }
+    }, [apiSettings.running, apiSettings.port, apiSettings.local_access_pwd]);
+
+    const fetchApiHealth = useCallback(async () => {
+        try {
+            const health = await invoke<ApiHealthSnapshot>('cmd_get_api_health');
+            setApiHealth(health);
+            setApiHealthError(null);
+        } catch (e) {
+            setApiHealth(null);
+            setApiHealthError(String(e));
+        }
+    }, []);
 
     const fetchApiSettings = useCallback(async () => {
         try {
             const result = await invoke<ApiSettings>('cmd_get_api_settings');
             setApiSettings(result);
             setApiPort(result.port.toString());
+            if (result.running) {
+                await fetchApiHealth();
+                await fetchTransportInfo();
+            } else {
+                setApiHealth(null);
+                setApiHealthError(null);
+                setTransportInfo(null);
+            }
         } catch {
-            // API settings not available
+            // API settings not available (e.g. headless mode or dev)
+            console.warn('API settings not available');
         }
-    }, []);
+    }, [fetchApiHealth, fetchTransportInfo]);
+
+    const handleSwitchTransport = async (mode: 'bot' | 'user') => {
+        const pwd = apiSettings.local_access_pwd;
+        if (!pwd || !apiSettings.running) return;
+
+        if (mode === 'user') {
+            if (!await confirm({
+                title: 'Switch to User mode',
+                message:
+                    'REST User 模式需在 Web 控制台完成 Telegram 登录（/telegram.html）。切换后请打开浏览器登录页绑定会话。确认切换？',
+                confirmText: 'Switch',
+            })) {
+                return;
+            }
+        } else if (mode === 'bot') {
+            if (!await confirm({
+                title: 'Switch to Bot mode',
+                message: '切换为 Bot 模式后无需 User 登录，但需配置 TG_BOT_TOKEN。确认切换？',
+                confirmText: 'Switch',
+            })) {
+                return;
+            }
+        }
+
+        setTransportSwitching(true);
+        try {
+            const res = await fetch(`http://127.0.0.1:${apiSettings.port}/api/v1/transport/mode`, {
+                method: 'POST',
+                headers: {
+                    'X-Access-Pwd': pwd,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ mode }),
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || res.statusText);
+            }
+            toast.success(`Transport mode switched to ${mode}`);
+            try {
+                await invoke<boolean>('cmd_invalidate_file_index');
+            } catch {
+                // REST handler already marks index incomplete; best-effort local sync
+            }
+            onTransportSwitched?.();
+            toast.info('File index was reset — use Sync (desktop) or Refresh on Files page (Web) to rebuild.', { duration: 8000 });
+            await fetchTransportInfo();
+            await fetchApiHealth();
+            if (mode === 'user') {
+                const candidates = buildTelegramLoginCandidates(apiSettings.port, '/settings.html');
+                let opened = false;
+                for (const { surface, url } of candidates) {
+                    const probeBase =
+                        surface === 'desktop_api'
+                            ? `http://127.0.0.1:${apiSettings.port}`
+                            : 'http://127.0.0.1:1334';
+                    let reachable = false;
+                    try {
+                        const probe = await fetch(`${probeBase}/telegram.html`, {
+                            method: 'HEAD',
+                            signal: AbortSignal.timeout(2500),
+                        });
+                        reachable = probe.ok;
+                    } catch {
+                        reachable = false;
+                    }
+                    if (!reachable) continue;
+                    try {
+                        await open(url);
+                        opened = true;
+                        const label =
+                            surface === 'desktop_api'
+                                ? `桌面 REST (:${apiSettings.port}/telegram.html)`
+                                : 'Headless (:1334/telegram.html)';
+                        toast.info(
+                            `已在浏览器打开 ${label}。完成绑定后 REST User 模式即可就绪。`,
+                            { duration: 8000 },
+                        );
+                        break;
+                    } catch {
+                        toast.info(`请手动打开 ${url} 完成 User 绑定。`, { duration: 8000 });
+                        opened = true;
+                        break;
+                    }
+                }
+                if (!opened) {
+                    toast.info(
+                        '未检测到可用的 Web 登录页（8550 或 :1334）。请在本应用主界面完成 Telegram 登录，或启动 Headless Docker 后重试。',
+                        { duration: 10000 },
+                    );
+                }
+            }
+        } catch (e) {
+            toast.error(`Failed to switch transport: ${e}`);
+        } finally {
+            setTransportSwitching(false);
+        }
+    };
 
     // Load API settings when modal opens
     useEffect(() => {
@@ -179,32 +340,56 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         return () => clearInterval(interval);
     }, [isOpen, apiSettings.enabled, fetchApiSettings]);
 
-    // Sync proxy settings to backend whenever they change
+    // Sync proxy settings to backend when modal is open
     useEffect(() => {
+        if (!isOpen) {
+            proxySyncedOnce.current = false;
+            return;
+        }
         const applyProxy = async () => {
             try {
                 await invoke('cmd_apply_proxy_settings', {
                     enabled: settings.proxyEnabled,
-                    proxyType: settings.proxyType,
+                    proxyType: 'socks5',
                     host: settings.proxyHost,
                     port: settings.proxyPort,
                     username: settings.proxyUsername,
                     password: settings.proxyPassword,
-                    secret: settings.proxySecret,
+                    secret: '',
                 });
-            } catch {
-                // best-effort sync
+                if (proxySyncedOnce.current) {
+                    if (sessionOnline) {
+                        try {
+                            const ok = await invoke<boolean>('cmd_reconnect_telegram');
+                            if (ok) toast.success('Proxy updated — Telegram reconnected');
+                            else toast.info('Proxy saved (Telegram not logged in yet)');
+                        } catch (e) {
+                            toast.error(`Reconnect failed: ${e}`);
+                        }
+                    } else {
+                        toast.info('Proxy saved — reconnect when Telegram session is active');
+                    }
+                } else {
+                    proxySyncedOnce.current = true;
+                }
+            } catch (e) {
+                toast.error(`Failed to sync proxy settings: ${e}`);
             }
         };
         applyProxy();
     }, [
-        settings.proxyEnabled, settings.proxyType, settings.proxyHost,
-        settings.proxyPort, settings.proxyUsername, settings.proxyPassword,
-        settings.proxySecret,
+        isOpen,
+        sessionOnline,
+        settings.proxyEnabled,
+        settings.proxyHost,
+        settings.proxyPort,
+        settings.proxyUsername,
+        settings.proxyPassword,
     ]);
 
-    // Sync VPN optimizer settings to backend whenever they change
+    // Sync VPN optimizer settings when modal is open
     useEffect(() => {
+        if (!isOpen) return;
         const applyVpn = async () => {
             try {
                 await invoke('cmd_apply_vpn_settings', {
@@ -226,18 +411,30 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     keepAliveIntervalSec: settings.keepAliveIntervalSec,
                     autoDetectVpn: settings.autoDetectVpn,
                 });
-            } catch {
-                // best-effort sync
+            } catch (e) {
+                toast.error(`Failed to sync VPN settings: ${e}`);
             }
         };
         applyVpn();
     }, [
-        settings.vpnMode, settings.timeoutMultiplier, settings.retryAttempts,
-        settings.retryBaseBackoffSec, settings.retryMaxBackoffSec, settings.adaptivePolling,
-        settings.pollingMinSec, settings.pollingMaxSec, settings.preferredDC,
-        settings.dcFallbackAttempts, settings.floodWaitRespect, settings.peerCacheSize,
-        settings.bandwidthLimitUpKBs, settings.bandwidthLimitDownKBs, settings.chunkSizeKb,
-        settings.keepAliveIntervalSec, settings.autoDetectVpn,
+        isOpen,
+        settings.vpnMode,
+        settings.timeoutMultiplier,
+        settings.retryAttempts,
+        settings.retryBaseBackoffSec,
+        settings.retryMaxBackoffSec,
+        settings.adaptivePolling,
+        settings.pollingMinSec,
+        settings.pollingMaxSec,
+        settings.preferredDC,
+        settings.dcFallbackAttempts,
+        settings.floodWaitRespect,
+        settings.peerCacheSize,
+        settings.bandwidthLimitUpKBs,
+        settings.bandwidthLimitDownKBs,
+        settings.chunkSizeKb,
+        settings.keepAliveIntervalSec,
+        settings.autoDetectVpn,
     ]);
 
     // Poll latency when VPN tab is active
@@ -281,6 +478,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             });
             setApiSettings(result);
             toast.success(result.enabled ? 'API server started' : 'API server stopped');
+            if (result.enabled) {
+                setTimeout(() => fetchApiSettings(), 500);
+            }
         } catch (e) {
             toast.error(`Failed to update API: ${e}`);
         } finally {
@@ -342,6 +542,54 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     };
 
+    const handleCopyLocalPwd = async () => {
+        const pwd = apiSettings.local_access_pwd;
+        if (!pwd) return;
+        try {
+            await navigator.clipboard.writeText(pwd);
+            setLocalPwdCopied(true);
+            setTimeout(() => setLocalPwdCopied(false), 2000);
+        } catch {
+            toast.error('Failed to copy to clipboard');
+        }
+    };
+
+    const handleRegenerateLocalPwd = async () => {
+        const ok = await confirm({
+            title: 'Regenerate Local Access Password',
+            message: 'Scripts using the current X-Access-Pwd header will stop working until updated.',
+            confirmText: 'Regenerate',
+            variant: 'danger',
+        });
+        if (!ok) return;
+        try {
+            const pwd = await invoke<string>('cmd_regenerate_local_access_pwd');
+            setApiSettings(prev => ({ ...prev, local_access_pwd: pwd }));
+            toast.success('Local access password regenerated');
+        } catch (e) {
+            toast.error(`Failed: ${e}`);
+        }
+    };
+
+    const handleClearCache = async () => {
+        const ok = await confirm({
+            title: 'Clear Cache',
+            message: 'This will remove all cached previews and temporary files. Your uploaded files on Telegram are not affected.',
+            confirmText: 'Clear',
+            variant: 'danger',
+        });
+        if (!ok) return;
+        setClearing(true);
+        try {
+            await invoke('cmd_clean_cache');
+            toast.success('Cache cleared successfully');
+        } catch {
+            toast.error('Failed to clear cache');
+        } finally {
+            setClearing(false);
+        }
+    };
+
     return (
         <AnimatePresence>
             {isOpen && (
@@ -358,12 +606,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: 10 }}
                         transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                        className="bg-telegram-surface border border-telegram-border rounded-xl w-[440px] shadow-2xl overflow-hidden flex flex-col"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-title"
+                        className="bg-telegram-surface border border-telegram-border rounded-xl w-full max-w-[440px] mx-4 shadow-2xl overflow-hidden flex flex-col"
                         onClick={e => e.stopPropagation()}
                     >
                         {/* Header */}
                         <div className="px-5 py-4 border-b border-telegram-border flex justify-between items-center">
-                            <h2 className="text-telegram-text font-semibold text-base">Settings</h2>
+                            <h2 id="settings-title" className="text-telegram-text font-semibold text-base">Settings</h2>
                             <button
                                 onClick={onClose}
                                 className="p-1.5 hover:bg-telegram-hover rounded-lg text-telegram-subtext hover:text-telegram-text transition"
@@ -393,803 +644,60 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         {/* Body */}
                         <motion.div layout className="px-5 py-4 max-h-[70vh] overflow-y-auto overflow-x-hidden relative">
                             <AnimatePresence mode="popLayout" initial={false}>
-
                                 {activeTab === 'general' && (
-                                    <motion.div
-                                        key="general"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-6 w-full"
-                                    >
-
-                            {/* Transfers Section */}
-                            <section className="space-y-3">
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <Upload className="w-3.5 h-3.5" />
-                                    Transfers
-                                </h3>
-
-                                {/* Max Concurrent Uploads */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Upload className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Concurrent Uploads</p>
-                                            <p className="text-xs text-telegram-subtext">Max parallel uploads</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentUploads', Math.max(1, settings.maxConcurrentUploads - 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            -
-                                        </button>
-                                        <span className="text-sm text-telegram-text font-medium w-5 text-center">
-                                            {settings.maxConcurrentUploads}
-                                        </span>
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentUploads', Math.min(10, settings.maxConcurrentUploads + 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* Max Concurrent Downloads */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Download className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Concurrent Downloads</p>
-                                            <p className="text-xs text-telegram-subtext">Max parallel downloads</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentDownloads', Math.max(1, settings.maxConcurrentDownloads - 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            -
-                                        </button>
-                                        <span className="text-sm text-telegram-text font-medium w-5 text-center">
-                                            {settings.maxConcurrentDownloads}
-                                        </span>
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentDownloads', Math.min(10, settings.maxConcurrentDownloads + 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* Zip Folders */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <FolderArchive className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Zip Folders Before Upload</p>
-                                            <p className="text-xs text-telegram-subtext">Compress folders into .zip before uploading</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('zipFolders', !settings.zipFolders)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.zipFolders ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
-                            </section>
-
-                            {/* REST API Section */}
-                            <section className="space-y-3">
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <Globe className="w-3.5 h-3.5" />
-                                    REST API
-                                </h3>
-
-                                {/* Enable Toggle */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${apiSettings.running ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-gray-500'}`} />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Enable API Server</p>
-                                            <p className="text-xs text-telegram-subtext">
-                                                {apiSettings.running ? `Running on port ${apiSettings.port}` : 'Localhost only (127.0.0.1)'}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={handleApiToggle}
-                                        disabled={apiLoading}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${apiSettings.enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${apiSettings.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
-
-                                {/* Port */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div>
-                                        <p className="text-sm text-telegram-text font-medium">Port</p>
-                                        <p className="text-xs text-telegram-subtext">1024 - 65535</p>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <input
-                                            type="number"
-                                            min="1024"
-                                            max="65535"
-                                            value={apiPort}
-                                            onChange={e => setApiPort(e.target.value)}
-                                            onBlur={handlePortApply}
-                                            onKeyDown={e => { if (e.key === 'Enter') handlePortApply(); }}
-                                            className="w-20 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-center focus:outline-none focus:border-telegram-primary/50 transition"
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* API Key */}
-                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2.5">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <Key className="w-4 h-4 text-telegram-subtext" />
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">API Key</p>
-                                                <p className="text-xs text-telegram-subtext">
-                                                    {apiSettings.key_set ? 'Key configured' : 'No key set'}
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <button
-                                            onClick={handleGenerateKey}
-                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition"
-                                        >
-                                            <RefreshCw className="w-3 h-3" />
-                                            {apiSettings.key_set ? 'Regenerate' : 'Generate'}
-                                        </button>
-                                    </div>
-
-                                    {/* One-time key reveal */}
-                                    {generatedKey && (
-                                        <div className="mt-2 p-2.5 bg-telegram-bg rounded-lg border border-yellow-500/20">
-                                            <p className="text-[10px] text-yellow-400/80 uppercase tracking-wider font-semibold mb-1.5">
-                                                Copy now — this key will not be shown again
-                                            </p>
-                                            <div className="flex items-center gap-2">
-                                                <code className="flex-1 text-xs text-telegram-text font-mono bg-telegram-hover rounded px-2 py-1.5 overflow-x-auto select-all">
-                                                    {generatedKey}
-                                                </code>
-                                                <button
-                                                    onClick={handleCopyKey}
-                                                    className="p-1.5 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition flex-shrink-0"
-                                                    title="Copy to clipboard"
-                                                >
-                                                    {keyCopied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            </section>
-
-                            {/* Storage Section */}
-                            <section className="space-y-3">
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <HardDrive className="w-3.5 h-3.5" />
-                                    Storage
-                                </h3>
-
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Trash2 className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Clear Local Cache</p>
-                                            <p className="text-xs text-telegram-subtext">Remove cached previews and temp files</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        disabled={clearing}
-                                        onClick={async () => {
-                                            const ok = await confirm({
-                                                title: 'Clear Cache',
-                                                message: 'This will remove all cached previews and temporary files. Your uploaded files on Telegram are not affected.',
-                                                confirmText: 'Clear',
-                                                variant: 'danger',
-                                            });
-                                            if (!ok) return;
-                                            setClearing(true);
-                                            try {
-                                                await invoke('cmd_clean_cache');
-                                                toast.success('Cache cleared successfully');
-                                            } catch {
-                                                toast.error('Failed to clear cache');
-                                            } finally {
-                                                setClearing(false);
-                                            }
-                                        }}
-                                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {clearing ? 'Clearing...' : 'Clear'}
-                                    </button>
-                                </div>
-                            </section>
-
-                            {/* Updates Section */}
-                            <section className="space-y-3">
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <Sparkles className="w-3.5 h-3.5" />
-                                    Updates
-                                </h3>
-
-                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <Download className="w-4 h-4 text-telegram-subtext" />
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Check for Updates</p>
-                                                <p className="text-xs text-telegram-subtext">
-                                                    {updateVersion ? `v${updateVersion} available` : 'Check if a newer version exists'}
-                                                </p>
-                                            </div>
-                                        </div>
-                                        {updateAvailable && !updateDownloading ? (
-                                            <button
-                                                onClick={handleInstallUpdate}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
-                                            >
-                                                <Download className="w-3 h-3" />
-                                                Update & Restart
-                                            </button>
-                                        ) : updateDownloading ? (
-                                            <div className="flex items-center gap-2">
-                                                <RefreshCw className="w-3.5 h-3.5 text-telegram-primary animate-spin" />
-                                                <span className="text-xs text-telegram-primary font-mono">{updateProgress}%</span>
-                                            </div>
-                                        ) : (
-                                            <button
-                                                onClick={handleCheckForUpdates}
-                                                disabled={updateChecking}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50"
-                                            >
-                                                <RefreshCw className={`w-3 h-3 ${updateChecking ? 'animate-spin' : ''}`} />
-                                                {updateChecking ? 'Checking...' : 'Check Now'}
-                                            </button>
-                                        )}
-                                    </div>
-                                    {updateDownloading && (
-                                        <div className="w-full h-1.5 bg-telegram-border rounded-full overflow-hidden">
-                                            <div
-                                                className="h-full bg-telegram-primary rounded-full transition-all duration-300"
-                                                style={{ width: `${updateProgress}%` }}
-                                            />
-                                        </div>
-                                    )}
-                                </div>
-                            </section>
-
-                                    </motion.div>
-                                )}
-
-                                {activeTab === 'proxy' && (
-                                    <motion.section
-                                        key="proxy"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-3 w-full"
-                                    >
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <Shield className="w-3.5 h-3.5" />
-                                    Proxy Configuration
-                                </h3>
-
-                                {/* Enable Proxy */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${settings.proxyEnabled ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-gray-500'}`} />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Enable Proxy</p>
-                                            <p className="text-xs text-telegram-subtext">Route traffic through a proxy server</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('proxyEnabled', !settings.proxyEnabled)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.proxyEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
-
-                                {/* Proxy Type */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div>
-                                        <p className="text-sm text-telegram-text font-medium">Proxy Type</p>
-                                        <p className="text-xs text-telegram-subtext">SOCKS5 or MTProto proxy</p>
-                                    </div>
-                                    <div className="relative">
-                                        <select
-                                            value={settings.proxyType}
-                                            onChange={e => updateSetting('proxyType', e.target.value as 'socks5' | 'mtproto')}
-                                            className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
-                                        >
-                                            <option value="socks5">SOCKS5</option>
-                                            <option value="mtproto">MTProto</option>
-                                        </select>
-                                        <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                                    </div>
-                                </div>
-
-                                {/* Host */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div>
-                                        <p className="text-sm text-telegram-text font-medium">Host</p>
-                                        <p className="text-xs text-telegram-subtext">Proxy server address</p>
-                                    </div>
-                                    <input
-                                        type="text"
-                                        placeholder="e.g. 127.0.0.1"
-                                        value={settings.proxyHost}
-                                        onChange={e => updateSetting('proxyHost', e.target.value)}
-                                        className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
+                                    <GeneralTab
+                                        sessionOnline={sessionOnline}
+                                        transferBlockedMessage={transferBlockedMessage}
+                                        apiSettings={apiSettings}
+                                        apiHealth={apiHealth}
+                                        apiHealthError={apiHealthError}
+                                        transportInfo={transportInfo}
+                                        transportSwitching={transportSwitching}
+                                        apiPort={apiPort}
+                                        apiLoading={apiLoading}
+                                        generatedKey={generatedKey}
+                                        keyCopied={keyCopied}
+                                        localPwdCopied={localPwdCopied}
+                                        clearing={clearing}
+                                        updateChecking={updateChecking}
+                                        updateAvailable={!!updateAvailable}
+                                        updateVersion={updateVersion}
+                                        updateDownloading={updateDownloading}
+                                        updateProgress={updateProgress}
+                                        onApiToggle={handleApiToggle}
+                                        onPortApply={handlePortApply}
+                                        onSetApiPort={setApiPort}
+                                        onGenerateKey={handleGenerateKey}
+                                        onCopyKey={handleCopyKey}
+                                        onCopyLocalPwd={handleCopyLocalPwd}
+                                        onRegenerateLocalPwd={handleRegenerateLocalPwd}
+                                        onClearCache={handleClearCache}
+                                        onCheckForUpdates={handleCheckForUpdates}
+                                        onInstallUpdate={handleInstallUpdate}
+                                        onSwitchTransport={handleSwitchTransport}
                                     />
-                                </div>
+                                )}
 
-                                {/* Port */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div>
-                                        <p className="text-sm text-telegram-text font-medium">Port</p>
-                                        <p className="text-xs text-telegram-subtext">1–65535</p>
-                                    </div>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        max="65535"
-                                        value={settings.proxyPort}
-                                        onChange={e => updateSetting('proxyPort', Math.max(1, Math.min(65535, parseInt(e.target.value) || 1080)))}
-                                        className="w-20 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-center focus:outline-none focus:border-telegram-primary/50 transition"
+                                {activeTab === 'proxy' && <ProxyTab />}
+
+                                {activeTab === 'vpn' && (
+                                    <VpnTab
+                                        latencyMs={latencyMs}
+                                        vpnDetected={vpnDetected}
                                     />
-                                </div>
-
-                                {/* SOCKS5 auth fields */}
-                                {settings.proxyType === 'socks5' && (
-                                    <>
-                                        <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Username</p>
-                                                <p className="text-xs text-telegram-subtext">Optional</p>
-                                            </div>
-                                            <input
-                                                type="text"
-                                                placeholder="Optional"
-                                                value={settings.proxyUsername}
-                                                onChange={e => updateSetting('proxyUsername', e.target.value)}
-                                                className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                            />
-                                        </div>
-                                        <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Password</p>
-                                                <p className="text-xs text-telegram-subtext">Optional</p>
-                                            </div>
-                                            <input
-                                                type="password"
-                                                placeholder="Optional"
-                                                value={settings.proxyPassword}
-                                                onChange={e => updateSetting('proxyPassword', e.target.value)}
-                                                className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                            />
-                                        </div>
-                                    </>
-                                )}
-
-                                {/* MTProto secret */}
-                                {settings.proxyType === 'mtproto' && (
-                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Secret</p>
-                                            <p className="text-xs text-telegram-subtext">MTProto proxy secret key</p>
-                                        </div>
-                                        <input
-                                            type="password"
-                                            placeholder="Required"
-                                            value={settings.proxySecret}
-                                            onChange={e => updateSetting('proxySecret', e.target.value)}
-                                            className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                        />
-                                    </div>
-                                )}
-
-                                {/* Info note */}
-                                <div className="p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10">
-                                    <p className="text-[11px] text-yellow-400/70 leading-relaxed">
-                                        ⚠️ Proxy changes require reconnecting. The app will attempt to reconnect automatically when you toggle the proxy.
-                                    </p>
-                                </div>
-                            </motion.section>
-                        )}
-
-                        {activeTab === 'vpn' && (
-                                    <motion.section
-                                        key="vpn"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-3 w-full"
-                                    >
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <Zap className="w-3.5 h-3.5" />
-                                    VPN Optimizer
-                                    {latencyMs !== null && (
-                                        <span className={`ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
-                                            latencyMs < 0 ? 'bg-red-500/10 text-red-400' :
-                                            latencyMs < 100 ? 'bg-green-500/10 text-green-400' :
-                                            latencyMs < 300 ? 'bg-yellow-500/10 text-yellow-400' :
-                                            'bg-red-500/10 text-red-400'
-                                        }`}>
-                                            <Activity className="w-3 h-3 inline mr-0.5" />
-                                            {latencyMs < 0 ? 'Offline' : `${latencyMs}ms`}
-                                        </span>
-                                    )}
-                                </h3>
-
-                                {/* Master Toggle */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${settings.vpnMode ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-gray-500'}`} />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">VPN Mode</p>
-                                            <p className="text-xs text-telegram-subtext">Optimize for high-latency / VPN connections</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('vpnMode', !settings.vpnMode)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.vpnMode ? 'bg-emerald-500' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.vpnMode ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
-
-                                {settings.vpnMode && (<>
-                                    {/* Timeout Multiplier */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Timeout Multiplier</p>
-                                                <p className="text-xs text-telegram-subtext">Increase connection timeouts</p>
-                                            </div>
-                                            <span className="text-sm text-telegram-primary font-mono font-medium">{settings.timeoutMultiplier}×</span>
-                                        </div>
-                                        <input type="range" min="1" max="5" step="1" value={settings.timeoutMultiplier}
-                                            onChange={e => updateSetting('timeoutMultiplier', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Retry Attempts */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Retry Attempts</p>
-                                                <p className="text-xs text-telegram-subtext">Retries on failed API calls</p>
-                                            </div>
-                                            <span className="text-sm text-telegram-primary font-mono font-medium">{settings.retryAttempts}</span>
-                                        </div>
-                                        <input type="range" min="0" max="5" step="1" value={settings.retryAttempts}
-                                            onChange={e => updateSetting('retryAttempts', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Backoff Settings */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <p className="text-sm text-telegram-text font-medium">Retry Backoff</p>
-                                        <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Base delay</p>
-                                            <span className="text-xs text-telegram-primary font-mono">{settings.retryBaseBackoffSec}s</span>
-                                        </div>
-                                        <input type="range" min="0.5" max="5" step="0.5" value={settings.retryBaseBackoffSec}
-                                            onChange={e => updateSetting('retryBaseBackoffSec', parseFloat(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                        <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Max delay</p>
-                                            <span className="text-xs text-telegram-primary font-mono">{settings.retryMaxBackoffSec}s</span>
-                                        </div>
-                                        <input type="range" min="8" max="60" step="2" value={settings.retryMaxBackoffSec}
-                                            onChange={e => updateSetting('retryMaxBackoffSec', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Adaptive Polling */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Adaptive Polling</p>
-                                                <p className="text-xs text-telegram-subtext">Auto-adjust update check interval</p>
-                                            </div>
-                                            <button
-                                                onClick={() => updateSetting('adaptivePolling', !settings.adaptivePolling)}
-                                                className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.adaptivePolling ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                            >
-                                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.adaptivePolling ? 'translate-x-5' : 'translate-x-0'}`} />
-                                            </button>
-                                        </div>
-                                        {settings.adaptivePolling && (<>
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-xs text-telegram-subtext">Min interval</p>
-                                                <span className="text-xs text-telegram-primary font-mono">{settings.pollingMinSec}s</span>
-                                            </div>
-                                            <input type="range" min="10" max="30" step="5" value={settings.pollingMinSec}
-                                                onChange={e => updateSetting('pollingMinSec', parseInt(e.target.value))}
-                                                className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-xs text-telegram-subtext">Max interval</p>
-                                                <span className="text-xs text-telegram-primary font-mono">{settings.pollingMaxSec}s</span>
-                                            </div>
-                                            <input type="range" min="45" max="120" step="15" value={settings.pollingMaxSec}
-                                                onChange={e => updateSetting('pollingMaxSec', parseInt(e.target.value))}
-                                                className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                        </>)}
-                                    </div>
-
-                                    {/* Preferred DC */}
-                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Preferred Data Centre</p>
-                                            <p className="text-xs text-telegram-subtext">Start connections from this DC</p>
-                                        </div>
-                                        <div className="relative">
-                                            <select
-                                                value={settings.preferredDC}
-                                                onChange={e => updateSetting('preferredDC', e.target.value as typeof settings.preferredDC)}
-                                                className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
-                                            >
-                                                <option value="auto">Auto</option>
-                                                <option value="dc1">DC 1</option>
-                                                <option value="dc2">DC 2</option>
-                                                <option value="dc3">DC 3</option>
-                                                <option value="dc4">DC 4</option>
-                                                <option value="dc5">DC 5</option>
-                                            </select>
-                                            <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                                        </div>
-                                    </div>
-
-                                    {/* DC Fallback Attempts */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">DC Fallback Attempts</p>
-                                                <p className="text-xs text-telegram-subtext">DCs to try on connection failure</p>
-                                            </div>
-                                            <span className="text-sm text-telegram-primary font-mono font-medium">{settings.dcFallbackAttempts}</span>
-                                        </div>
-                                        <input type="range" min="1" max="4" step="1" value={settings.dcFallbackAttempts}
-                                            onChange={e => updateSetting('dcFallbackAttempts', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Flood Wait */}
-                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Respect Flood Wait</p>
-                                            <p className="text-xs text-telegram-subtext">Auto-sleep on FLOOD_WAIT errors</p>
-                                        </div>
-                                        <button
-                                            onClick={() => updateSetting('floodWaitRespect', !settings.floodWaitRespect)}
-                                            className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.floodWaitRespect ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                        >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.floodWaitRespect ? 'translate-x-5' : 'translate-x-0'}`} />
-                                        </button>
-                                    </div>
-
-                                    {/* Peer Cache Size */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Peer Cache Size</p>
-                                                <p className="text-xs text-telegram-subtext">Cached peer resolutions</p>
-                                            </div>
-                                            <span className="text-sm text-telegram-primary font-mono font-medium">{settings.peerCacheSize}</span>
-                                        </div>
-                                        <input type="range" min="100" max="2000" step="100" value={settings.peerCacheSize}
-                                            onChange={e => updateSetting('peerCacheSize', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Bandwidth Throttle */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <p className="text-sm text-telegram-text font-medium flex items-center gap-1.5">
-                                            <Gauge className="w-3.5 h-3.5 text-telegram-subtext" />
-                                            Bandwidth Throttle
-                                        </p>
-                                        <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Upload limit</p>
-                                            <span className="text-xs text-telegram-primary font-mono">
-                                                {settings.bandwidthLimitUpKBs === 0 ? 'Unlimited' : `${settings.bandwidthLimitUpKBs} KB/s`}
-                                            </span>
-                                        </div>
-                                        <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitUpKBs}
-                                            onChange={e => updateSetting('bandwidthLimitUpKBs', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                        <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Download limit</p>
-                                            <span className="text-xs text-telegram-primary font-mono">
-                                                {settings.bandwidthLimitDownKBs === 0 ? 'Unlimited' : `${settings.bandwidthLimitDownKBs} KB/s`}
-                                            </span>
-                                        </div>
-                                        <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitDownKBs}
-                                            onChange={e => updateSetting('bandwidthLimitDownKBs', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Chunk Size */}
-                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Transfer Chunk Size</p>
-                                            <p className="text-xs text-telegram-subtext">Smaller = better for unstable connections</p>
-                                        </div>
-                                        <div className="relative">
-                                            <select
-                                                value={settings.chunkSizeKb}
-                                                onChange={e => updateSetting('chunkSizeKb', parseInt(e.target.value))}
-                                                className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
-                                            >
-                                                <option value={128}>128 KB</option>
-                                                <option value={256}>256 KB</option>
-                                                <option value={512}>512 KB</option>
-                                            </select>
-                                            <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                                        </div>
-                                    </div>
-
-                                    {/* Keep-Alive */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Keep-Alive Ping</p>
-                                                <p className="text-xs text-telegram-subtext">Prevent VPN idle disconnects</p>
-                                            </div>
-                                            <span className="text-sm text-telegram-primary font-mono font-medium">
-                                                {settings.keepAliveIntervalSec === 0 ? 'Off' : `${settings.keepAliveIntervalSec}s`}
-                                            </span>
-                                        </div>
-                                        <input type="range" min="0" max="120" step="15" value={settings.keepAliveIntervalSec}
-                                            onChange={e => updateSetting('keepAliveIntervalSec', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Auto-Detect VPN */}
-                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                        <div className="flex items-center gap-2">
-                                            <Wifi className="w-4 h-4 text-telegram-subtext" />
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">Auto-Detect VPN</p>
-                                                <p className="text-xs text-telegram-subtext">
-                                                    {vpnDetected === true ? 'VPN interface detected' : vpnDetected === false ? 'No VPN detected' : 'Checking...'}
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <button
-                                            onClick={() => updateSetting('autoDetectVpn', !settings.autoDetectVpn)}
-                                            className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.autoDetectVpn ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                        >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.autoDetectVpn ? 'translate-x-5' : 'translate-x-0'}`} />
-                                        </button>
-                                    </div>
-                                </>)}
-                                    </motion.section>
                                 )}
 
                                 {activeTab === 'sharing' && (
-                                    <motion.section
-                                        key="sharing"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-4 w-full"
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                                <Link className="w-3.5 h-3.5 text-telegram-primary" />
-                                                Shared Links ({shares.length})
-                                            </h3>
-                                            <button 
-                                                onClick={fetchShares} 
-                                                className="text-telegram-subtext hover:text-telegram-text p-1 rounded hover:bg-telegram-hover transition"
-                                                title="Refresh links"
-                                            >
-                                                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-                                            </button>
-                                        </div>
-
-                                        <div className="bg-telegram-hover/30 border border-telegram-border/50 rounded-lg p-3 space-y-2">
-                                            <div className="text-[11px] font-semibold text-telegram-text flex items-center gap-1">🌐 Tailscale/LAN IP Override</div>
-                                            <input
-                                                type="text"
-                                                placeholder="e.g. 100.115.22.45 or my-pc:14201"
-                                                value={globalDomain}
-                                                onChange={(e) => setGlobalDomain(e.target.value)}
-                                                className="w-full bg-telegram-surface border border-telegram-border rounded-md px-2.5 py-1.5 text-xs text-telegram-text focus:outline-none focus:border-telegram-primary/50 placeholder:text-telegram-subtext/40"
-                                            />
-                                            <p className="text-[10px] text-telegram-subtext">
-                                                Automatically replaces 'localhost:14201' with this IP/domain when copying.
-                                            </p>
-                                        </div>
-
-                                        {shares.length === 0 ? (
-                                            <div className="py-8 text-center space-y-2">
-                                                <Link className="w-8 h-8 text-telegram-subtext/40 mx-auto" />
-                                                <p className="text-sm font-medium text-telegram-text">No active share links</p>
-                                                <p className="text-xs text-telegram-subtext">Right-click any file and select "Share Link" to create one.</p>
-                                            </div>
-                                        ) : (
-                                            <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
-                                                {shares.map((share) => {
-                                                    const isExpired = share.expires_at ? (share.expires_at < Math.floor(Date.now() / 1000)) : false;
-                                                    return (
-                                                        <div key={share.id} className="p-3 rounded-lg bg-telegram-hover/40 border border-telegram-border/50 flex flex-col gap-2 relative">
-                                                            <div className="flex justify-between items-start gap-4">
-                                                                <div className="min-w-0 flex-1">
-                                                                    <div className="text-xs font-semibold text-telegram-text truncate" title={share.file_name}>
-                                                                        {share.file_name}
-                                                                    </div>
-                                                                    <div className="flex gap-2 items-center mt-1 flex-wrap text-[10px]">
-                                                                        <span className="text-telegram-subtext">
-                                                                            {new Date(share.created_at * 1000).toLocaleDateString()}
-                                                                        </span>
-                                                                        <span className="w-1 h-1 rounded-full bg-telegram-border" />
-                                                                        {share.has_password ? (
-                                                                            <span className="text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded flex items-center gap-0.5 font-medium">
-                                                                                <Key className="w-2.5 h-2.5" /> Protected
-                                                                            </span>
-                                                                        ) : (
-                                                                            <span className="text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded font-medium">Public</span>
-                                                                        )}
-                                                                        <span className="w-1 h-1 rounded-full bg-telegram-border" />
-                                                                        {share.expires_at ? (
-                                                                            isExpired ? (
-                                                                                <span className="text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded font-medium">Expired</span>
-                                                                            ) : (
-                                                                                <span className="text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded font-medium">
-                                                                                    Expires: {new Date(share.expires_at * 1000).toLocaleDateString()}
-                                                                                </span>
-                                                                            )
-                                                                        ) : (
-                                                                            <span className="text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded font-medium">Never Expires</span>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                                
-                                                                <div className="flex gap-1">
-                                                                    <button
-                                                                        onClick={() => handleCopyShare(share.id)}
-                                                                        className={`p-1.5 rounded bg-telegram-surface border border-telegram-border text-telegram-text hover:bg-telegram-hover transition ${
-                                                                            copiedId === share.id ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5' : ''
-                                                                        }`}
-                                                                        title="Copy share link"
-                                                                    >
-                                                                        {copiedId === share.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                                                                    </button>
-                                                                    <button
-                                                                        onClick={() => handleRevokeShare(share.id)}
-                                                                        className="p-1.5 rounded bg-telegram-surface border border-telegram-border text-red-400 hover:bg-red-500/10 hover:border-red-500/30 transition"
-                                                                        title="Revoke link"
-                                                                    >
-                                                                        <Trash2 className="w-3.5 h-3.5" />
-                                                                    </button>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
-                                    </motion.section>
+                                    <SharingTab
+                                        shareReady={shareReady}
+                                        shareBlockedMessage={shareBlockedMessage || transferBlockedMessage}
+                                        shares={shares}
+                                        refreshing={refreshing}
+                                        copiedId={copiedId}
+                                        onFetchShares={fetchShares}
+                                        onRevokeShare={handleRevokeShare}
+                                        onCopyShare={handleCopyShare}
+                                    />
                                 )}
                             </AnimatePresence>
                         </motion.div>

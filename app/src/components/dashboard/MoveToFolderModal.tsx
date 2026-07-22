@@ -11,10 +11,16 @@ interface MoveToFolderModalProps {
 export function MoveToFolderModal({ folders, onClose, onSelect, activeFolderId }: MoveToFolderModalProps) {
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-            <div className="bg-telegram-surface border border-telegram-border rounded-xl w-80 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="move-folder-title"
+                className="bg-telegram-surface border border-telegram-border rounded-xl w-full max-w-80 mx-4 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+                onClick={e => e.stopPropagation()}
+            >
                 <div className="p-4 border-b border-telegram-border flex justify-between items-center">
-                    <h3 className="text-telegram-text font-medium">Move to Folder</h3>
-                    <button onClick={onClose} className="text-telegram-subtext hover:text-telegram-text"><Plus className="w-5 h-5 rotate-45" /></button>
+                    <h3 id="move-folder-title" className="text-telegram-text font-medium">Move to Folder</h3>
+                    <button onClick={onClose} aria-label="Close" className="text-telegram-subtext hover:text-telegram-text"><Plus className="w-5 h-5 rotate-45" /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     {activeFolderId !== null && (

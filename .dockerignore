@@ -1,0 +1,14 @@
+# 缩小 build context，加快 docker build
+.git
+.github
+data
+**/target
+app/src-tauri/target
+node_modules
+*.md
+!README-DOCKER.md
+.wolf
+.codegraph
+agent-transcripts
+terminals
+.build-cache

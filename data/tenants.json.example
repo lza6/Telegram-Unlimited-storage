@@ -1,0 +1,12 @@
+[
+  {
+    "tenant_id": "acme",
+    "api_key": "replace-with-long-random-key-acme",
+    "display_name": "Acme Corp"
+  },
+  {
+    "tenant_id": "partner-b",
+    "api_key": "replace-with-long-random-key-partner",
+    "display_name": "Partner B"
+  }
+]

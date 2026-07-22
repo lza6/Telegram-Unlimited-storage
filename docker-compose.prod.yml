@@ -1,0 +1,52 @@
+# 生产环境叠加层：Redis 共享 UploadGate + 资源限制 + 健康依赖
+# 用法：
+#   copy .env.prod.example .env
+#   set COMPOSE_FILE=docker-compose.yml;docker-compose.prod.yml   (PowerShell 用分号)
+#   docker compose up -d --build
+#
+# 水平扩展（需共享 ./data 卷，如 NFS；否则仅用于 UploadGate 压测）：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale telegram-drive-api=2
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-drive-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+  telegram-drive-api:
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      UPLOAD_QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      # 高并发起点（按 Bot 数量与 FloodWait 实测调参）
+      CHUNK_CONCURRENT: ${CHUNK_CONCURRENT:-8}
+      FILES_CONCURRENT: ${FILES_CONCURRENT:-4}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-600}
+      RATE_LIMIT_API_RPM: ${RATE_LIMIT_API_RPM:-1200}
+      METADATA_CACHE_ENABLED: ${METADATA_CACHE_ENABLED:-false}
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  redis-data:

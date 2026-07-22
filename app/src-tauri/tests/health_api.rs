@@ -37,12 +37,12 @@ async fn health_endpoint_includes_v2_fields() {
                 max_upload_size_mb: 100,
             }))
             .app_data(auth)
-            .app_data(web::Data::new(
-                Arc::new(app_lib::telegram_transport::TransportHandle::new(
+            .app_data(web::Data::new(Arc::new(
+                app_lib::telegram_transport::TransportHandle::new(
                     std::path::Path::new("/tmp"),
                     app_lib::telegram_transport::TelegramTransportMode::Bot,
-                )),
-            ))
+                ),
+            )))
             .app_data(web::Data::new(upload_gate))
             .configure(api_routes::configure_api),
     )

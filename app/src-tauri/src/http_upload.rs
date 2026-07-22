@@ -5,9 +5,9 @@ use crate::commands::utils::{map_error, resolve_peer_with_limit};
 use crate::commands::TelegramState;
 use crate::db::DbConnection;
 use crate::server_config::ServerConfig;
+use crate::telegram_error::{classify_telegram_error_message, TelegramErrorClass};
 use crate::telegram_transport::{self, TelegramTransportMode, TransportHandle};
 use crate::vpn_optimizer::{backoff_ms, NetworkConfig, ThrottledReader};
-use crate::telegram_error::{classify_telegram_error_message, TelegramErrorClass};
 
 async fn send_message_with_retry(
     client: &grammers_client::Client,
@@ -68,14 +68,18 @@ pub async fn upload_file_path(
     let client_opt = { state.client.lock().await.clone() };
     let client = client_opt.ok_or_else(|| "Telegram client is not connected".to_string())?;
 
-    let meta = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let file_size = meta.len() as usize;
     let file_name = std::path::Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
 
-    let mut file = tokio::fs::File::open(&path).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let upload_limit = net_config.upload_limit_bytes_per_sec();
     let mut throttled = ThrottledReader::new(file, upload_limit);
     let uploaded_file = client
@@ -171,10 +175,14 @@ async fn upload_file_path_with_caption(
     let client_opt = { state.client.lock().await.clone() };
     let client = client_opt.ok_or_else(|| "Telegram client is not connected".to_string())?;
 
-    let meta = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let file_size = meta.len() as usize;
 
-    let mut file = tokio::fs::File::open(&path).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let upload_limit = net_config.upload_limit_bytes_per_sec();
     let mut throttled = ThrottledReader::new(file, upload_limit);
     let uploaded = client

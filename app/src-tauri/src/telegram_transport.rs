@@ -97,7 +97,9 @@ impl TransportHandle {
     pub async fn effective_mode(&self, config: &ServerConfig) -> TelegramTransportMode {
         let requested = self.active_mode().await;
         match requested {
-            TelegramTransportMode::Bot if Self::bot_configured(config) => TelegramTransportMode::Bot,
+            TelegramTransportMode::Bot if Self::bot_configured(config) => {
+                TelegramTransportMode::Bot
+            }
             TelegramTransportMode::User if Self::user_configured(config) => {
                 TelegramTransportMode::User
             }
@@ -188,7 +190,10 @@ fn bot_api_url_with_token(config: &ServerConfig, token: &str, method: &str) -> S
     format!("{base}/bot{token}/{method}")
 }
 
-fn resolve_bot_token_for_pool_index(config: &ServerConfig, pool_index: u32) -> Result<String, String> {
+fn resolve_bot_token_for_pool_index(
+    config: &ServerConfig,
+    pool_index: u32,
+) -> Result<String, String> {
     let pool = crate::bot_pool::BotPool::from_config(config);
     pool.token_at(pool_index)
         .map(|s| s.to_string())
@@ -206,7 +211,10 @@ pub async fn bot_test_connection(config: &ServerConfig) -> Result<String, String
     validate_bot_config(config)?;
     let pool = crate::bot_pool::BotPool::from_config(config);
     if pool.len() > 1 {
-        log::info!("Bot pool: {} tokens configured for round-robin uploads", pool.len());
+        log::info!(
+            "Bot pool: {} tokens configured for round-robin uploads",
+            pool.len()
+        );
     }
     let token = pool
         .token_at(0)
@@ -228,7 +236,9 @@ pub async fn bot_test_connection(config: &ServerConfig) -> Result<String, String
             .description
             .unwrap_or_else(|| "Bot getMe rejected".to_string()));
     }
-    let user = json.result.ok_or_else(|| "Bot getMe returned empty result".to_string())?;
+    let user = json
+        .result
+        .ok_or_else(|| "Bot getMe returned empty result".to_string())?;
     Ok(user
         .username
         .or(user.first_name)
@@ -349,7 +359,9 @@ pub fn validate_bot_config(config: &ServerConfig) -> Result<(), String> {
         .as_ref()
         .is_none_or(|c| c.trim().is_empty())
     {
-        return Err("TG_STORAGE_CHANNEL_ID is required for bot mode (private channel chat id)".into());
+        return Err(
+            "TG_STORAGE_CHANNEL_ID is required for bot mode (private channel chat id)".into(),
+        );
     }
     Ok(())
 }
@@ -417,16 +429,14 @@ pub async fn bot_upload_bytes_with_pool(
     bot_rate_limit(config).await;
 
     // Use FloodWait-aware token selection
-    let (bot_token, bot_pool_index) = bot_pool
-        .next_available_token()
-        .ok_or_else(|| {
-            let metrics = bot_pool.metrics();
-            format!(
-                "All {} bot(s) are in FloodWait. Earliest available in {}s",
-                metrics.total_bots,
-                bot_pool.earliest_availability_secs().unwrap_or(0)
-            )
-        })?;
+    let (bot_token, bot_pool_index) = bot_pool.next_available_token().ok_or_else(|| {
+        let metrics = bot_pool.metrics();
+        format!(
+            "All {} bot(s) are in FloodWait. Earliest available in {}s",
+            metrics.total_bots,
+            bot_pool.earliest_availability_secs().unwrap_or(0)
+        )
+    })?;
 
     let chat_id = config.storage_channel_id.clone().unwrap_or_default();
     let mime = mime_guess_from_name(upload_name);
@@ -435,9 +445,7 @@ pub async fn bot_upload_bytes_with_pool(
         .mime_str(&mime)
         .map_err(|e| e.to_string())?;
 
-    let mut form = Form::new()
-        .text("chat_id", chat_id)
-        .part("document", part);
+    let mut form = Form::new().text("chat_id", chat_id).part("document", part);
     if let Some(cap) = caption {
         form = form.text("caption", cap.to_string());
     }
@@ -490,9 +498,7 @@ pub async fn bot_upload_bytes_with_pool(
     let result = BotUploadResult {
         message_id: msg.message_id,
         telegram_file_id: doc.file_id.clone(),
-        file_name: doc
-            .file_name
-            .unwrap_or_else(|| upload_name.to_string()),
+        file_name: doc.file_name.unwrap_or_else(|| upload_name.to_string()),
         file_size: doc.file_size.unwrap_or(data.len() as i64) as u64,
         mime_type: doc.mime_type.unwrap_or(mime),
     };
@@ -676,7 +682,10 @@ mod tests {
     fn mime_guess_from_name_maps_common_types() {
         assert_eq!(mime_guess_from_name("a.png"), "image/png");
         assert_eq!(mime_guess_from_name("doc.PDF"), "application/pdf");
-        assert_eq!(mime_guess_from_name("x.unknownext"), "application/octet-stream");
+        assert_eq!(
+            mime_guess_from_name("x.unknownext"),
+            "application/octet-stream"
+        );
     }
 
     #[tokio::test]

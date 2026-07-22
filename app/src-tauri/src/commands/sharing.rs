@@ -1,8 +1,8 @@
-use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
 use crate::db::DbConnection;
 use crate::sharing_core;
 use crate::tenant_auth::OWNER_WEB;
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Serialize)]
 pub struct ShareInfo {

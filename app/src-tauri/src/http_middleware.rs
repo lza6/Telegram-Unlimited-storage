@@ -132,13 +132,11 @@ impl RateLimiter {
         if interval_secs == 0 {
             return;
         }
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(interval_secs));
-                let window = Duration::from_secs(60);
-                Self::prune_stale(&limiter.ip_buckets, window);
-                Self::prune_stale(&limiter.key_buckets, window);
-            }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(interval_secs));
+            let window = Duration::from_secs(60);
+            Self::prune_stale(&limiter.ip_buckets, window);
+            Self::prune_stale(&limiter.key_buckets, window);
         });
     }
 
@@ -337,9 +335,7 @@ impl ShareBruteForceLimiter {
         bucket.retain(|t| *t > cutoff);
     }
 
-    pub fn check_token(&self,
-        token: &str,
-    ) -> Result<(), (u64, &'static str)> {
+    pub fn check_token(&self, token: &str) -> Result<(), (u64, &'static str)> {
         if self.max_attempts == 0 {
             return Ok(());
         }
@@ -431,8 +427,10 @@ where
             );
             let mut res = res;
             if let Ok(v) = actix_web::http::header::HeaderValue::from_str(&request_id) {
-                res.headers_mut()
-                    .insert(actix_web::http::header::HeaderName::from_static("x-request-id"), v);
+                res.headers_mut().insert(
+                    actix_web::http::header::HeaderName::from_static("x-request-id"),
+                    v,
+                );
             }
             Ok(res.map_into_left_body())
         })

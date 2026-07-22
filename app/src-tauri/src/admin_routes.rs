@@ -4,8 +4,8 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::commands::TelegramState;
 use crate::commands::utils::TempFileGuard;
+use crate::commands::TelegramState;
 use crate::server_config::ServerConfig;
 
 #[derive(Clone)]
@@ -225,8 +225,10 @@ async fn legacy_upload(
                         total_read += b.len();
                         if max_bytes > 0 && total_read > max_bytes {
                             let _ = std::fs::remove_file(&tmp);
-                            return HttpResponse::PayloadTooLarge()
-                                .body(format!("file exceeds {} MB limit", admin.config.max_upload_size_mb));
+                            return HttpResponse::PayloadTooLarge().body(format!(
+                                "file exceeds {} MB limit",
+                                admin.config.max_upload_size_mb
+                            ));
                         }
                         if let Err(e) = std::io::Write::write_all(&mut f, &b) {
                             let _ = std::fs::remove_file(&tmp);

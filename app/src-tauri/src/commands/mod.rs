@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
-use tokio::sync::Mutex;
-use grammers_client::{Client};
-use grammers_client::types::{LoginToken, PasswordToken, Peer};
 use crate::bot_pool::BotPool;
+use grammers_client::types::{LoginToken, PasswordToken, Peer};
+use grammers_client::Client;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Tracks the lifecycle of the Telegram connection
 ///
@@ -66,23 +66,22 @@ mod signal_tests {
     }
 }
 
+pub mod api_settings;
 pub mod auth;
 pub mod fs;
-pub mod preview;
-pub mod utils;
 pub mod network;
-pub mod streaming;
-pub mod api_settings;
+pub mod preview;
 pub mod settings;
 pub mod sharing;
+pub mod streaming;
+pub mod utils;
 
+pub use api_settings::*;
 pub use auth::*;
 pub use fs::*;
-pub use preview::*;
-pub use utils::*;
 pub use network::*;
-pub use streaming::*;
-pub use api_settings::*;
+pub use preview::*;
 pub use settings::*;
 pub use sharing::*;
-
+pub use streaming::*;
+pub use utils::*;

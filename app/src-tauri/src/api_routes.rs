@@ -1,7 +1,7 @@
+use crate::commands::utils::{resolve_peer, TempFileGuard};
+use crate::commands::TelegramState;
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use futures_util::StreamExt;
-use crate::commands::TelegramState;
-use crate::commands::utils::{resolve_peer, TempFileGuard};
 use grammers_client::types::{Media, Peer};
 use serde::Serialize;
 use std::sync::Arc;
@@ -179,7 +179,11 @@ async fn api_health(
         version: env!("CARGO_PKG_VERSION").to_string(),
         telegram_connected: ready,
         uptime_secs: crate::server_uptime::uptime_secs(),
-        build: format!("{}-{}", env!("CARGO_PKG_VERSION"), option_env!("GITHUB_SHA").unwrap_or("local")),
+        build: format!(
+            "{}-{}",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("GITHUB_SHA").unwrap_or("local")
+        ),
         ready,
         transport_mode: mode.as_str().to_string(),
         bot_configured: crate::telegram_transport::TransportHandle::bot_configured(&auth.config),
@@ -194,7 +198,9 @@ async fn api_health(
     })
 }
 
-fn metadata_cache_header(layer: crate::metadata_cache::CacheLayer) -> Option<(&'static str, &'static str)> {
+fn metadata_cache_header(
+    layer: crate::metadata_cache::CacheLayer,
+) -> Option<(&'static str, &'static str)> {
     match layer {
         crate::metadata_cache::CacheLayer::Hit => Some(("X-Metadata-Cache", "HIT")),
         crate::metadata_cache::CacheLayer::Miss => Some(("X-Metadata-Cache", "MISS")),
@@ -213,8 +219,9 @@ fn files_list_cacheable(q: &FilesQuery) -> bool {
 }
 
 fn parse_files_folder_scope(query_string: &str) -> (bool, Option<i64>) {
-    let has_folder_id =
-        query_string.split('&').any(|p| p.starts_with("folder_id=") || p == "folder_id");
+    let has_folder_id = query_string
+        .split('&')
+        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
     let mut parsed_id: Option<i64> = None;
     if has_folder_id {
         for pair in query_string.split('&') {
@@ -332,7 +339,11 @@ async fn api_list_files(
             None
         };
 
-        let name_filter = query.search.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let name_filter = query
+            .search
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
 
         let records = match crate::db::list_file_assets_scoped(
             &db,
@@ -464,9 +475,11 @@ async fn api_list_files(
             while let Some(msg) = msgs.next().await.ok().flatten() {
                 if let Some(doc) = msg.media() {
                     let (name, size, mime) = match doc {
-                        Media::Document(d) => {
-                            (d.name().to_string(), d.size(), d.mime_type().map(|s| s.to_string()))
-                        }
+                        Media::Document(d) => (
+                            d.name().to_string(),
+                            d.size(),
+                            d.mime_type().map(|s| s.to_string()),
+                        ),
                         Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
                         _ => ("Unknown".to_string(), 0, None),
                     };
@@ -563,11 +576,10 @@ async fn api_list_files(
 
     // Sparse fieldsets
     let mut final_data = Vec::new();
-    let fields_list: Option<Vec<String>> = query.fields.as_ref().map(|f| {
-        f.split(',')
-            .map(|s| s.trim().to_string())
-            .collect()
-    });
+    let fields_list: Option<Vec<String>> = query
+        .fields
+        .as_ref()
+        .map(|f| f.split(',').map(|s| s.trim().to_string()).collect());
 
     for file in paginated_files {
         let mut map = serde_json::Map::new();
@@ -655,7 +667,9 @@ async fn api_get_file(
         }
         if mode == crate::telegram_transport::TelegramTransportMode::Bot {
             if let Ok(Some(record)) = crate::db::get_bot_file_map(&db, message_id) {
-                let folder_id = query.folder_id.or_else(|| bot_storage_folder_id(&auth.config));
+                let folder_id = query
+                    .folder_id
+                    .or_else(|| bot_storage_folder_id(&auth.config));
                 return HttpResponse::Ok().json(file_from_bot_map(record, folder_id));
             }
         }
@@ -678,9 +692,11 @@ async fn api_get_file(
             if let Some(Some(msg)) = messages.first() {
                 if let Some(doc) = msg.media() {
                     let (name, size, mime) = match doc {
-                        Media::Document(d) => {
-                            (d.name().to_string(), d.size(), d.mime_type().map(|s| s.to_string()))
-                        }
+                        Media::Document(d) => (
+                            d.name().to_string(),
+                            d.size(),
+                            d.mime_type().map(|s| s.to_string()),
+                        ),
                         Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
                         _ => ("Unknown".to_string(), 0, None),
                     };
@@ -802,15 +818,19 @@ async fn api_bulk_files(
         return e;
     }
 
-    let ids: Vec<i32> = body.file_ids.iter().filter_map(|val| {
-        if let Some(i) = val.as_i64() {
-            Some(i as i32)
-        } else if let Some(s) = val.as_str() {
-            s.parse::<i32>().ok()
-        } else {
-            None
-        }
-    }).collect();
+    let ids: Vec<i32> = body
+        .file_ids
+        .iter()
+        .filter_map(|val| {
+            if let Some(i) = val.as_i64() {
+                Some(i as i32)
+            } else if let Some(s) = val.as_str() {
+                s.parse::<i32>().ok()
+            } else {
+                None
+            }
+        })
+        .collect();
 
     let source_folder: Option<i64> = body.folder_id.as_ref().and_then(|val| {
         if let Some(i) = val.as_i64() {
@@ -822,15 +842,19 @@ async fn api_bulk_files(
         }
     });
 
-    let target_folder: Option<i64> = body.payload.as_ref().and_then(|p| p.folder_id.as_ref()).and_then(|val| {
-        if let Some(i) = val.as_i64() {
-            Some(i)
-        } else if let Some(s) = val.as_str() {
-            s.parse::<i64>().ok()
-        } else {
-            None
-        }
-    });
+    let target_folder: Option<i64> = body
+        .payload
+        .as_ref()
+        .and_then(|p| p.folder_id.as_ref())
+        .and_then(|val| {
+            if let Some(i) = val.as_i64() {
+                Some(i)
+            } else if let Some(s) = val.as_str() {
+                s.parse::<i64>().ok()
+            } else {
+                None
+            }
+        });
 
     let mode = transport.effective_mode(&auth.config).await;
     if mode == crate::telegram_transport::TelegramTransportMode::Bot {
@@ -855,9 +879,7 @@ async fn api_bulk_files(
                     continue;
                 }
             }
-            if crate::db::delete_file_asset(&db, *mid, owner_filter.as_deref())
-                .unwrap_or(false)
-            {
+            if crate::db::delete_file_asset(&db, *mid, owner_filter.as_deref()).unwrap_or(false) {
                 deleted += 1;
                 succeeded_ids.push(*mid);
             }
@@ -890,18 +912,29 @@ async fn api_bulk_files(
             crate::metadata_cache::invalidate_files(&db, source_folder);
         }
         "move" => {
-            let source_peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
+            let source_peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await
+            {
                 Ok(p) => p,
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
-            let target_peer = match resolve_peer(&client, target_folder, &tg_state.peer_cache).await {
+            let target_peer = match resolve_peer(&client, target_folder, &tg_state.peer_cache).await
+            {
                 Ok(p) => p,
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
             if source_folder != target_folder {
-                let forwarded = match client.forward_messages(&target_peer, &ids, &source_peer).await {
+                let forwarded = match client
+                    .forward_messages(&target_peer, &ids, &source_peer)
+                    .await
+                {
                     Ok(msgs) => msgs,
-                    Err(e) => return json_error("MOVE_FORWARD_FAILED", &format!("Forward failed: {}", e), 500),
+                    Err(e) => {
+                        return json_error(
+                            "MOVE_FORWARD_FAILED",
+                            &format!("Forward failed: {}", e),
+                            500,
+                        )
+                    }
                 };
                 let new_ids: Vec<i32> = forwarded
                     .iter()
@@ -919,7 +952,11 @@ async fn api_bulk_files(
                     );
                 }
                 if let Err(e) = client.delete_messages(&source_peer, &ids).await {
-                    return json_error("MOVE_DELETE_FAILED", &format!("Delete original failed: {}", e), 500);
+                    return json_error(
+                        "MOVE_DELETE_FAILED",
+                        &format!("Delete original failed: {}", e),
+                        500,
+                    );
                 }
                 if let Err(e) = crate::file_access::remap_file_assets_after_move(
                     &db,
@@ -999,7 +1036,8 @@ async fn api_search_files(
             200,
         ) {
             Ok(records) => {
-                let files: Vec<ApiFile> = records.into_iter().map(asset_record_to_api_file).collect();
+                let files: Vec<ApiFile> =
+                    records.into_iter().map(asset_record_to_api_file).collect();
                 return HttpResponse::Ok().json(files);
             }
             Err(e) => return json_error("DB_ERROR", &e, 500),
@@ -1040,13 +1078,15 @@ async fn api_search_files(
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
                 let (name, size, mime) = match doc {
-                    Media::Document(d) => {
-                        (d.name().to_string(), d.size(), d.mime_type().map(|s| s.to_string()))
-                    }
+                    Media::Document(d) => (
+                        d.name().to_string(),
+                        d.size(),
+                        d.mime_type().map(|s| s.to_string()),
+                    ),
                     Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
                     _ => ("Unknown".to_string(), 0, None),
                 };
-                
+
                 if name.to_lowercase().contains(&search_q.to_lowercase()) {
                     matching_files.push(ApiFile {
                         id: msg.id() as i64,
@@ -1330,9 +1370,7 @@ async fn api_upload_file(
                     share_id: link.share_id,
                     expires_at: link.expires_at,
                     api_download_url: crate::admin_routes::api_download_url(
-                        &api_base,
-                        message_id,
-                        folder_id,
+                        &api_base, message_id, folder_id,
                     ),
                     owner_id: link.owner_id,
                     link_kind: link.link_kind.to_string(),
@@ -1340,9 +1378,7 @@ async fn api_upload_file(
                 Err(e) => json_error("DOWNLOAD_LINK_FAILED", &e, 500),
             }
         }
-        Err(e) => {
-            json_error("UPLOAD_FAILED", &e, 500)
-        }
+        Err(e) => json_error("UPLOAD_FAILED", &e, 500),
     }
 }
 
@@ -1413,7 +1449,11 @@ mod tests {
     use super::*;
     use actix_web::test::TestRequest;
 
-    fn test_auth_context() -> (crate::db::DbConnection, std::sync::Arc<crate::server_config::ServerConfig>, web::Data<ApiState>) {
+    fn test_auth_context() -> (
+        crate::db::DbConnection,
+        std::sync::Arc<crate::server_config::ServerConfig>,
+        web::Data<ApiState>,
+    ) {
         let dir = std::env::temp_dir().join(format!("td-auth-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = crate::db::init_db_at(&dir).unwrap();
@@ -1428,9 +1468,7 @@ mod tests {
     #[test]
     fn check_auth_rejects_missing_key() {
         let (db, config, api_state) = test_auth_context();
-        let req = TestRequest::get()
-            .uri("/api/v1/files")
-            .to_http_request();
+        let req = TestRequest::get().uri("/api/v1/files").to_http_request();
         let err = check_auth(&req, &api_state, &db, &config).unwrap_err();
         assert_eq!(err.status(), 401);
     }

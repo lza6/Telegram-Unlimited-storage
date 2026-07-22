@@ -1,5 +1,5 @@
 use actix_multipart::Multipart;
-use actix_web::{HttpMessage, HttpRequest, HttpResponse, web};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 
@@ -55,8 +55,12 @@ pub fn parse_urlencoded_form(body: &[u8]) -> HashMap<String, String> {
         let mut parts = pair.splitn(2, '=');
         let key = parts.next().unwrap_or("");
         let val = parts.next().unwrap_or("");
-        let key = urlencoding::decode(key).unwrap_or_else(|_| key.into()).into_owned();
-        let val = urlencoding::decode(val).unwrap_or_else(|_| val.into()).into_owned();
+        let key = urlencoding::decode(key)
+            .unwrap_or_else(|_| key.into())
+            .into_owned();
+        let val = urlencoding::decode(val)
+            .unwrap_or_else(|_| val.into())
+            .into_owned();
         if !key.is_empty() {
             map.insert(key, val);
         }
@@ -65,9 +69,7 @@ pub fn parse_urlencoded_form(body: &[u8]) -> HashMap<String, String> {
 }
 
 pub fn parse_optional_i64_field(fields: &HashMap<String, String>, key: &str) -> Option<i64> {
-    fields
-        .get(key)
-        .and_then(|s| s.trim().parse::<i64>().ok())
+    fields.get(key).and_then(|s| s.trim().parse::<i64>().ok())
 }
 
 #[cfg(test)]

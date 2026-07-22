@@ -33,7 +33,8 @@ pub fn save_ui_settings(data_dir: &Path, settings: &UiSettings) -> Result<(), St
 }
 
 /// Resolve public base URL: ui_settings.share_domain > BASE_URL > request Host.
-pub fn effective_base_url(req: &HttpRequest, config: &ServerConfig) -> String {    let ui = load_ui_settings(&config.data_dir);
+pub fn effective_base_url(req: &HttpRequest, config: &ServerConfig) -> String {
+    let ui = load_ui_settings(&config.data_dir);
     let override_domain = ui.share_domain.trim();
     if !override_domain.is_empty() {
         if override_domain.starts_with("http://") || override_domain.starts_with("https://") {

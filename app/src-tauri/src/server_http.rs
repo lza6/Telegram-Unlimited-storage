@@ -8,7 +8,9 @@ use crate::admin_routes::AdminState;
 use crate::api_routes::ApiState;
 use crate::auth_routes::AuthRouteState;
 use crate::commands::TelegramState;
-use crate::http_middleware::{build_cors, RateLimit, RateLimiter, RequestLog, SecurityHeaders, ShareBruteForceLimiter};
+use crate::http_middleware::{
+    build_cors, RateLimit, RateLimiter, RequestLog, SecurityHeaders, ShareBruteForceLimiter,
+};
 use crate::server::StreamTokenData;
 use crate::server_config::ServerConfig;
 
@@ -140,7 +142,11 @@ pub async fn start_unified_server(
     })
     .keep_alive(Duration::from_secs(5))
     .client_request_timeout(Duration::from_secs(120))
-    .workers(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+    .workers(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+    )
     .bind(bind)?
     .run();
 
@@ -161,12 +167,19 @@ pub async fn bootstrap_telegram(
     match mode {
         crate::telegram_transport::TelegramTransportMode::Bot => {
             let username = crate::telegram_transport::bot_test_connection(config).await?;
-            log::info!("Bot transport ready (@{username}) — channel {}", config.storage_channel_id.as_deref().unwrap_or("?"));
+            log::info!(
+                "Bot transport ready (@{username}) — channel {}",
+                config.storage_channel_id.as_deref().unwrap_or("?")
+            );
             Ok(())
         }
         crate::telegram_transport::TelegramTransportMode::User => {
             *runtime.tg_state.api_id.lock().await = Some(config.telegram_api_id);
-            let session_path = config.data_dir.join("telegram.session");
+
+            // Ensure session is valid before proceeding (restore from backup if corrupt)
+            let backup = crate::session_backup::SessionBackup::new(config.data_dir.clone());
+            let session_path = backup.ensure_valid_session();
+
             if !session_path.exists() {
                 log::warn!(
                     "No telegram.session yet — complete login via Web UI /api/v1/auth/* or mount a session file into {}",

@@ -123,9 +123,15 @@ pub fn list_shares(
         let id = stmt.read::<String, _>("id").map_err(|e| e.to_string())?;
         shares.push(ShareInfo {
             id: id.clone(),
-            file_name: stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?,
-            file_size: stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?,
-            created_at: stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?,
+            file_name: stmt
+                .read::<String, _>("file_name")
+                .map_err(|e| e.to_string())?,
+            file_size: stmt
+                .read::<i64, _>("file_size")
+                .map_err(|e| e.to_string())?,
+            created_at: stmt
+                .read::<i64, _>("created_at")
+                .map_err(|e| e.to_string())?,
             expires_at: stmt.read::<Option<i64>, _>("expires_at").ok().flatten(),
             has_password: stmt
                 .read::<Option<String>, _>("password_hash")

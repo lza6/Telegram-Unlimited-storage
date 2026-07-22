@@ -134,7 +134,9 @@ impl ServerConfig {
                 Some(generated)
             }
         };
-        let api_key_hash = api_key.as_ref().map(|k| crate::commands::api_settings::hash_key_public(k));
+        let api_key_hash = api_key
+            .as_ref()
+            .map(|k| crate::commands::api_settings::hash_key_public(k));
 
         let static_dir = std::env::var("STATIC_DIR")
             .map(PathBuf::from)
@@ -243,8 +245,8 @@ impl ServerConfig {
 
     /// 仍为 .env.example 占位值时，Telegram 用户模式登录必然失败。
     pub fn telegram_credentials_placeholder(&self) -> Option<&'static str> {
-        let hash_placeholder = self.telegram_api_hash == "your_api_hash_here"
-            || self.telegram_api_hash.len() < 16;
+        let hash_placeholder =
+            self.telegram_api_hash == "your_api_hash_here" || self.telegram_api_hash.len() < 16;
         if self.telegram_api_id == 123456 || hash_placeholder {
             Some(
                 "TELEGRAM_API_ID / TELEGRAM_API_HASH 仍是示例值。用户模式需在 .env 填写 https://my.telegram.org 凭据；机器人模式可改用 TG_BOT_TOKEN + TG_STORAGE_CHANNEL_ID。",
@@ -270,17 +272,15 @@ impl ServerConfig {
 
     /// Log errors for insecure default secrets still present in production-like deploys.
     pub fn warn_insecure_defaults(&self) {
-        let insecure_pwd = self.access_pwd == "change-me-strong-password"
-            || self.access_pwd.len() < 8;
+        let insecure_pwd =
+            self.access_pwd == "change-me-strong-password" || self.access_pwd.len() < 8;
         if insecure_pwd {
             log::error!(
                 "ACCESS_PWD is weak or still the .env.example placeholder — set a strong password before production"
             );
         }
         if let Some(secret) = &self.download_signing_secret {
-            if secret.contains("replace-with-at-least-32")
-                || secret.len() < 32
-            {
+            if secret.contains("replace-with-at-least-32") || secret.len() < 32 {
                 log::error!(
                     "DOWNLOAD_SIGNING_SECRET is placeholder or too short — presigned downloads may fail or be insecure"
                 );
@@ -382,14 +382,11 @@ pub fn desktop_static_servable(dir: &std::path::Path) -> bool {
 }
 
 /// Resolve `deploy/web` for desktop REST static pages (bundled resource, dev manifest, `STATIC_DIR`, exe-relative).
-pub fn resolve_desktop_web_static_dir(resource_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+pub fn resolve_desktop_web_static_dir(
+    resource_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
     if let Some(res) = resource_dir {
-        for sub in [
-            "web",
-            "deploy/web",
-            "web-static",
-            "_up_/deploy/web",
-        ] {
+        for sub in ["web", "deploy/web", "web-static", "_up_/deploy/web"] {
             let p = res.join(sub);
             if desktop_static_servable(&p) {
                 return p.canonicalize().ok().or(Some(p));
@@ -407,7 +404,8 @@ pub fn resolve_desktop_web_static_dir(resource_dir: Option<&std::path::Path>) ->
         }
     }
 
-    let from_manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/web");
+    let from_manifest =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/web");
     if desktop_static_servable(&from_manifest) {
         return from_manifest.canonicalize().ok().or(Some(from_manifest));
     }
@@ -444,8 +442,8 @@ pub fn for_desktop_api(
         &std::env::var("TG_TRANSPORT_MODE").unwrap_or_default(),
         has_bot,
     );
-    let (telegram_api_id, telegram_api_hash) =
-        load_user_api_credentials(default_mode, has_bot).unwrap_or((123456, "your_api_hash_here".to_string()));
+    let (telegram_api_id, telegram_api_hash) = load_user_api_credentials(default_mode, has_bot)
+        .unwrap_or((123456, "your_api_hash_here".to_string()));
     std::sync::Arc::new(ServerConfig {
         bind_host: "127.0.0.1".to_string(),
         port,
@@ -514,8 +512,8 @@ fn parse_cors_origins() -> Vec<String> {
 /// Minimal config for unit/integration tests (no `.env` required).
 #[cfg(any(test, feature = "headless-server"))]
 pub fn test_config() -> std::sync::Arc<ServerConfig> {
-    use std::sync::Arc;
     use crate::telegram_transport::TelegramTransportMode;
+    use std::sync::Arc;
     Arc::new(ServerConfig {
         bind_host: "127.0.0.1".to_string(),
         port: 1334,
@@ -523,7 +521,9 @@ pub fn test_config() -> std::sync::Arc<ServerConfig> {
         data_dir: std::env::temp_dir().join("td-test-data"),
         access_pwd: "test-pwd".to_string(),
         api_key: Some("test-api-key".to_string()),
-        api_key_hash: Some(crate::commands::api_settings::hash_key_public("test-api-key")),
+        api_key_hash: Some(crate::commands::api_settings::hash_key_public(
+            "test-api-key",
+        )),
         telegram_api_id: 12345,
         telegram_api_hash: "ci_dummy_hash_not_for_production".to_string(),
         default_transport_mode: TelegramTransportMode::Bot,

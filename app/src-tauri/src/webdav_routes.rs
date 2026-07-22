@@ -70,7 +70,11 @@ async fn webdav_propfind(
     }
     let owner = owner_scope(tenant.as_deref(), &admin.config);
     let rel = path.into_inner();
-    let href = format!("/{}{}", admin.config.webdav_prefix.trim_end_matches('/'), rel);
+    let href = format!(
+        "/{}{}",
+        admin.config.webdav_prefix.trim_end_matches('/'),
+        rel
+    );
 
     let records = if let Some(ref o) = owner {
         db::list_file_assets_by_owner(&admin.db_pool, o, 500, 0).unwrap_or_default()
@@ -109,10 +113,7 @@ async fn webdav_options(_req: HttpRequest, admin: web::Data<AdminState>) -> impl
         return HttpResponse::NotFound().finish();
     }
     HttpResponse::Ok()
-        .insert_header((
-            "Allow",
-            "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MKCOL",
-        ))
+        .insert_header(("Allow", "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MKCOL"))
         .insert_header(("DAV", "1"))
         .finish()
 }
@@ -165,7 +166,14 @@ async fn webdav_mkcol(
             .body("Root collection already exists");
     }
     HttpResponse::Created()
-        .insert_header(("Location", format!("{}{}", admin.config.webdav_prefix.trim_end_matches('/'), rel)))
+        .insert_header((
+            "Location",
+            format!(
+                "{}{}",
+                admin.config.webdav_prefix.trim_end_matches('/'),
+                rel
+            ),
+        ))
         .body("Virtual folder accepted (flat namespace; files stored by basename)")
 }
 
@@ -282,7 +290,14 @@ async fn webdav_put(
             );
             let _ = tokio::fs::remove_file(&tmp).await;
             HttpResponse::Created()
-                .insert_header(("Location", format!("/{}{}", admin.config.webdav_prefix.trim_end_matches('/'), name)))
+                .insert_header((
+                    "Location",
+                    format!(
+                        "/{}{}",
+                        admin.config.webdav_prefix.trim_end_matches('/'),
+                        name
+                    ),
+                ))
                 .finish()
         }
         Err(e) => {
@@ -305,17 +320,24 @@ pub fn configure_webdav(cfg: &mut web::ServiceConfig, prefix: &str) {
             .route(web::put().to(webdav_put))
             .route(web::delete().to(webdav_delete))
             .route(web::method(propfind.clone()).to(webdav_propfind))
-            .route(web::method(actix_web::http::Method::from_bytes(b"MKCOL").expect("MKCOL")).to(webdav_mkcol))
+            .route(
+                web::method(actix_web::http::Method::from_bytes(b"MKCOL").expect("MKCOL"))
+                    .to(webdav_mkcol),
+            )
             .route(web::method(actix_web::http::Method::OPTIONS).to(webdav_options)),
     );
     cfg.service(
         web::resource(prefix)
-            .route(web::get().to(|req, admin: web::Data<AdminState>| async move {
-                webdav_propfind(req, admin, web::Path::from("".to_string())).await
-            }))
-            .route(web::method(propfind).to(|req, admin: web::Data<AdminState>| async move {
-                webdav_propfind(req, admin, web::Path::from("".to_string())).await
-            }))
+            .route(
+                web::get().to(|req, admin: web::Data<AdminState>| async move {
+                    webdav_propfind(req, admin, web::Path::from("".to_string())).await
+                }),
+            )
+            .route(
+                web::method(propfind).to(|req, admin: web::Data<AdminState>| async move {
+                    webdav_propfind(req, admin, web::Path::from("".to_string())).await
+                }),
+            )
             .route(web::method(actix_web::http::Method::OPTIONS).to(webdav_options)),
     );
 }

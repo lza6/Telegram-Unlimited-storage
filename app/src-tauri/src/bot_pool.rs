@@ -163,7 +163,8 @@ impl BotPool {
 
             if entry.is_available() {
                 // Move next index forward for next caller
-                self.next.store((idx + 1) % self.entries.len(), Ordering::Relaxed);
+                self.next
+                    .store((idx + 1) % self.entries.len(), Ordering::Relaxed);
                 return Some((entry.token.clone(), idx as u32));
             }
         }

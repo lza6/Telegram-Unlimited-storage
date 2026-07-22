@@ -1,10 +1,10 @@
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, cookie::Cookie};
 use crate::commands::TelegramState;
 use crate::db::DbConnection;
+use actix_web::{cookie::Cookie, get, post, web, HttpRequest, HttpResponse, Responder};
 use hmac::{Hmac, Mac};
+use serde::Deserialize;
 use sha2::Sha256;
 use std::sync::Arc;
-use serde::Deserialize;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -40,8 +40,8 @@ fn html_escape(input: &str) -> String {
 /// Key = token, message = password_hash. Produces a deterministic but
 /// cryptographically sound MAC that cannot be forged without knowing the token.
 fn generate_cookie_val(token: &str, password_hash: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(token.as_bytes())
-        .expect("HMAC can accept any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(token.as_bytes()).expect("HMAC can accept any key length");
     mac.update(password_hash.as_bytes());
     format!("{:x}", mac.finalize().into_bytes())
 }
@@ -54,17 +54,29 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
              FROM shared_links WHERE id = ?"
         )
         .map_err(|e| e.to_string())?;
-    
+
     stmt.bind((1, token)).map_err(|e| e.to_string())?;
 
     if let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
         let id = stmt.read::<String, _>("id").map_err(|e| e.to_string())?;
         let folder_id = stmt.read::<Option<i64>, _>("folder_id").ok().flatten();
-        let message_id = stmt.read::<i64, _>("message_id").map_err(|e| e.to_string())? as i32;
-        let file_name = stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?;
-        let file_size = stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?;
-        let password_hash = stmt.read::<Option<String>, _>("password_hash").ok().flatten();
-        let password_salt = stmt.read::<Option<String>, _>("password_salt").ok().flatten();
+        let message_id = stmt
+            .read::<i64, _>("message_id")
+            .map_err(|e| e.to_string())? as i32;
+        let file_name = stmt
+            .read::<String, _>("file_name")
+            .map_err(|e| e.to_string())?;
+        let file_size = stmt
+            .read::<i64, _>("file_size")
+            .map_err(|e| e.to_string())?;
+        let password_hash = stmt
+            .read::<Option<String>, _>("password_hash")
+            .ok()
+            .flatten();
+        let password_salt = stmt
+            .read::<Option<String>, _>("password_salt")
+            .ok()
+            .flatten();
         let expires_at = stmt.read::<Option<i64>, _>("expires_at").ok().flatten();
         let revoked = stmt.read::<i64, _>("revoked").map_err(|e| e.to_string())? != 0;
         let owner_id = stmt.read::<Option<String>, _>("owner_id").ok().flatten();
@@ -91,7 +103,7 @@ fn render_password_form(file_name: &str, token: &str, error: Option<&str>) -> Ht
         Some(err) => format!("<div class=\"error\">{}</div>", html_escape(err)),
         None => "".to_string(),
     };
-    
+
     let html = format!(
         r#"<!DOCTYPE html>
 <html>
@@ -177,7 +189,9 @@ fn render_password_form(file_name: &str, token: &str, error: Option<&str>) -> Ht
     </div>
 </body>
 </html>"#,
-        html_escape(file_name), error_html, html_escape(token)
+        html_escape(file_name),
+        error_html,
+        html_escape(token)
     );
 
     HttpResponse::Ok()
@@ -196,28 +210,28 @@ async fn get_shared_file(
     net_config: web::Data<Arc<crate::vpn_optimizer::NetworkConfig>>,
 ) -> impl Responder {
     let token = path.into_inner();
-    
+
     let row = match get_share_by_token(&db_conn, &token) {
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
             log::error!("DB error resolving token {}: {}", token, e);
-            return HttpResponse::InternalServerError().body("Internal server error")
+            return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
-    
+
     // Check validation (revocation and expiration)
     if row.revoked {
         return HttpResponse::NotFound().body("This shared link has been revoked");
     }
-    
+
     if let Some(expiry) = row.expires_at {
         let now = chrono::Utc::now().timestamp();
         if expiry < now {
             return HttpResponse::Gone().body("This shared link has expired");
         }
     }
-    
+
     // Check password protection
     if let Some(hash) = &row.password_hash {
         let mut authenticated = false;
@@ -227,7 +241,7 @@ async fn get_shared_file(
                 authenticated = true;
             }
         }
-        
+
         if !authenticated {
             return render_password_form(&row.file_name, &token, None);
         }
@@ -242,7 +256,7 @@ async fn get_shared_file(
     ) {
         return HttpResponse::Forbidden().body(msg);
     }
-    
+
     match crate::http_download::download_message_stream(
         &req,
         row.message_id,
@@ -276,7 +290,7 @@ async fn verify_shared_file_password(
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
             log::error!("DB error resolving token {}: {}", token, e);
-            return HttpResponse::InternalServerError().body("Internal server error")
+            return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
 
@@ -315,13 +329,17 @@ async fn verify_shared_file_password(
             .cookie(cookie_builder.finish())
             .finish()
     } else {
-        render_password_form(&row.file_name, &token, Some("Incorrect password. Please try again."))
+        render_password_form(
+            &row.file_name,
+            &token,
+            Some("Incorrect password. Please try again."),
+        )
     }
 }
 
 pub fn configure_share_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(get_shared_file)
-       .service(verify_shared_file_password);
+        .service(verify_shared_file_password);
 }
 
 #[cfg(test)]

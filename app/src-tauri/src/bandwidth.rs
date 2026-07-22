@@ -1,6 +1,6 @@
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use chrono::Local;
 use tauri::Manager;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -29,9 +29,12 @@ pub struct BandwidthManager {
 impl BandwidthManager {
     pub fn new(app_handle: &tauri::AppHandle) -> Self {
         // Resolve app data directory
-        let app_data_dir = app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("data"));
+        let app_data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| PathBuf::from("data"));
         if !app_data_dir.exists() {
-             let _ = std::fs::create_dir_all(&app_data_dir);
+            let _ = std::fs::create_dir_all(&app_data_dir);
         }
         let file_path = app_data_dir.join("bandwidth.json");
 
@@ -47,7 +50,11 @@ impl BandwidthManager {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(250);
-        let limit = if limit_gb == 0 { 0 } else { limit_gb * 1024 * 1024 * 1024 };
+        let limit = if limit_gb == 0 {
+            0
+        } else {
+            limit_gb * 1024 * 1024 * 1024
+        };
 
         Self {
             file_path,
@@ -60,7 +67,11 @@ impl BandwidthManager {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let mut stats = self.stats.lock().await;
         if stats.date != today {
-            log::info!("[Bandwidth] New day detected. Resetting stats. Old date: {}, New date: {}", stats.date, today);
+            log::info!(
+                "[Bandwidth] New day detected. Resetting stats. Old date: {}, New date: {}",
+                stats.date,
+                today
+            );
             stats.date = today;
             stats.up_bytes = 0;
             stats.down_bytes = 0;

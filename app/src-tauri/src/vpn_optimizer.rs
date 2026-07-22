@@ -4,21 +4,21 @@
 //! When vpnMode is off, helpers return hardcoded defaults (zero behaviour change).
 //! When vpnMode is on, helpers return user-configured values.
 
-use std::future::Future;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use std::future::Future;
 use tauri::Manager;
+use tokio::sync::RwLock;
 
 /// Proxy configuration received from the frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     pub enabled: bool,
-    pub proxy_type: String,    // "socks5" | "mtproto"
+    pub proxy_type: String, // "socks5" | "mtproto"
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub password: String,      // SOCKS5
-    pub secret: String,        // MTProto
+    pub password: String, // SOCKS5
+    pub secret: String,   // MTProto
 }
 
 impl Default for ProxyConfig {
@@ -39,15 +39,15 @@ impl Default for ProxyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VpnConfig {
     pub enabled: bool,
-    pub timeout_multiplier: u32,       // 1–5
-    pub retry_attempts: u32,           // 0–5
-    pub retry_base_backoff_ms: u64,    // 500–5000
-    pub retry_max_backoff_ms: u64,     // 8000–60000
+    pub timeout_multiplier: u32,    // 1–5
+    pub retry_attempts: u32,        // 0–5
+    pub retry_base_backoff_ms: u64, // 500–5000
+    pub retry_max_backoff_ms: u64,  // 8000–60000
     pub adaptive_polling: bool,
-    pub polling_min_sec: u32,          // 10–30
-    pub polling_max_sec: u32,          // 45–120
-    pub preferred_dc: String,          // "auto" | "dc1"–"dc5"
-    pub dc_fallback_attempts: u32,     // 1–4
+    pub polling_min_sec: u32,      // 10–30
+    pub polling_max_sec: u32,      // 45–120
+    pub preferred_dc: String,      // "auto" | "dc1"–"dc5"
+    pub dc_fallback_attempts: u32, // 1–4
     pub flood_wait_respect: bool,
     pub peer_cache_size: usize,        // 100–2000
     pub bandwidth_limit_up_kbs: u32,   // 0 = unlimited
@@ -155,31 +155,51 @@ impl NetworkConfig {
     /// How many retry attempts for API calls. Default 0 (no retry) when VPN off.
     pub fn retry_attempts(&self) -> u32 {
         let vpn = self.vpn_config();
-        if vpn.enabled { vpn.retry_attempts } else { 0 }
+        if vpn.enabled {
+            vpn.retry_attempts
+        } else {
+            0
+        }
     }
 
     /// Base backoff duration in milliseconds for retries.
     pub fn retry_base_backoff_ms(&self) -> u64 {
         let vpn = self.vpn_config();
-        if vpn.enabled { vpn.retry_base_backoff_ms } else { 1000 }
+        if vpn.enabled {
+            vpn.retry_base_backoff_ms
+        } else {
+            1000
+        }
     }
 
     /// Max backoff duration in milliseconds for retries.
     pub fn retry_max_backoff_ms(&self) -> u64 {
         let vpn = self.vpn_config();
-        if vpn.enabled { vpn.retry_max_backoff_ms } else { 30000 }
+        if vpn.enabled {
+            vpn.retry_max_backoff_ms
+        } else {
+            30000
+        }
     }
 
     /// Whether to automatically sleep on FLOOD_WAIT errors.
     pub fn should_respect_flood_wait(&self) -> bool {
         let vpn = self.vpn_config();
-        if vpn.enabled { vpn.flood_wait_respect } else { false }
+        if vpn.enabled {
+            vpn.flood_wait_respect
+        } else {
+            false
+        }
     }
 
     /// Peer cache size. Default 500.
     pub fn peer_cache_size(&self) -> usize {
         let vpn = self.vpn_config();
-        if vpn.enabled { vpn.peer_cache_size } else { 500 }
+        if vpn.enabled {
+            vpn.peer_cache_size
+        } else {
+            500
+        }
     }
 
     /// Whether proxy is active and has a valid host.
@@ -389,10 +409,12 @@ pub fn load_network_config_at(data_dir: &std::path::Path) -> NetworkConfigSnapsh
 pub fn load_network_config(app: &tauri::AppHandle) -> NetworkConfigSnapshot {
     let path = match settings_path(app) {
         Ok(p) => p,
-        Err(_) => return NetworkConfigSnapshot {
-            proxy: ProxyConfig::default(),
-            vpn: VpnConfig::default(),
-        },
+        Err(_) => {
+            return NetworkConfigSnapshot {
+                proxy: ProxyConfig::default(),
+                vpn: VpnConfig::default(),
+            }
+        }
     };
     match std::fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|_| NetworkConfigSnapshot {
@@ -406,13 +428,19 @@ pub fn load_network_config(app: &tauri::AppHandle) -> NetworkConfigSnapshot {
     }
 }
 
-pub fn save_network_config(app: &tauri::AppHandle, config: &NetworkConfigSnapshot) -> Result<(), String> {
+pub fn save_network_config(
+    app: &tauri::AppHandle,
+    config: &NetworkConfigSnapshot,
+) -> Result<(), String> {
     let path = settings_path(app)?;
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
-pub fn save_network_config_at(data_dir: &std::path::Path, config: &NetworkConfigSnapshot) -> Result<(), String> {
+pub fn save_network_config_at(
+    data_dir: &std::path::Path,
+    config: &NetworkConfigSnapshot,
+) -> Result<(), String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let path = data_dir.join("network_settings.json");
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
@@ -463,7 +491,11 @@ where
                 // FLOOD_WAIT is a rate-limit signal, not a failure — sleep and retry without consuming budget
                 if respect_flood {
                     if let Some(wait) = parse_flood_wait_secs(&err) {
-                        log::info!("[retry] Respecting FLOOD_WAIT for '{}': sleeping {}s", context, wait);
+                        log::info!(
+                            "[retry] Respecting FLOOD_WAIT for '{}': sleeping {}s",
+                            context,
+                            wait
+                        );
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                         last_err = err;
                         continue; // does NOT count as a retry attempt
@@ -509,9 +541,16 @@ where
     Fut: std::future::Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
-    with_retry(net_config, || async {
-        operation().await.map_err(|e| crate::commands::utils::map_error(e))
-    }, context).await
+    with_retry(
+        net_config,
+        || async {
+            operation()
+                .await
+                .map_err(|e| crate::commands::utils::map_error(e))
+        },
+        context,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -1,11 +1,11 @@
-use tauri::State;
-use tauri::Manager;
-use grammers_client::types::Media;
-use base64::{Engine as _, engine::general_purpose};
-use crate::TelegramState;
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::resolve_peer;
 use crate::db::DbConnection;
+use crate::TelegramState;
+use base64::{engine::general_purpose, Engine as _};
+use grammers_client::types::Media;
+use tauri::Manager;
+use tauri::State;
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 80 * 1024 * 1024;
@@ -23,10 +23,7 @@ fn preview_cache_path(
 }
 
 #[cfg(not(feature = "headless-server"))]
-async fn resolve_preview_extension(
-    db_pool: &DbConnection,
-    message_id: i32,
-) -> String {
+async fn resolve_preview_extension(db_pool: &DbConnection, message_id: i32) -> String {
     if let Ok(Some(record)) = crate::db::get_file_asset(db_pool, message_id) {
         let ext = crate::local_api::extension_from_filename(&record.file_name);
         if ext != "bin" {
@@ -51,7 +48,10 @@ async fn preview_via_local_api(
     db_pool: &DbConnection,
     bw_state: &BandwidthManager,
 ) -> Result<String, String> {
-    let data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     let bridge = crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
     let ext = resolve_preview_extension(db_pool, message_id).await;
     let save_path = preview_cache_path(&cache_dir, folder_id, message_id, &ext);
@@ -141,7 +141,10 @@ async fn thumbnail_via_local_api(
         }
     }
 
-    let data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     let bridge = crate::local_api::LocalApiBridge::from_data_dir(&data_dir);
     let save_path_str = save_path.to_string_lossy().to_string();
     if crate::local_api::fetch_file_to_path(
@@ -197,7 +200,8 @@ async fn prune_preview_cache(cache_dir: std::path::PathBuf) {
                 break;
             }
         }
-    }).await;
+    })
+    .await;
 }
 
 #[tauri::command]
@@ -207,8 +211,7 @@ pub async fn cmd_get_preview(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
-    #[allow(unused_variables)]
-    db_pool: State<'_, DbConnection>,
+    #[allow(unused_variables)] db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     let cache_dir = app_handle
         .path()
@@ -243,8 +246,10 @@ pub async fn cmd_get_preview(
     };
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-    let messages = client.get_messages_by_id(&peer, &[message_id])
-        .await.map_err(|e| e.to_string())?;
+    let messages = client
+        .get_messages_by_id(&peer, &[message_id])
+        .await
+        .map_err(|e| e.to_string())?;
     let target_message = messages.into_iter().flatten().next();
 
     if let Some(msg) = target_message {
@@ -268,7 +273,7 @@ pub async fn cmd_get_preview(
                         }
                     }
                     e
-                },
+                }
                 Media::Photo(_) => "jpg".to_string(),
                 _ => "bin".to_string(),
             };
@@ -298,7 +303,7 @@ pub async fn cmd_get_preview(
                             bw_state.add_down(size).await;
                             prune_preview_cache(cache_dir.clone()).await;
                             true
-                        },
+                        }
                         Err(e) => {
                             log::error!("Preview Download Error: {}", e);
                             false
@@ -308,7 +313,8 @@ pub async fn cmd_get_preview(
             };
             if file_ready {
                 let lower_ext = ext.to_lowercase();
-                if ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].contains(&lower_ext.as_str()) {
+                if ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].contains(&lower_ext.as_str())
+                {
                     log::info!("Converting image to Base64...");
                     match tokio::fs::read(&save_path).await {
                         Ok(bytes) => {
@@ -322,7 +328,7 @@ pub async fn cmd_get_preview(
                                 _ => "image/jpeg",
                             };
                             return Ok(format!("data:{};base64,{}", mime, b64));
-                        },
+                        }
                         Err(e) => {
                             log::error!("Failed to read file for base64: {}", e);
                             return Ok(save_path_str);
@@ -338,9 +344,7 @@ pub async fn cmd_get_preview(
 }
 
 #[tauri::command]
-pub async fn cmd_clean_cache(
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn cmd_clean_cache(app_handle: tauri::AppHandle) -> Result<(), String> {
     let cache_dir = app_handle
         .path()
         .app_cache_dir()
@@ -359,7 +363,8 @@ pub async fn cmd_clean_cache(
         if thumb_dir.exists() {
             let _ = std::fs::remove_dir_all(thumb_dir);
         }
-    }).await;
+    })
+    .await;
     Ok(())
 }
 
@@ -373,8 +378,7 @@ pub async fn cmd_get_thumbnail(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
-    #[allow(unused_variables)]
-    db_pool: State<'_, DbConnection>,
+    #[allow(unused_variables)] db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     // Check if thumbnail already in cache
     let cache_dir = app_handle
@@ -426,8 +430,10 @@ pub async fn cmd_get_thumbnail(
     };
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-    let messages = client.get_messages_by_id(&peer, &[message_id])
-        .await.map_err(|e| e.to_string())?;
+    let messages = client
+        .get_messages_by_id(&peer, &[message_id])
+        .await
+        .map_err(|e| e.to_string())?;
     if let Some(m) = messages.into_iter().flatten().next() {
         if let Some(media) = m.media() {
             // Only get thumbnails for photos and documents with photo thumbnails
@@ -447,7 +453,7 @@ pub async fn cmd_get_thumbnail(
                         // Not an image, return empty - FileCard will show icon
                         return Ok("".to_string());
                     }
-                },
+                }
                 _ => return Ok("".to_string()),
             };
 
@@ -462,7 +468,11 @@ pub async fn cmd_get_thumbnail(
                     _ => vec![],
                 };
 
-                let download_success = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).min_by_key(|t| t.size()) {
+                let download_success = if let Some(thumb) = thumbs
+                    .iter()
+                    .filter(|t| t.size() > 0)
+                    .min_by_key(|t| t.size())
+                {
                     client.download_media(thumb, &save_path_str).await.is_ok()
                 } else {
                     client.download_media(&media, &save_path_str).await.is_ok()
@@ -501,7 +511,7 @@ pub async fn cmd_delete_image_thumbnail(
         .app_data_dir()
         .map_err(|e: tauri::Error| e.to_string())?
         .join("thumbnails");
-        
+
     let _ = tokio::task::spawn_blocking(move || {
         let supported_exts = ["jpg", "png", "gif", "webp"];
         for ext in &supported_exts {
@@ -510,6 +520,7 @@ pub async fn cmd_delete_image_thumbnail(
                 let _ = std::fs::remove_file(path);
             }
         }
-    }).await;
+    })
+    .await;
     Ok(())
 }

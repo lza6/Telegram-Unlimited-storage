@@ -112,7 +112,9 @@ pub trait StorageBackend: Send + Sync {
     fn backend_type(&self) -> BackendType;
 
     /// Maximum file size in bytes (0 = unlimited)
-    fn max_file_size(&self) -> u64 { 0 }
+    fn max_file_size(&self) -> u64 {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +145,11 @@ impl S3Backend {
             secret_key: secret_key.to_string(),
         };
 
-        log::info!("S3 backend configured: bucket={}, endpoint={}", this.bucket, this.endpoint);
+        log::info!(
+            "S3 backend configured: bucket={}, endpoint={}",
+            this.bucket,
+            this.endpoint
+        );
         Some(Arc::new(this))
     }
 }
@@ -160,7 +166,12 @@ impl StorageBackend for S3Backend {
 
     async fn upload(&self, data: &[u8], name: &str, mime: &str) -> Result<StorageResult, String> {
         let key = format!("td/{}/{}", chrono::Utc::now().format("%Y/%m/%d"), name);
-        let url = format!("{}/{}/{}", self.endpoint.trim_end_matches('/'), self.bucket, key);
+        let url = format!(
+            "{}/{}/{}",
+            self.endpoint.trim_end_matches('/'),
+            self.bucket,
+            key
+        );
 
         let client = reqwest::Client::new();
         let resp = client
@@ -186,7 +197,12 @@ impl StorageBackend for S3Backend {
     }
 
     async fn download(&self, id: &str) -> Result<Vec<u8>, String> {
-        let url = format!("{}/{}/{}", self.endpoint.trim_end_matches('/'), self.bucket, id.trim_start_matches('/'));
+        let url = format!(
+            "{}/{}/{}",
+            self.endpoint.trim_end_matches('/'),
+            self.bucket,
+            id.trim_start_matches('/')
+        );
         let client = reqwest::Client::new();
         let resp = client
             .get(&url)
@@ -205,7 +221,12 @@ impl StorageBackend for S3Backend {
     }
 
     async fn delete(&self, id: &str) -> Result<(), String> {
-        let url = format!("{}/{}/{}", self.endpoint.trim_end_matches('/'), self.bucket, id.trim_start_matches('/'));
+        let url = format!(
+            "{}/{}/{}",
+            self.endpoint.trim_end_matches('/'),
+            self.bucket,
+            id.trim_start_matches('/')
+        );
         let client = reqwest::Client::new();
         let resp = client
             .delete(&url)
@@ -258,11 +279,16 @@ impl StorageFactory {
             .as_deref()
             .and_then(|_| BackendType::from_str("s3"))
             .or_else(|| {
-                std::env::var("STORAGE_FALLBACK").ok().as_deref().and_then(BackendType::from_str)
+                std::env::var("STORAGE_FALLBACK")
+                    .ok()
+                    .as_deref()
+                    .and_then(BackendType::from_str)
             });
 
         let fallback = match fallback_type {
-            Some(BackendType::S3) => S3Backend::from_config(config).map(|b| b as Arc<dyn StorageBackend>),
+            Some(BackendType::S3) => {
+                S3Backend::from_config(config).map(|b| b as Arc<dyn StorageBackend>)
+            }
             Some(_) => {
                 log::warn!("Unsupported fallback backend configured");
                 None
@@ -300,18 +326,16 @@ impl StorageFactory {
         primary_result: Result<StorageResult, String>,
     ) -> Result<StorageResult, String> {
         match self.strategy {
-            FailoverStrategy::Failover => {
-                match primary_result {
-                    Ok(r) => Ok(r),
-                    Err(e) => {
-                        log::warn!("Primary storage failed, trying fallback: {e}");
-                        match &self.fallback {
-                            Some(fb) => fb.upload(data, name, mime).await,
-                            None => Err(e),
-                        }
+            FailoverStrategy::Failover => match primary_result {
+                Ok(r) => Ok(r),
+                Err(e) => {
+                    log::warn!("Primary storage failed, trying fallback: {e}");
+                    match &self.fallback {
+                        Some(fb) => fb.upload(data, name, mime).await,
+                        None => Err(e),
                     }
                 }
-            }
+            },
             FailoverStrategy::Mirror => {
                 // Write to primary
                 let primary = match primary_result {
@@ -332,7 +356,11 @@ impl StorageFactory {
                     let mime = mime.to_string();
                     tokio::spawn(async move {
                         match fb.upload(&data, &name, &mime).await {
-                            Ok(r) => log::info!("Mirror upload to {:?} succeeded: {}", fb.backend_type(), r.id),
+                            Ok(r) => log::info!(
+                                "Mirror upload to {:?} succeeded: {}",
+                                fb.backend_type(),
+                                r.id
+                            ),
                             Err(e) => log::warn!("Mirror upload failed: {e}"),
                         }
                     });
@@ -390,18 +418,30 @@ mod tests {
     #[test]
     fn failover_strategy_defaults_to_failover() {
         assert_eq!(FailoverStrategy::from_str(""), FailoverStrategy::Failover);
-        assert_eq!(FailoverStrategy::from_str("unknown"), FailoverStrategy::Failover);
+        assert_eq!(
+            FailoverStrategy::from_str("unknown"),
+            FailoverStrategy::Failover
+        );
     }
 
     #[test]
     fn failover_strategy_mirror_and_tiered() {
-        assert_eq!(FailoverStrategy::from_str("mirror"), FailoverStrategy::Mirror);
-        assert_eq!(FailoverStrategy::from_str("tiered"), FailoverStrategy::Tiered);
+        assert_eq!(
+            FailoverStrategy::from_str("mirror"),
+            FailoverStrategy::Mirror
+        );
+        assert_eq!(
+            FailoverStrategy::from_str("tiered"),
+            FailoverStrategy::Tiered
+        );
     }
 
     #[test]
     fn backend_type_parsing() {
-        assert_eq!(BackendType::from_str("telegram"), Some(BackendType::Telegram));
+        assert_eq!(
+            BackendType::from_str("telegram"),
+            Some(BackendType::Telegram)
+        );
         assert_eq!(BackendType::from_str("s3"), Some(BackendType::S3));
         assert_eq!(BackendType::from_str("r2"), Some(BackendType::R2));
         assert_eq!(BackendType::from_str("invalid"), None);

@@ -106,16 +106,25 @@ pub async fn download_message_stream(
         dl_limit,
     );
 
-  let disposition = if force_attachment || !is_previewable(&mime) {
-        format!("attachment; filename=\"{}\"", sanitize_filename_for_header(&filename))
+    let disposition = if force_attachment || !is_previewable(&mime) {
+        format!(
+            "attachment; filename=\"{}\"",
+            sanitize_filename_for_header(&filename)
+        )
     } else {
-        format!("inline; filename=\"{}\"", sanitize_filename_for_header(&filename))
+        format!(
+            "inline; filename=\"{}\"",
+            sanitize_filename_for_header(&filename)
+        )
     };
 
     if is_range {
         Ok(HttpResponse::PartialContent()
             .insert_header(("Content-Type", mime))
-            .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
+            .insert_header((
+                "Content-Range",
+                format!("bytes {}-{}/{}", start_byte, end_byte, size),
+            ))
             .insert_header(("Content-Length", content_length.to_string()))
             .insert_header(("Content-Disposition", disposition))
             .insert_header(("Accept-Ranges", "bytes"))
@@ -137,16 +146,18 @@ async fn bot_download_message(
     db: &DbConnection,
     force_attachment: bool,
 ) -> Result<HttpResponse, HttpResponse> {
-    if let Some(record) = crate::db::get_bot_file_map(db, message_id).map_err(|e| {
-        HttpResponse::InternalServerError().body(e)
-    })? {
+    if let Some(record) = crate::db::get_bot_file_map(db, message_id)
+        .map_err(|e| HttpResponse::InternalServerError().body(e))?
+    {
         if record.file_size > crate::download_degradation::BOT_API_DOWNLOAD_MAX_BYTES {
-            return Ok(crate::download_degradation::build_bot_download_limit_response(
-                req,
-                config,
-                &record.file_name,
-                record.file_size,
-            ));
+            return Ok(
+                crate::download_degradation::build_bot_download_limit_response(
+                    req,
+                    config,
+                    &record.file_name,
+                    record.file_size,
+                ),
+            );
         }
     }
 
@@ -155,20 +166,22 @@ async fn bot_download_message(
         .get(actix_web::http::header::RANGE)
         .and_then(|v| v.to_str().ok());
 
-    let (resp, filename, size) = telegram_transport::bot_download_stream(
-        config,
-        db,
-        message_id,
-        range_header,
-    )
-    .await
-    .map_err(|e| HttpResponse::NotFound().body(e))?;
+    let (resp, filename, size) =
+        telegram_transport::bot_download_stream(config, db, message_id, range_header)
+            .await
+            .map_err(|e| HttpResponse::NotFound().body(e))?;
 
     let mime = mime_guess(&filename);
     let disposition = if force_attachment || !is_previewable(&mime) {
-        format!("attachment; filename=\"{}\"", sanitize_filename_for_header(&filename))
+        format!(
+            "attachment; filename=\"{}\"",
+            sanitize_filename_for_header(&filename)
+        )
     } else {
-        format!("inline; filename=\"{}\"", sanitize_filename_for_header(&filename))
+        format!(
+            "inline; filename=\"{}\"",
+            sanitize_filename_for_header(&filename)
+        )
     };
 
     let status = resp.status();
@@ -387,9 +400,15 @@ pub async fn download_manifest_stream(
 
     let ext_mime = mime_guess(&orig_filename);
     let disposition = if is_previewable(&ext_mime) {
-        format!("inline; filename=\"{}\"", sanitize_filename_for_header(&orig_filename))
+        format!(
+            "inline; filename=\"{}\"",
+            sanitize_filename_for_header(&orig_filename)
+        )
     } else {
-        format!("attachment; filename=\"{}\"", sanitize_filename_for_header(&orig_filename))
+        format!(
+            "attachment; filename=\"{}\"",
+            sanitize_filename_for_header(&orig_filename)
+        )
     };
 
     let max_chunk = net_config.download_chunk_i32();
@@ -472,9 +491,15 @@ async fn bot_download_manifest(
 
     let ext_mime = mime_guess(&orig_filename);
     let disposition = if is_previewable(&ext_mime) {
-        format!("inline; filename=\"{}\"", sanitize_filename_for_header(&orig_filename))
+        format!(
+            "inline; filename=\"{}\"",
+            sanitize_filename_for_header(&orig_filename)
+        )
     } else {
-        format!("attachment; filename=\"{}\"", sanitize_filename_for_header(&orig_filename))
+        format!(
+            "attachment; filename=\"{}\"",
+            sanitize_filename_for_header(&orig_filename)
+        )
     };
 
     let config = config.clone();

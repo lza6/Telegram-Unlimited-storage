@@ -6,9 +6,8 @@ pub fn init_from_env() {
         .map(|v| v.eq_ignore_ascii_case("json"))
         .unwrap_or(false);
 
-    let mut builder = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    );
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
 
     if json {
         builder.format(|buf, record| {

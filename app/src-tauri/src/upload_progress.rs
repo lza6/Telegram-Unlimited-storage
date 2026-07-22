@@ -126,7 +126,10 @@ fn canonical_progress_payload(session_id: &str, expires_at: i64) -> String {
     format!("{PROGRESS_TOKEN_VERSION}|{session_id}|{expires_at}")
 }
 
-pub fn issue_upload_progress_token(session_id: &str, access_pwd: &str) -> Result<(String, i64), String> {
+pub fn issue_upload_progress_token(
+    session_id: &str,
+    access_pwd: &str,
+) -> Result<(String, i64), String> {
     if session_id.trim().is_empty() {
         return Err("session_id required".into());
     }
@@ -165,10 +168,7 @@ pub fn verify_upload_progress_request(req: &HttpRequest, access_pwd: &str) -> Op
     verify_upload_progress_access(req, access_pwd)
 }
 
-fn verify_upload_progress_access(
-    req: &HttpRequest,
-    access_pwd: &str,
-) -> Option<HttpResponse> {
+fn verify_upload_progress_access(req: &HttpRequest, access_pwd: &str) -> Option<HttpResponse> {
     let session_id = parse_session_id(req);
     let token = parse_progress_token(req);
     if let Some(exp) = parse_progress_exp(req) {
@@ -300,12 +300,7 @@ async fn upload_ws(
 
     let (response, session, msg_stream) = actix_ws::handle(&req, body)?;
     let rx = hub.subscribe(&session_id).await;
-    actix_web::rt::spawn(forward_progress_to_ws(
-        session,
-        msg_stream,
-        rx,
-        session_id,
-    ));
+    actix_web::rt::spawn(forward_progress_to_ws(session, msg_stream, rx, session_id));
     Ok(response)
 }
 
@@ -360,7 +355,8 @@ pub async fn emit_chunk_progress(
     session_id: &str,
     filename: &str,
 ) {
-    let Ok(Some((total, status, fname))) = crate::db::get_upload_session_summary(db, session_id) else {
+    let Ok(Some((total, status, fname))) = crate::db::get_upload_session_summary(db, session_id)
+    else {
         return;
     };
     let Ok(chunks) = crate::db::get_upload_session_chunks(db, session_id) else {
@@ -415,8 +411,14 @@ mod tests {
     #[test]
     fn progress_token_roundtrip() {
         let (token, exp) = issue_upload_progress_token("sess-abc", "test-pwd").unwrap();
-        assert!(verify_upload_progress_token("sess-abc", exp, &token, "test-pwd"));
-        assert!(!verify_upload_progress_token("sess-abc", exp, &token, "wrong"));
-        assert!(!verify_upload_progress_token("other", exp, &token, "test-pwd"));
+        assert!(verify_upload_progress_token(
+            "sess-abc", exp, &token, "test-pwd"
+        ));
+        assert!(!verify_upload_progress_token(
+            "sess-abc", exp, &token, "wrong"
+        ));
+        assert!(!verify_upload_progress_token(
+            "other", exp, &token, "test-pwd"
+        ));
     }
 }

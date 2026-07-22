@@ -1,20 +1,21 @@
-use tauri::{State, Emitter};
-#[cfg(not(feature = "headless-server"))]
-use tauri::Manager;
+use crate::bandwidth::BandwidthManager;
+use crate::commands::utils::{map_error, resolve_peer, resolve_peer_with_limit};
+use crate::models::{FileMetadata, FolderMetadata};
+use crate::vpn_optimizer::{backoff_ms, throttle_transfer_bytes, NetworkConfig, ThrottledReader};
+use crate::TelegramState;
 use grammers_client::types::{Media, Peer};
 use grammers_client::InputMessage;
 use grammers_tl_types as tl;
-use crate::TelegramState;
-use crate::models::{FolderMetadata, FileMetadata};
-use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::{resolve_peer, resolve_peer_with_limit, map_error};
-use crate::vpn_optimizer::{NetworkConfig, backoff_ms, throttle_transfer_bytes, ThrottledReader};
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
+#[cfg(not(feature = "headless-server"))]
+use tauri::Manager;
+use tauri::{Emitter, State};
 use tokio::sync::oneshot;
 
-static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> = OnceLock::new();
+static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> =
+    OnceLock::new();
 
 fn get_upload_cancellations() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
     UPLOAD_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -88,52 +89,59 @@ pub async fn cmd_create_folder(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<FolderMetadata, String> {
-    let client_opt = {
-        state.client.lock().await.clone()
-    };
-    
+    let client_opt = { state.client.lock().await.clone() };
+
     let client = require_client(client_opt)?;
     log::info!("Creating Telegram Channel: {}", name);
 
     let result = crate::vpn_optimizer::with_retry(
         &net_config,
         || async {
-            client.invoke(&tl::functions::channels::CreateChannel {
-                broadcast: true,
-                megagroup: false,
-                title: format!("{} [TD]", name),
-                about: "Telegram Drive Storage Folder\n[telegram-drive-folder]".to_string(),
-                geo_point: None,
-                address: None,
-                for_import: false,
-                forum: false,
-                ttl_period: None,
-            }).await.map_err(|e| map_error(e))
+            client
+                .invoke(&tl::functions::channels::CreateChannel {
+                    broadcast: true,
+                    megagroup: false,
+                    title: format!("{} [TD]", name),
+                    about: "Telegram Drive Storage Folder\n[telegram-drive-folder]".to_string(),
+                    geo_point: None,
+                    address: None,
+                    for_import: false,
+                    forum: false,
+                    ttl_period: None,
+                })
+                .await
+                .map_err(|e| map_error(e))
         },
         "create_channel",
-    ).await?;
-    
+    )
+    .await?;
+
     let (chat_id, access_hash) = match result {
         tl::enums::Updates::Updates(u) => {
-             let chat = u.chats.first().ok_or("No chat in updates")?;
-             match chat {
-                 tl::enums::Chat::Channel(c) => (c.id, c.access_hash.unwrap_or(0)),
-                 _ => return Err("Created chat is not a channel".to_string()),
-             }
-        },
-        _ => return Err("Unexpected response (not Updates::Updates)".to_string()), 
+            let chat = u.chats.first().ok_or("No chat in updates")?;
+            match chat {
+                tl::enums::Chat::Channel(c) => (c.id, c.access_hash.unwrap_or(0)),
+                _ => return Err("Created chat is not a channel".to_string()),
+            }
+        }
+        _ => return Err("Unexpected response (not Updates::Updates)".to_string()),
     };
 
     // Explicitly Disable TTL
     let _input_channel = tl::enums::InputChannel::Channel(tl::types::InputChannel {
-         channel_id: chat_id,
-         access_hash,
+        channel_id: chat_id,
+        access_hash,
     });
 
-    let _ = client.invoke(&tl::functions::messages::SetHistoryTtl {
-        peer: tl::enums::InputPeer::Channel(tl::types::InputPeerChannel { channel_id: chat_id, access_hash }),
-        period: 0, 
-    }).await;
+    let _ = client
+        .invoke(&tl::functions::messages::SetHistoryTtl {
+            peer: tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+                channel_id: chat_id,
+                access_hash,
+            }),
+            period: 0,
+        })
+        .await;
 
     let _ = crate::db::set_file_index_complete(&db_pool, false);
 
@@ -151,9 +159,7 @@ pub async fn cmd_delete_folder(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<bool, String> {
-    let client_opt = {
-        state.client.lock().await.clone()
-    };
+    let client_opt = { state.client.lock().await.clone() };
 
     let client = require_client(client_opt)?;
     log::info!("Deleting folder/channel: {}", folder_id);
@@ -162,27 +168,33 @@ pub async fn cmd_delete_folder(
         &net_config,
         || async { resolve_peer(&client, Some(folder_id), &state.peer_cache).await },
         "resolve_peer(delete_folder)",
-    ).await?;
+    )
+    .await?;
 
     let input_channel = match peer {
         Peer::Channel(c) => {
-             let chan = &c.raw;
-             tl::enums::InputChannel::Channel(tl::types::InputChannel {
-                 channel_id: chan.id,
-                 access_hash: chan.access_hash.ok_or("No access hash for channel")?,
-             })
-        },
+            let chan = &c.raw;
+            tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                channel_id: chan.id,
+                access_hash: chan.access_hash.ok_or("No access hash for channel")?,
+            })
+        }
         _ => return Err("Only channels (folders) can be deleted.".to_string()),
     };
 
     crate::vpn_optimizer::with_retry(
         &net_config,
         || async {
-            client.invoke(&tl::functions::channels::DeleteChannel { channel: input_channel.clone() }
-            ).await.map_err(|e| format!("Failed to delete channel: {}", e))
+            client
+                .invoke(&tl::functions::channels::DeleteChannel {
+                    channel: input_channel.clone(),
+                })
+                .await
+                .map_err(|e| format!("Failed to delete channel: {}", e))
         },
         "delete_channel",
-    ).await?;
+    )
+    .await?;
 
     let _ = crate::db::delete_file_assets_in_folder(
         &db_pool,
@@ -193,7 +205,6 @@ pub async fn cmd_delete_folder(
 
     Ok(true)
 }
-
 
 #[derive(Clone, serde::Serialize)]
 struct ProgressPayload {
@@ -212,8 +223,12 @@ struct ProgressReader {
 }
 
 impl ProgressReader {
-    async fn new(path: &str) -> Result<(Self, u64, std::sync::Arc<std::sync::atomic::AtomicU64>), String> {
-        let file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
+    async fn new(
+        path: &str,
+    ) -> Result<(Self, u64, std::sync::Arc<std::sync::atomic::AtomicU64>), String> {
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| e.to_string())?;
         let metadata = file.metadata().await.map_err(|e| e.to_string())?;
         let size = metadata.len();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -236,7 +251,8 @@ impl tokio::io::AsyncRead for ProgressReader {
         if let std::task::Poll::Ready(Ok(())) = &result {
             let after = buf.filled().len();
             let delta = (after - before) as u64;
-            self.bytes_read.fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+            self.bytes_read
+                .fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
         }
         result
     }
@@ -254,7 +270,12 @@ fn cleanup_partial_file(path: &str) {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
                 Err(e) => {
-                    log::warn!("Cleanup attempt {}/5 failed for {}: {}", attempt + 1, path, e);
+                    log::warn!(
+                        "Cleanup attempt {}/5 failed for {}: {}",
+                        attempt + 1,
+                        path,
+                        e
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
             }
@@ -268,7 +289,11 @@ pub async fn cmd_cancel_transfer(
     state: State<'_, TelegramState>,
 ) -> Result<bool, String> {
     log::info!("Cancelling transfer: {}", transfer_id);
-    state.cancelled_transfers.write().await.insert(transfer_id.clone());
+    state
+        .cancelled_transfers
+        .write()
+        .await
+        .insert(transfer_id.clone());
     if let Ok(Some(tx)) = with_upload_cancellations(|m| m.remove(&transfer_id)) {
         let _ = tx.send(());
     }
@@ -286,7 +311,10 @@ pub async fn cmd_upload_file(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<String, String> {
-    let size = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?.len();
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?
+        .len();
     bw_state.can_transfer(size).await?;
 
     let tid = transfer_id.unwrap_or_default();
@@ -296,9 +324,16 @@ pub async fn cmd_upload_file(
 
     // Emit start progress
     if !tid.is_empty() {
-        let _ = app_handle.emit("upload-progress", ProgressPayload {
-            id: tid.clone(), percent: 0, uploaded_bytes: 0, total_bytes: size, speed_bytes_per_sec: 0,
-        });
+        let _ = app_handle.emit(
+            "upload-progress",
+            ProgressPayload {
+                id: tid.clone(),
+                percent: 0,
+                uploaded_bytes: 0,
+                total_bytes: size,
+                speed_bytes_per_sec: 0,
+            },
+        );
     }
 
     // Create progress-tracking reader
@@ -325,19 +360,38 @@ pub async fn cmd_upload_file(
                 let current = progress_counter.load(std::sync::atomic::Ordering::Relaxed);
                 let now = std::time::Instant::now();
                 let dt = now.duration_since(last_time).as_secs_f64();
-                let speed = if dt > 0.0 { ((current - last_bytes) as f64 / dt) as u64 } else { 0 };
-                let percent = if file_size > 0 { ((current as f64 / file_size as f64) * 100.0).min(99.0) as u8 } else { 0 };
+                let speed = if dt > 0.0 {
+                    ((current - last_bytes) as f64 / dt) as u64
+                } else {
+                    0
+                };
+                let percent = if file_size > 0 {
+                    ((current as f64 / file_size as f64) * 100.0).min(99.0) as u8
+                } else {
+                    0
+                };
 
-                let _ = progress_handle.emit("upload-progress", ProgressPayload {
-                    id: progress_tid.clone(), percent, uploaded_bytes: current, total_bytes: file_size, speed_bytes_per_sec: speed,
-                });
+                let _ = progress_handle.emit(
+                    "upload-progress",
+                    ProgressPayload {
+                        id: progress_tid.clone(),
+                        percent,
+                        uploaded_bytes: current,
+                        total_bytes: file_size,
+                        speed_bytes_per_sec: speed,
+                    },
+                );
 
                 last_bytes = current;
                 last_time = now;
 
-                if current >= file_size { break; }
+                if current >= file_size {
+                    break;
+                }
                 // Check cancellation
-                if cancelled.read().await.contains(&progress_tid) { break; }
+                if cancelled.read().await.contains(&progress_tid) {
+                    break;
+                }
             }
         }))
     } else {
@@ -347,7 +401,9 @@ pub async fn cmd_upload_file(
     // Check cancellation before starting
     if state.cancelled_transfers.read().await.contains(&tid) {
         state.cancelled_transfers.write().await.remove(&tid);
-        if let Some(t) = progress_task { t.abort(); }
+        if let Some(t) = progress_task {
+            t.abort();
+        }
         return Err("Transfer cancelled".to_string());
     }
 
@@ -358,7 +414,9 @@ pub async fn cmd_upload_file(
 
     let client_clone = client.clone();
     let mut upload_task = tokio::spawn(async move {
-        client_clone.upload_stream(&mut throttled, file_size as usize, file_name).await
+        client_clone
+            .upload_stream(&mut throttled, file_size as usize, file_name)
+            .await
     });
 
     let upload_result = {
@@ -380,25 +438,40 @@ pub async fn cmd_upload_file(
     };
 
     // Stop progress reporter
-    if let Some(t) = progress_task { t.abort(); }
+    if let Some(t) = progress_task {
+        t.abort();
+    }
 
     let uploaded_file = upload_result.map_err(map_error)?;
     let message = InputMessage::new().text("").file(uploaded_file);
 
     let peer = crate::vpn_optimizer::with_retry(
         &net_config,
-        || async { resolve_peer_with_limit(&client, folder_id, &state.peer_cache, net_config.peer_cache_size()).await },
+        || async {
+            resolve_peer_with_limit(
+                &client,
+                folder_id,
+                &state.peer_cache,
+                net_config.peer_cache_size(),
+            )
+            .await
+        },
         "resolve_peer(upload)",
-    ).await?;
+    )
+    .await?;
 
     // VPN-aware retry logic for send_message via unified wrapper
     let sent = crate::vpn_optimizer::with_retry(
         &net_config,
         || async {
-            client.send_message(&peer, message.clone()).await.map_err(|e| map_error(e))
+            client
+                .send_message(&peer, message.clone())
+                .await
+                .map_err(|e| map_error(e))
         },
         "send_message(upload)",
-    ).await?;
+    )
+    .await?;
 
     let message_id = sent.id();
     if let Err(e) = crate::file_access::record_uploaded_file(
@@ -416,9 +489,16 @@ pub async fn cmd_upload_file(
 
     bw_state.add_up(size).await;
     if !tid.is_empty() {
-        let _ = app_handle.emit("upload-progress", ProgressPayload {
-            id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
-        });
+        let _ = app_handle.emit(
+            "upload-progress",
+            ProgressPayload {
+                id: tid,
+                percent: 100,
+                uploaded_bytes: size,
+                total_bytes: size,
+                speed_bytes_per_sec: 0,
+            },
+        );
     }
     Ok("File uploaded successfully".to_string())
 }
@@ -444,17 +524,30 @@ pub async fn cmd_delete_file(
 
     let peer = crate::vpn_optimizer::with_retry(
         &net_config,
-        || async { resolve_peer_with_limit(&client, folder_id, &state.peer_cache, net_config.peer_cache_size()).await },
+        || async {
+            resolve_peer_with_limit(
+                &client,
+                folder_id,
+                &state.peer_cache,
+                net_config.peer_cache_size(),
+            )
+            .await
+        },
         "resolve_peer(delete_file)",
-    ).await?;
+    )
+    .await?;
 
     crate::vpn_optimizer::with_retry(
         &net_config,
         || async {
-            client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())
+            client
+                .delete_messages(&peer, &[message_id])
+                .await
+                .map_err(|e| e.to_string())
         },
         "delete_messages",
-    ).await?;
+    )
+    .await?;
 
     let _ = crate::db::delete_file_asset(&db_pool, message_id, None);
 
@@ -471,8 +564,7 @@ pub async fn cmd_download_file(
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
-    #[allow(unused_variables)]
-    db_pool: State<'_, crate::db::DbConnection>,
+    #[allow(unused_variables)] db_pool: State<'_, crate::db::DbConnection>,
 ) -> Result<String, String> {
     let tid = transfer_id.unwrap_or_default();
 
@@ -495,26 +587,43 @@ pub async fn cmd_download_file(
 
     let client_opt = { state.client.lock().await.clone() };
     let client = require_client(client_opt)?;
-    
+
     let peer = crate::vpn_optimizer::with_retry(
         &net_config,
-        || async { resolve_peer_with_limit(&client, folder_id, &state.peer_cache, net_config.peer_cache_size()).await },
+        || async {
+            resolve_peer_with_limit(
+                &client,
+                folder_id,
+                &state.peer_cache,
+                net_config.peer_cache_size(),
+            )
+            .await
+        },
         "resolve_peer(download)",
-    ).await?;
+    )
+    .await?;
 
     // Use get_messages_by_id for efficient message lookup (same as server.rs)
     let messages = crate::vpn_optimizer::with_retry(
         &net_config,
-        || async { client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string()) },
+        || async {
+            client
+                .get_messages_by_id(&peer, &[message_id])
+                .await
+                .map_err(|e| e.to_string())
+        },
         "get_messages_by_id",
-    ).await?;
-    
-    let msg = messages.into_iter()
+    )
+    .await?;
+
+    let msg = messages
+        .into_iter()
         .flatten()
         .next()
         .ok_or_else(|| "Message not found".to_string())?;
 
-    let media = msg.media()
+    let media = msg
+        .media()
         .ok_or_else(|| "No media in message".to_string())?;
 
     let total_size = match &media {
@@ -522,20 +631,29 @@ pub async fn cmd_download_file(
         Media::Photo(_) => 1024 * 1024,
         _ => 0,
     };
-    
+
     bw_state.can_transfer(total_size).await?;
 
     // Emit start
     if !tid.is_empty() {
-        let _ = app_handle.emit("download-progress", ProgressPayload {
-            id: tid.clone(), percent: 0, uploaded_bytes: 0, total_bytes: total_size, speed_bytes_per_sec: 0,
-        });
+        let _ = app_handle.emit(
+            "download-progress",
+            ProgressPayload {
+                id: tid.clone(),
+                percent: 0,
+                uploaded_bytes: 0,
+                total_bytes: total_size,
+                speed_bytes_per_sec: 0,
+            },
+        );
     }
 
     // Stream download with per-chunk progress
     let chunk_size = net_config.chunk_size_bytes() as i32;
     let mut download_iter = client.iter_download(&media).chunk_size(chunk_size);
-    let mut file = tokio::fs::File::create(&save_path).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(&save_path)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut downloaded: u64 = 0;
     let mut last_emit_time = std::time::Instant::now();
     let mut last_emit_bytes: u64 = 0;
@@ -556,32 +674,57 @@ pub async fn cmd_download_file(
             Ok(b) => {
                 chunk_retry_budget = net_config.retry_attempts(); // reset on success
                 b
-            },
+            }
             Err(e) => {
                 let err = map_error(&e);
                 if chunk_retry_budget > 0 {
                     chunk_retry_budget -= 1;
-                    log::warn!("Download chunk error (retries left: {}): {}", chunk_retry_budget, err);
-                    let delay = backoff_ms(0, net_config.retry_base_backoff_ms(), net_config.retry_max_backoff_ms());
+                    log::warn!(
+                        "Download chunk error (retries left: {}): {}",
+                        chunk_retry_budget,
+                        err
+                    );
+                    let delay = backoff_ms(
+                        0,
+                        net_config.retry_base_backoff_ms(),
+                        net_config.retry_max_backoff_ms(),
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     continue;
                 }
                 return Err(format!("Download chunk error: {}", err));
             }
         };
-        tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &bytes)
+            .await
+            .map_err(|e| e.to_string())?;
         downloaded += bytes.len() as u64;
-        
+
         // Time-based progress emission (every 250ms)
         if !tid.is_empty() {
             let now = std::time::Instant::now();
             let dt = now.duration_since(last_emit_time).as_secs_f64();
             if dt >= 0.25 || downloaded >= total_size {
-                let speed = if dt > 0.0 { ((downloaded - last_emit_bytes) as f64 / dt) as u64 } else { 0 };
-                let percent = if total_size > 0 { ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8 } else { 0 };
-                let _ = app_handle.emit("download-progress", ProgressPayload {
-                    id: tid.clone(), percent, uploaded_bytes: downloaded, total_bytes: total_size, speed_bytes_per_sec: speed,
-                });
+                let speed = if dt > 0.0 {
+                    ((downloaded - last_emit_bytes) as f64 / dt) as u64
+                } else {
+                    0
+                };
+                let percent = if total_size > 0 {
+                    ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8
+                } else {
+                    0
+                };
+                let _ = app_handle.emit(
+                    "download-progress",
+                    ProgressPayload {
+                        id: tid.clone(),
+                        percent,
+                        uploaded_bytes: downloaded,
+                        total_bytes: total_size,
+                        speed_bytes_per_sec: speed,
+                    },
+                );
                 last_emit_time = now;
                 last_emit_bytes = downloaded;
             }
@@ -595,7 +738,8 @@ pub async fn cmd_download_file(
                 dl_limit,
                 &mut throttle_bytes,
                 &mut throttle_start,
-            ).await;
+            )
+            .await;
         }
     }
 
@@ -603,9 +747,16 @@ pub async fn cmd_download_file(
 
     // Emit completion
     if !tid.is_empty() {
-        let _ = app_handle.emit("download-progress", ProgressPayload {
-            id: tid, percent: 100, uploaded_bytes: downloaded, total_bytes: total_size, speed_bytes_per_sec: 0,
-        });
+        let _ = app_handle.emit(
+            "download-progress",
+            ProgressPayload {
+                id: tid,
+                percent: 100,
+                uploaded_bytes: downloaded,
+                total_bytes: total_size,
+                speed_bytes_per_sec: 0,
+            },
+        );
     }
 
     Ok("Download successful".to_string())
@@ -731,14 +882,7 @@ fn search_files_from_asset_index(
     owner_id: Option<&str>,
     limit: usize,
 ) -> Result<Vec<FileMetadata>, String> {
-    let records = crate::db::search_file_assets(
-        db_pool,
-        query,
-        owner_id,
-        None,
-        false,
-        limit,
-    )?;
+    let records = crate::db::search_file_assets(db_pool, query, owner_id, None, false, limit)?;
     Ok(records
         .into_iter()
         .map(asset_record_to_file_metadata)
@@ -779,7 +923,10 @@ async fn download_file_via_local_api(
 ) -> Result<String, String> {
     use futures_util::StreamExt;
 
-    let data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     let settings = crate::commands::api_settings::load_settings_at(&data_dir);
     let pwd = crate::commands::api_settings::load_local_access_pwd(&data_dir);
     if pwd.is_empty() {
@@ -812,16 +959,21 @@ async fn download_file_via_local_api(
     }
 
     if !tid.is_empty() {
-        let _ = app_handle.emit("download-progress", ProgressPayload {
-            id: tid.to_string(),
-            percent: 0,
-            uploaded_bytes: 0,
-            total_bytes: total_size,
-            speed_bytes_per_sec: 0,
-        });
+        let _ = app_handle.emit(
+            "download-progress",
+            ProgressPayload {
+                id: tid.to_string(),
+                percent: 0,
+                uploaded_bytes: 0,
+                total_bytes: total_size,
+                speed_bytes_per_sec: 0,
+            },
+        );
     }
 
-    let mut file = tokio::fs::File::create(save_path).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(save_path)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut stream = response.bytes_stream();
     let mut downloaded: u64 = 0;
     let mut last_emit_time = std::time::Instant::now();
@@ -857,13 +1009,16 @@ async fn download_file_via_local_api(
                 } else {
                     0
                 };
-                let _ = app_handle.emit("download-progress", ProgressPayload {
-                    id: tid.to_string(),
-                    percent,
-                    uploaded_bytes: downloaded,
-                    total_bytes: total_size,
-                    speed_bytes_per_sec: speed,
-                });
+                let _ = app_handle.emit(
+                    "download-progress",
+                    ProgressPayload {
+                        id: tid.to_string(),
+                        percent,
+                        uploaded_bytes: downloaded,
+                        total_bytes: total_size,
+                        speed_bytes_per_sec: speed,
+                    },
+                );
                 last_emit_time = now;
                 last_emit_bytes = downloaded;
             }
@@ -881,17 +1036,28 @@ async fn download_file_via_local_api(
         }
     }
 
-    let counted = if total_size > 0 { total_size } else { downloaded };
+    let counted = if total_size > 0 {
+        total_size
+    } else {
+        downloaded
+    };
     bw_state.add_down(counted).await;
 
     if !tid.is_empty() {
-        let _ = app_handle.emit("download-progress", ProgressPayload {
-            id: tid.to_string(),
-            percent: 100,
-            uploaded_bytes: downloaded,
-            total_bytes: if total_size > 0 { total_size } else { downloaded },
-            speed_bytes_per_sec: 0,
-        });
+        let _ = app_handle.emit(
+            "download-progress",
+            ProgressPayload {
+                id: tid.to_string(),
+                percent: 100,
+                uploaded_bytes: downloaded,
+                total_bytes: if total_size > 0 {
+                    total_size
+                } else {
+                    downloaded
+                },
+                speed_bytes_per_sec: 0,
+            },
+        );
     }
 
     Ok("Download successful".to_string())
@@ -916,11 +1082,7 @@ pub async fn cmd_get_files(
 
     let files = list_document_files_in_folder(&client, folder_id, &state.peer_cache).await?;
 
-    crate::file_access::index_file_metadata_list(
-        &db_pool,
-        &files,
-        crate::tenant_auth::OWNER_WEB,
-    );
+    crate::file_access::index_file_metadata_list(&db_pool, &files, crate::tenant_auth::OWNER_WEB);
 
     Ok(files)
 }
@@ -1048,20 +1210,23 @@ pub async fn cmd_search_global(
 
     log::info!("Searching global for: {}", query);
 
-    let result = client.invoke(&tl::functions::messages::SearchGlobal {
-        q: query,
-        filter: tl::enums::MessagesFilter::InputMessagesFilterDocument,
-        min_date: 0,
-        max_date: 0,
-        offset_rate: 0,
-        offset_peer: tl::enums::InputPeer::Empty,
-        offset_id: 0,
-        limit: 50,
-        folder_id: None,
-        broadcasts_only: false,
-        groups_only: false,
-        users_only: false,
-    }).await.map_err(map_error)?;
+    let result = client
+        .invoke(&tl::functions::messages::SearchGlobal {
+            q: query,
+            filter: tl::enums::MessagesFilter::InputMessagesFilterDocument,
+            min_date: 0,
+            max_date: 0,
+            offset_rate: 0,
+            offset_peer: tl::enums::InputPeer::Empty,
+            offset_id: 0,
+            limit: 50,
+            folder_id: None,
+            broadcasts_only: false,
+            groups_only: false,
+            users_only: false,
+        })
+        .await
+        .map_err(map_error)?;
 
     if let tl::enums::messages::Messages::Messages(msgs) = result {
         for msg in msgs.messages {
@@ -1070,20 +1235,34 @@ pub async fn cmd_search_global(
                     let doc = match d.document {
                         Some(tl::enums::Document::Document(doc)) => doc,
                         None => return Err("Search result missing document payload".to_string()),
-                        Some(_) => return Err("Search result has unsupported document type".to_string()),
+                        Some(_) => {
+                            return Err("Search result has unsupported document type".to_string())
+                        }
                     };
-                    let name = doc.attributes.iter().find_map(|a| match a {
-                        tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
-                        _ => None
-                    }).unwrap_or("Unknown".to_string());
+                    let name = doc
+                        .attributes
+                        .iter()
+                        .find_map(|a| match a {
+                            tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or("Unknown".to_string());
                     let size = doc.size as u64;
                     let mime = doc.mime_type.clone();
-                    let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                    let folder_id = crate::commands::utils::telegram_peer_id_to_folder_id(&m.peer_id);
+                    let ext = std::path::Path::new(&name)
+                        .extension()
+                        .map(|os| os.to_str().unwrap_or("").to_string());
+                    let folder_id =
+                        crate::commands::utils::telegram_peer_id_to_folder_id(&m.peer_id);
                     files.push(FileMetadata {
-                        id: m.id as i64, folder_id, name, size,
-                        mime_type: Some(mime), file_ext: ext,
-                        created_at: m.date.to_string(), icon_type: "file".into()
+                        id: m.id as i64,
+                        folder_id,
+                        name,
+                        size,
+                        mime_type: Some(mime),
+                        file_ext: ext,
+                        created_at: m.date.to_string(),
+                        icon_type: "file".into(),
                     });
                 }
             }
@@ -1095,20 +1274,34 @@ pub async fn cmd_search_global(
                     let doc = match d.document {
                         Some(tl::enums::Document::Document(doc)) => doc,
                         None => return Err("Search result missing document payload".to_string()),
-                        Some(_) => return Err("Search result has unsupported document type".to_string()),
+                        Some(_) => {
+                            return Err("Search result has unsupported document type".to_string())
+                        }
                     };
-                    let name = doc.attributes.iter().find_map(|a| match a {
-                        tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
-                        _ => None
-                    }).unwrap_or("Unknown".to_string());
+                    let name = doc
+                        .attributes
+                        .iter()
+                        .find_map(|a| match a {
+                            tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or("Unknown".to_string());
                     let size = doc.size as u64;
                     let mime = doc.mime_type.clone();
-                    let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                    let folder_id = crate::commands::utils::telegram_peer_id_to_folder_id(&m.peer_id);
+                    let ext = std::path::Path::new(&name)
+                        .extension()
+                        .map(|os| os.to_str().unwrap_or("").to_string());
+                    let folder_id =
+                        crate::commands::utils::telegram_peer_id_to_folder_id(&m.peer_id);
                     files.push(FileMetadata {
-                        id: m.id as i64, folder_id, name, size,
-                        mime_type: Some(mime), file_ext: ext,
-                        created_at: m.date.to_string(), icon_type: "file".into()
+                        id: m.id as i64,
+                        folder_id,
+                        name,
+                        size,
+                        mime_type: Some(mime),
+                        file_ext: ext,
+                        created_at: m.date.to_string(),
+                        icon_type: "file".into(),
                     });
                 }
             }
@@ -1129,7 +1322,7 @@ pub async fn cmd_scan_folders(
     let mut folders = Vec::new();
     let mut dialogs = client.iter_dialogs();
     let mut discovered = HashMap::new();
-    
+
     log::info!("Starting Folder Scan...");
 
     while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
@@ -1141,15 +1334,25 @@ pub async fn cmd_scan_folders(
 
                 let name = c.raw.title.clone();
                 let access_hash = c.raw.access_hash.unwrap_or(0);
-                
+
                 log::debug!("[SCAN] Processing Channel: '{}' (ID: {})", name, id);
 
                 // Strategy 1: Title
                 if name.to_lowercase().contains("[td]") {
                     log::info!(" -> MATCH via Title: {}", name);
-                    let display_name = name.replace(" [TD]", "").replace(" [td]", "").replace("[TD]", "").replace("[td]", "").trim().to_string();
-                    folders.push(FolderMetadata { id, name: display_name, parent_id: None });
-                    continue; 
+                    let display_name = name
+                        .replace(" [TD]", "")
+                        .replace(" [td]", "")
+                        .replace("[TD]", "")
+                        .replace("[td]", "")
+                        .trim()
+                        .to_string();
+                    folders.push(FolderMetadata {
+                        id,
+                        name: display_name,
+                        parent_id: None,
+                    });
+                    continue;
                 }
 
                 // Strategy 2: About (Only if we are the creator to avoid rate limits on third-party channels)
@@ -1158,49 +1361,58 @@ pub async fn cmd_scan_folders(
                         channel_id: c.raw.id,
                         access_hash,
                     });
-                    
-                    match client.invoke(&tl::functions::channels::GetFullChannel {
-                        channel: input_chan,
-                    }).await {
+
+                    match client
+                        .invoke(&tl::functions::channels::GetFullChannel {
+                            channel: input_chan,
+                        })
+                        .await
+                    {
                         Ok(tl::enums::messages::ChatFull::Full(f)) => {
                             if let tl::enums::ChatFull::Full(cf) = f.full_chat {
-                                 if cf.about.contains("[telegram-drive-folder]") {
-                                     log::info!(" -> MATCH via About: {}", name);
-                                     folders.push(FolderMetadata { id, name: name.clone(), parent_id: None });
-                                 }
+                                if cf.about.contains("[telegram-drive-folder]") {
+                                    log::info!(" -> MATCH via About: {}", name);
+                                    folders.push(FolderMetadata {
+                                        id,
+                                        name: name.clone(),
+                                        parent_id: None,
+                                    });
+                                }
                             }
-                        },
+                        }
                         Err(e) => log::warn!(" -> Failed to get full info: {}", e),
                     }
                 }
-            },
+            }
             Peer::User(u) => {
                 discovered.insert(u.raw.id(), dialog.peer.clone());
                 log::debug!("[SCAN] Cached User Peer: {}", u.raw.id());
-            },
+            }
             peer => {
                 log::debug!("[SCAN] Skipped Peer: {:?}", peer);
             }
         }
     }
-    
+
     {
         let mut cache = state.peer_cache.write().await;
         cache.extend(discovered);
         crate::commands::utils::trim_peer_cache(&mut cache, net_config.peer_cache_size());
     }
-    
+
     let cache_len = state.peer_cache.read().await.len();
-    log::info!("Scan complete. Found {} folders. Peer cache size: {}.", folders.len(), cache_len);
+    log::info!(
+        "Scan complete. Found {} folders. Peer cache size: {}.",
+        folders.len(),
+        cache_len
+    );
     Ok(folders)
 }
 
 /// Zip a folder's contents into a temp file and return the path.
 /// The resulting zip preserves the relative directory structure.
 #[tauri::command]
-pub async fn cmd_zip_folder(
-    folder_path: String,
-) -> Result<String, String> {
+pub async fn cmd_zip_folder(folder_path: String) -> Result<String, String> {
     let src = std::path::Path::new(&folder_path)
         .canonicalize()
         .map_err(|e| format!("Invalid folder path: {}", e))?;
@@ -1225,13 +1437,17 @@ pub async fn cmd_zip_folder(
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
 
-        for entry in walkdir::WalkDir::new(&src_owned).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(&src_owned)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             let relative = path.strip_prefix(&src_owned).unwrap_or(path);
 
             if path.is_file() {
                 let name = relative.to_string_lossy().to_string();
-                zip_writer.start_file(&name, options)
+                zip_writer
+                    .start_file(&name, options)
                     .map_err(|e| format!("Failed to add '{}': {}", name, e))?;
                 let mut f = std::fs::File::open(path)
                     .map_err(|e| format!("Failed to open '{}': {}", name, e))?;
@@ -1239,12 +1455,15 @@ pub async fn cmd_zip_folder(
                     .map_err(|e| format!("Failed to write '{}': {}", name, e))?;
             } else if path.is_dir() && path != src_owned {
                 let dir_name = format!("{}/", relative.to_string_lossy());
-                zip_writer.add_directory(&dir_name, options)
+                zip_writer
+                    .add_directory(&dir_name, options)
                     .map_err(|e| format!("Failed to add dir '{}': {}", dir_name, e))?;
             }
         }
 
-        zip_writer.finish().map_err(|e| format!("Failed to finalize zip: {}", e))?;
+        zip_writer
+            .finish()
+            .map_err(|e| format!("Failed to finalize zip: {}", e))?;
         let size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
         Ok::<(String, u64), String>((out_path.to_string_lossy().to_string(), size))
     })
@@ -1252,24 +1471,31 @@ pub async fn cmd_zip_folder(
     .map_err(|e| format!("Zip task panicked: {}", e))?
     .map_err(|e: String| e)?;
 
-    log::info!("Zipped '{}' -> '{}' ({} bytes)", folder_name, zip_path_str, zip_size);
+    log::info!(
+        "Zipped '{}' -> '{}' ({} bytes)",
+        folder_name,
+        zip_path_str,
+        zip_size
+    );
 
     Ok(zip_path_str)
 }
 
 /// Delete a temporary zip file created by cmd_zip_folder.
 #[tauri::command]
-pub async fn cmd_delete_temp_zip(
-    path: String,
-) -> Result<(), String> {
+pub async fn cmd_delete_temp_zip(path: String) -> Result<(), String> {
     let path_clone = path.clone();
     tokio::task::spawn_blocking(move || {
         let p = std::path::Path::new(&path_clone);
         if !p.exists() {
             return Ok(());
         }
-        let canonical_p = p.canonicalize().map_err(|e| format!("Invalid path: {}", e))?;
-        let tmp = std::env::temp_dir().canonicalize().map_err(|e| format!("Could not resolve temp directory: {}", e))?;
+        let canonical_p = p
+            .canonicalize()
+            .map_err(|e| format!("Invalid path: {}", e))?;
+        let tmp = std::env::temp_dir()
+            .canonicalize()
+            .map_err(|e| format!("Could not resolve temp directory: {}", e))?;
         if !canonical_p.starts_with(&tmp) {
             return Err("Refusing to delete file outside temp directory".to_string());
         }

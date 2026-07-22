@@ -1,6 +1,6 @@
-use tauri::{AppHandle, Manager};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Manager};
 
 pub type DbConnection = Arc<Mutex<sqlite::Connection>>;
 
@@ -31,14 +31,17 @@ fn open_db(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
             expires_at INTEGER,
             revoked INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
-        )"
-    ).map_err(|e| e.to_string())?;
+        )",
+    )
+    .map_err(|e| e.to_string())?;
 
     // Indexes for shares
     conn.execute("CREATE INDEX IF NOT EXISTS idx_shares_expires ON shared_links(expires_at)")
         .map_err(|e| e.to_string())?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_shares_revoked ON shared_links(revoked, created_at)")
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shares_revoked ON shared_links(revoked, created_at)",
+    )
+    .map_err(|e| e.to_string())?;
     let _ = conn.execute("ALTER TABLE shared_links ADD COLUMN owner_id TEXT");
     let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_shares_owner ON shared_links(owner_id, created_at DESC)",
@@ -54,8 +57,9 @@ fn open_db(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
             manifest_file_id TEXT,
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
-        )"
-    ).map_err(|e| e.to_string())?;
+        )",
+    )
+    .map_err(|e| e.to_string())?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS upload_chunks (
@@ -67,8 +71,9 @@ fn open_db(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
             created_at INTEGER NOT NULL,
             PRIMARY KEY (session_id, chunk_index),
             FOREIGN KEY (session_id) REFERENCES upload_sessions(session_id)
-        )"
-    ).map_err(|e| e.to_string())?;
+        )",
+    )
+    .map_err(|e| e.to_string())?;
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_upload_session ON upload_chunks(session_id)")
         .map_err(|e| e.to_string())?;
@@ -85,12 +90,13 @@ fn open_db(db_path: std::path::PathBuf) -> Result<DbConnection, String> {
     )
     .map_err(|e| e.to_string())?;
 
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_file_created ON bot_file_map(created_at DESC)")
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_file_created ON bot_file_map(created_at DESC)",
+    )
+    .map_err(|e| e.to_string())?;
 
-    let _ = conn.execute(
-        "ALTER TABLE bot_file_map ADD COLUMN bot_pool_index INTEGER NOT NULL DEFAULT 0",
-    );
+    let _ = conn
+        .execute("ALTER TABLE bot_file_map ADD COLUMN bot_pool_index INTEGER NOT NULL DEFAULT 0");
 
     crate::metadata_cache::init_schema(&conn)?;
 
@@ -156,14 +162,21 @@ pub fn upsert_tenant(
     Ok(())
 }
 
-pub fn find_tenant_id_by_api_key(db_pool: &DbConnection, plaintext_key: &str) -> Result<Option<String>, String> {
+pub fn find_tenant_id_by_api_key(
+    db_pool: &DbConnection,
+    plaintext_key: &str,
+) -> Result<Option<String>, String> {
     let conn = db_pool.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT tenant_id, api_key_hash FROM tenants WHERE enabled = 1")
         .map_err(|e| e.to_string())?;
     while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
-        let id = stmt.read::<String, _>("tenant_id").map_err(|e| e.to_string())?;
-        let hash = stmt.read::<String, _>("api_key_hash").map_err(|e| e.to_string())?;
+        let id = stmt
+            .read::<String, _>("tenant_id")
+            .map_err(|e| e.to_string())?;
+        let hash = stmt
+            .read::<String, _>("api_key_hash")
+            .map_err(|e| e.to_string())?;
         if crate::commands::api_settings::verify_key(plaintext_key, &hash) {
             return Ok(Some(id));
         }
@@ -234,7 +247,10 @@ pub fn upsert_file_asset(
     Ok(())
 }
 
-pub fn get_file_asset(db_pool: &DbConnection, message_id: i32) -> Result<Option<FileAssetRecord>, String> {
+pub fn get_file_asset(
+    db_pool: &DbConnection,
+    message_id: i32,
+) -> Result<Option<FileAssetRecord>, String> {
     let conn = db_pool.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
@@ -246,12 +262,22 @@ pub fn get_file_asset(db_pool: &DbConnection, message_id: i32) -> Result<Option<
         .map_err(|e| e.to_string())?;
     if let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
         Ok(Some(FileAssetRecord {
-            message_id: stmt.read::<i64, _>("message_id").map_err(|e| e.to_string())? as i32,
+            message_id: stmt
+                .read::<i64, _>("message_id")
+                .map_err(|e| e.to_string())? as i32,
             folder_id: stmt.read::<Option<i64>, _>("folder_id").ok().flatten(),
-            owner_id: stmt.read::<String, _>("owner_id").map_err(|e| e.to_string())?,
-            file_name: stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?,
-            file_size: stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?,
-            created_at: stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?,
+            owner_id: stmt
+                .read::<String, _>("owner_id")
+                .map_err(|e| e.to_string())?,
+            file_name: stmt
+                .read::<String, _>("file_name")
+                .map_err(|e| e.to_string())?,
+            file_size: stmt
+                .read::<i64, _>("file_size")
+                .map_err(|e| e.to_string())?,
+            created_at: stmt
+                .read::<i64, _>("created_at")
+                .map_err(|e| e.to_string())?,
         }))
     } else {
         Ok(None)
@@ -277,12 +303,22 @@ pub fn list_file_assets_by_owner(
     let mut out = Vec::new();
     while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
         out.push(FileAssetRecord {
-            message_id: stmt.read::<i64, _>("message_id").map_err(|e| e.to_string())? as i32,
+            message_id: stmt
+                .read::<i64, _>("message_id")
+                .map_err(|e| e.to_string())? as i32,
             folder_id: stmt.read::<Option<i64>, _>("folder_id").ok().flatten(),
-            owner_id: stmt.read::<String, _>("owner_id").map_err(|e| e.to_string())?,
-            file_name: stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?,
-            file_size: stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?,
-            created_at: stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?,
+            owner_id: stmt
+                .read::<String, _>("owner_id")
+                .map_err(|e| e.to_string())?,
+            file_name: stmt
+                .read::<String, _>("file_name")
+                .map_err(|e| e.to_string())?,
+            file_size: stmt
+                .read::<i64, _>("file_size")
+                .map_err(|e| e.to_string())?,
+            created_at: stmt
+                .read::<i64, _>("created_at")
+                .map_err(|e| e.to_string())?,
         });
     }
     Ok(out)
@@ -305,12 +341,22 @@ pub fn list_all_file_assets(
     let mut out = Vec::new();
     while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
         out.push(FileAssetRecord {
-            message_id: stmt.read::<i64, _>("message_id").map_err(|e| e.to_string())? as i32,
+            message_id: stmt
+                .read::<i64, _>("message_id")
+                .map_err(|e| e.to_string())? as i32,
             folder_id: stmt.read::<Option<i64>, _>("folder_id").ok().flatten(),
-            owner_id: stmt.read::<String, _>("owner_id").map_err(|e| e.to_string())?,
-            file_name: stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?,
-            file_size: stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?,
-            created_at: stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?,
+            owner_id: stmt
+                .read::<String, _>("owner_id")
+                .map_err(|e| e.to_string())?,
+            file_name: stmt
+                .read::<String, _>("file_name")
+                .map_err(|e| e.to_string())?,
+            file_size: stmt
+                .read::<i64, _>("file_size")
+                .map_err(|e| e.to_string())?,
+            created_at: stmt
+                .read::<i64, _>("created_at")
+                .map_err(|e| e.to_string())?,
         });
     }
     Ok(out)
@@ -318,12 +364,22 @@ pub fn list_all_file_assets(
 
 fn read_file_asset_row(stmt: &mut sqlite::Statement<'_>) -> Result<FileAssetRecord, String> {
     Ok(FileAssetRecord {
-        message_id: stmt.read::<i64, _>("message_id").map_err(|e| e.to_string())? as i32,
+        message_id: stmt
+            .read::<i64, _>("message_id")
+            .map_err(|e| e.to_string())? as i32,
         folder_id: stmt.read::<Option<i64>, _>("folder_id").ok().flatten(),
-        owner_id: stmt.read::<String, _>("owner_id").map_err(|e| e.to_string())?,
-        file_name: stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?,
-        file_size: stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?,
-        created_at: stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?,
+        owner_id: stmt
+            .read::<String, _>("owner_id")
+            .map_err(|e| e.to_string())?,
+        file_name: stmt
+            .read::<String, _>("file_name")
+            .map_err(|e| e.to_string())?,
+        file_size: stmt
+            .read::<i64, _>("file_size")
+            .map_err(|e| e.to_string())?,
+        created_at: stmt
+            .read::<i64, _>("created_at")
+            .map_err(|e| e.to_string())?,
     })
 }
 
@@ -707,7 +763,8 @@ pub fn create_upload_session(
         .map_err(|e| e.to_string())?;
     stmt.bind((1, session_id)).map_err(|e| e.to_string())?;
     stmt.bind((2, filename)).map_err(|e| e.to_string())?;
-    stmt.bind((3, total_chunks as i64)).map_err(|e| e.to_string())?;
+    stmt.bind((3, total_chunks as i64))
+        .map_err(|e| e.to_string())?;
     stmt.bind((4, now)).map_err(|e| e.to_string())?;
     stmt.bind((5, expires)).map_err(|e| e.to_string())?;
     stmt.next().map_err(|e| e.to_string())?;
@@ -739,7 +796,8 @@ pub fn record_upload_chunk(
     stmt.bind((1, file_id)).map_err(|e| e.to_string())?;
     stmt.bind((2, sha256)).map_err(|e| e.to_string())?;
     stmt.bind((3, session_id)).map_err(|e| e.to_string())?;
-    stmt.bind((4, chunk_index as i64)).map_err(|e| e.to_string())?;
+    stmt.bind((4, chunk_index as i64))
+        .map_err(|e| e.to_string())?;
     stmt.next().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -757,10 +815,14 @@ pub fn get_upload_session_chunks(
     let mut chunks = Vec::new();
     while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
         chunks.push(UploadChunkRecord {
-            chunk_index: stmt.read::<i64, _>("chunk_index").map_err(|e| e.to_string())? as i32,
+            chunk_index: stmt
+                .read::<i64, _>("chunk_index")
+                .map_err(|e| e.to_string())? as i32,
             file_id: stmt.read::<Option<String>, _>("file_id").ok().flatten(),
             sha256: stmt.read::<Option<String>, _>("sha256").ok().flatten(),
-            status: stmt.read::<String, _>("status").map_err(|e| e.to_string())?,
+            status: stmt
+                .read::<String, _>("status")
+                .map_err(|e| e.to_string())?,
         });
     }
     Ok(chunks)
@@ -777,9 +839,15 @@ pub fn get_upload_session_summary(
     stmt.bind((1, session_id)).map_err(|e| e.to_string())?;
 
     if let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
-        let total = stmt.read::<i64, _>("total_chunks").map_err(|e| e.to_string())? as i32;
-        let status = stmt.read::<String, _>("status").map_err(|e| e.to_string())?;
-        let filename = stmt.read::<String, _>("filename").map_err(|e| e.to_string())?;
+        let total = stmt
+            .read::<i64, _>("total_chunks")
+            .map_err(|e| e.to_string())? as i32;
+        let status = stmt
+            .read::<String, _>("status")
+            .map_err(|e| e.to_string())?;
+        let filename = stmt
+            .read::<String, _>("filename")
+            .map_err(|e| e.to_string())?;
         Ok(Some((total, status, filename)))
     } else {
         Ok(None)
@@ -815,7 +883,8 @@ pub fn complete_upload_session(
     let mut stmt = conn
         .prepare("UPDATE upload_sessions SET status = 'completed', manifest_file_id = ? WHERE session_id = ?")
         .map_err(|e| e.to_string())?;
-    stmt.bind((1, manifest_file_id)).map_err(|e| e.to_string())?;
+    stmt.bind((1, manifest_file_id))
+        .map_err(|e| e.to_string())?;
     stmt.bind((2, session_id)).map_err(|e| e.to_string())?;
     stmt.next().map_err(|e| e.to_string())?;
     Ok(())
@@ -846,7 +915,11 @@ pub fn cleanup_stale_uploads(db_pool: &DbConnection) -> Result<usize, String> {
     }
 
     if session_count > 0 {
-        log::info!("Cleaned up {} stale upload session(s) with {} chunk(s)", session_count, chunk_count);
+        log::info!(
+            "Cleaned up {} stale upload session(s) with {} chunk(s)",
+            session_count,
+            chunk_count
+        );
     }
     Ok(session_count)
 }
@@ -932,9 +1005,7 @@ pub fn get_bot_file_map(
                 .read::<i64, _>("file_size")
                 .map_err(|e| e.to_string())? as u64,
             caption,
-            bot_pool_index: stmt
-                .read::<i64, _>("bot_pool_index")
-                .unwrap_or(0) as u32,
+            bot_pool_index: stmt.read::<i64, _>("bot_pool_index").unwrap_or(0) as u32,
         }));
     }
     Ok(None)
@@ -974,9 +1045,7 @@ pub fn list_bot_files(
                 .read::<i64, _>("file_size")
                 .map_err(|e| e.to_string())? as u64,
             caption,
-            bot_pool_index: stmt
-                .read::<i64, _>("bot_pool_index")
-                .unwrap_or(0) as u32,
+            bot_pool_index: stmt.read::<i64, _>("bot_pool_index").unwrap_or(0) as u32,
         });
     }
     Ok(rows)
@@ -1051,9 +1120,11 @@ mod tests {
         upsert_file_asset(&db, 20, Some(100), "admin", "alpha-report.pdf", 10).expect("upsert");
         upsert_file_asset(&db, 21, Some(100), "admin", "beta-report.pdf", 10).expect("upsert");
         upsert_file_asset(&db, 22, Some(100), "admin", "gamma.bin", 10).expect("upsert");
-        let total = count_file_assets_scoped(&db, None, Some(100), true, Some("report")).expect("count");
+        let total =
+            count_file_assets_scoped(&db, None, Some(100), true, Some("report")).expect("count");
         assert_eq!(total, 2);
-        let page1 = list_file_assets_scoped(&db, None, Some(100), true, Some("report"), 1, 0).expect("p1");
+        let page1 =
+            list_file_assets_scoped(&db, None, Some(100), true, Some("report"), 1, 0).expect("p1");
         assert_eq!(page1.len(), 1);
         assert!(page1[0].file_name.contains("report"));
     }

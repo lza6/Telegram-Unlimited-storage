@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>分享管理 · Telegram Drive API</title>
+  <meta name="description" content="Telegram Drive 分享管理 — 创建、复制与撤销可下载分享链接。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="分享管理 · Telegram Drive API" />
+  <meta property="og:description" content="Telegram Drive 分享管理 — 创建、复制与撤销可下载分享链接。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="分享管理 · Telegram Drive API" />
+  <meta name="twitter:description" content="Telegram Drive 分享管理 — 创建、复制与撤销可下载分享链接。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/shares.html" />
+  <script src="/assets/page-meta.js"></script>
+  <link rel="stylesheet" href="/assets/admin.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <strong>Telegram Drive</strong>
+      <nav style="margin-top:20px">
+        <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
+        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/shares.html" data-nav="shares">分享管理</a>
+        <a href="/settings.html" data-nav="settings">服务设置</a>
+        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
+        <a href="/docs.html" data-nav="docs">API 文档</a>
+        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+      </nav>
+    </aside>
+    <section class="content">
+      <div class="head-row">
+        <h2>分享链接</h2>
+        <button type="button" id="refresh-shares" class="btn-secondary btn-sm">刷新</button>
+      </div>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+      <div id="service-banner" class="service-banner" hidden role="alert" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.35);color:#fde68a;font-size:0.9rem"></div>
+      <div class="settings-block">
+        <h3>创建分享</h3>
+        <form id="create-share-form" class="share-create-form">
+          <label for="share-message-id">Message ID</label>
+          <input type="number" id="share-message-id" required placeholder="文件 message_id" />
+          <label for="share-file-name">文件名</label>
+          <input type="text" id="share-file-name" required placeholder="example.zip" />
+          <label for="share-file-size">大小（字节，可选）</label>
+          <input type="number" id="share-file-size" min="0" placeholder="0" />
+          <label for="share-folder-id">Folder ID（可选）</label>
+          <input type="number" id="share-folder-id" placeholder="留空表示 Saved Messages" />
+          <label for="share-password">访问密码（可选）</label>
+          <input type="password" id="share-password" placeholder="留空表示无密码" autocomplete="new-password" />
+          <label for="share-expiry-hours">有效期（小时，可选）</label>
+          <input type="number" id="share-expiry-hours" min="1" placeholder="留空表示永不过期" />
+          <button type="submit" class="btn-secondary btn-sm" style="margin-top:8px;width:auto">创建并复制链接</button>
+        </form>
+        <p class="muted">也可在 <a href="/files.html">文件列表</a> 行内点「分享」。</p>
+      </div>
+      <div class="settings-block">
+        <label for="share-domain">复制链接时替换域名（Tailscale / 公网 IP）</label>
+        <input type="text" id="share-domain" placeholder="Headless: 100.x.x.x:1334 或 drive.example.com" />
+        <p class="muted">与「服务设置」共用服务端 <code>ui_settings.json</code>，全浏览器同步。</p>
+      </div>
+      <div id="shares-list"></div>
+    </section>
+  </div>
+  <script src="/assets/api-client.js"></script>
+  <script src="/assets/share-domain.js"></script>
+  <script src="/assets/shares-core.js"></script>
+</body>
+</html>

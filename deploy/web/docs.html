@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Telegram Drive REST API 与 OpenAPI 规范 — 文件、上传、分享与认证接口。" />
+  <meta name="robots" content="index, follow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="API 文档 · Telegram Drive" />
+  <meta property="og:description" content="Telegram Drive REST API 与 OpenAPI 规范 — 文件、上传、分享与认证接口。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="API 文档 · Telegram Drive" />
+  <meta name="twitter:description" content="Telegram Drive REST API 与 OpenAPI 规范 — 文件、上传、分享与认证接口。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/docs.html" />
+  <script src="/assets/page-meta.js"></script>
+  <title>API 文档 · Telegram Drive</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <link rel="stylesheet" href="/assets/admin.css" />
+  <style>
+    #swagger-ui { background: #fff; border-radius: 12px; margin-top: 16px; }
+    .top-bar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    .top-bar button { width: auto; padding: 8px 16px; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <strong>Telegram Drive</strong>
+      <nav style="margin-top:20px">
+        <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
+        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/shares.html" data-nav="shares">分享管理</a>
+        <a href="/settings.html" data-nav="settings">服务设置</a>
+        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
+        <a href="/docs.html" data-nav="docs">API 文档</a>
+        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+      </nav>
+      <p class="muted" style="margin-top:16px;font-size:0.8rem">OpenAPI 可公开浏览；调用 API 需 <code>X-API-Key</code> 或控制台密码。</p>
+    </aside>
+    <section class="content">
+      <h2>REST API 文档 <span id="api-version" class="badge">OpenAPI …</span></h2>
+      <p class="muted">OpenAPI 3 · Headless 全量 API；桌面可选 REST 子集见仓库 <code>docs/DESKTOP-API.md</code></p>
+      <div class="top-bar">
+        <button type="button" onclick="window.open('/docs/openapi.json','_blank')">下载 openapi.json</button>
+        <button type="button" id="copy-health">复制健康检查 curl</button>
+      </div>
+      <div id="swagger-ui"></div>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/assets/api-client.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    TdApi.initSidebar('docs');
+    document.getElementById('copy-health').onclick = async function () {
+      var curl = 'curl -s ' + location.origin + '/api/v1/health';
+      try {
+        await TdApi.copyToClipboard(curl);
+        TdApi.showToast('已复制健康检查 curl');
+      } catch (e) {
+        TdApi.showToast(String(e.message || e), 'err');
+      }
+    };
+    fetch('/docs/openapi.json')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var el = document.getElementById('api-version');
+        if (el && j.info) el.textContent = 'OpenAPI ' + (j.info.version || '');
+      })
+      .catch(function () {
+        var el = document.getElementById('api-version');
+        if (el) el.textContent = 'OpenAPI 版本加载失败';
+        TdApi.showToast('无法加载 OpenAPI 版本信息', 'info');
+      });
+    window.ui = SwaggerUIBundle({
+      url: '/docs/openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: 'BaseLayout',
+    });
+  </script>
+</body>
+</html>

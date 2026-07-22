@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Telegram Drive API 入口 — 重定向至管理登录。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <title>Telegram Drive API</title>
+  <script>
+    (function () {
+      var path = location.pathname + location.search;
+      if (path === '/' || path === '/index.html') {
+        location.replace('/login.html');
+      } else {
+        location.replace('/login.html?next=' + encodeURIComponent(path));
+      }
+    })();
+  </script>
+</head>
+<body>
+  <p>正在跳转到 <a href="/login.html">管理登录</a> …</p>
+</body>
+</html>

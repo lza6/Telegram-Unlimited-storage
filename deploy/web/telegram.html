@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Telegram 登录 · Telegram Drive API</title>
+  <meta name="description" content="Telegram Drive User 会话登录 — 验证码或二维码绑定 GramJS 传输。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="Telegram 登录 · Telegram Drive API" />
+  <meta property="og:description" content="Telegram Drive User 会话登录 — 验证码或二维码绑定 GramJS 传输。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Telegram 登录 · Telegram Drive API" />
+  <meta name="twitter:description" content="Telegram Drive User 会话登录 — 验证码或二维码绑定 GramJS 传输。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/telegram.html" />
+  <script src="/assets/page-meta.js"></script>
+  <link rel="stylesheet" href="/assets/admin.css" />
+  <style>
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .tabs button { width: auto; flex: 1; margin: 0; background: #243044; }
+    .tabs button.active { background: var(--accent); }
+    #qr-box { word-break: break-all; font-size: 0.85rem; background: #0f1419; padding: 12px; border-radius: 8px; }
+    .auth-panel { max-width: 520px; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <strong>Telegram Drive</strong>
+      <nav style="margin-top:20px">
+        <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
+        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/shares.html" data-nav="shares">分享管理</a>
+        <a href="/settings.html" data-nav="settings">服务设置</a>
+        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
+        <a href="/docs.html" data-nav="docs">API 文档</a>
+        <a href="/telegram.html" data-nav="telegram" class="active">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+      </nav>
+    </aside>
+    <section class="content auth-panel">
+      <h2>绑定 Telegram 账号</h2>
+      <p class="muted">User 模式需绑定 Telegram 用户；Bot 模式无需此步骤。</p>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+      <div id="admin-alert" class="notice notice-err hidden" role="alert"></div>
+
+      <div class="tabs">
+        <button type="button" id="tab-phone" class="active">手机验证码</button>
+        <button type="button" id="tab-qr">二维码</button>
+      </div>
+      <section id="panel-phone">
+        <form id="phone-form">
+          <fieldset id="phone-fieldset">
+          <label for="dial-code">国家/地区</label>
+          <select id="dial-code" name="dial" aria-describedby="phone-hint">
+            <option value="86" selected>中国 +86</option>
+            <option value="852">香港 +852</option>
+            <option value="853">澳门 +853</option>
+            <option value="886">台湾 +886</option>
+            <option value="1">美国/加拿大 +1</option>
+            <option value="44">英国 +44</option>
+            <option value="81">日本 +81</option>
+            <option value="82">韩国 +82</option>
+            <option value="65">新加坡 +65</option>
+            <option value="60">马来西亚 +60</option>
+            <option value="61">澳大利亚 +61</option>
+            <option value="49">德国 +49</option>
+            <option value="33">法国 +33</option>
+            <option value="7">俄罗斯 +7</option>
+            <option value="91">印度 +91</option>
+            <option value="62">印度尼西亚 +62</option>
+            <option value="66">泰国 +66</option>
+            <option value="84">越南 +84</option>
+            <option value="63">菲律宾 +63</option>
+            <option value="custom">其他（下方直接填 + 开头完整号码）</option>
+          </select>
+          <label for="local-phone">手机号</label>
+          <div class="input-row">
+            <input id="local-phone" name="local" type="tel" inputmode="tel" autocomplete="tel-national"
+              placeholder="13800138000" required aria-describedby="phone-hint" />
+          </div>
+          <p id="phone-hint" class="muted" style="margin-top:-8px">示例：选「中国 +86」后填 <strong>13800138000</strong></p>
+          <button type="submit" id="btn-send-code">发送验证码</button>
+          </fieldset>
+        </form>
+        <form id="code-form" class="hidden">
+          <label for="login-code">短信验证码</label>
+          <input id="login-code" name="code" inputmode="numeric" autocomplete="one-time-code" required />
+          <button type="submit">确认登录</button>
+        </form>
+        <form id="password-form" class="hidden">
+          <label for="tg-password">两步验证密码</label>
+          <input type="text" name="username" value="telegram" autocomplete="username" class="sr-only" tabindex="-1" aria-hidden="true" />
+          <input id="tg-password" name="password" type="password" autocomplete="current-password" required />
+          <button type="submit">提交密码</button>
+        </form>
+      </section>
+      <section id="panel-qr" class="hidden">
+        <button type="button" id="qr-start">生成登录二维码</button>
+        <p id="qr-box" class="muted hidden"></p>
+        <p class="muted">用 Telegram App 扫描二维码，然后自动轮询状态。</p>
+        <button type="button" id="qr-poll" class="hidden">检查是否已登录</button>
+      </section>
+      <p id="msg" class="muted" role="status"></p>
+    </section>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" crossorigin="anonymous"></script>
+  <script src="/assets/api-client.js"></script>
+  <script src="/assets/telegram-auth.js"></script>
+</body>
+</html>

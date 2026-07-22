@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>服务设置 · Telegram Drive API</title>
+  <meta name="description" content="Telegram Drive 服务设置 — API 密钥、传输模式、代理与分享域名。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/logo.svg" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Telegram Drive" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:title" content="服务设置 · Telegram Drive API" />
+  <meta property="og:description" content="Telegram Drive 服务设置 — API 密钥、传输模式、代理与分享域名。" />
+  <meta property="og:url" content="" data-td-og-url />
+  <meta property="og:image" content="" data-td-og-image />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="服务设置 · Telegram Drive API" />
+  <meta name="twitter:description" content="Telegram Drive 服务设置 — API 密钥、传输模式、代理与分享域名。" />
+  <link rel="canonical" href="" data-td-canonical data-td-path="/settings.html" />
+  <script src="/assets/page-meta.js"></script>
+  <link rel="stylesheet" href="/assets/admin.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <strong>Telegram Drive</strong>
+      <nav style="margin-top:20px">
+        <a href="/dashboard.html" data-nav="dashboard">概览 & 上传</a>
+        <a href="/files.html" data-nav="files">文件列表</a>
+        <a href="/shares.html" data-nav="shares">分享管理</a>
+        <a href="/settings.html" data-nav="settings">服务设置</a>
+        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
+        <a href="/docs.html" data-nav="docs">API 文档</a>
+        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
+        <button type="button" id="logout-btn" class="btn-secondary" style="margin-top:12px;width:100%">退出登录</button>
+      </nav>
+    </aside>
+    <section class="content">
+      <h2>服务设置</h2>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+      <div class="settings-block">
+        <h3>运行状态</h3>
+        <p id="settings-health" class="muted">检测中…</p>
+      </div>
+
+      <div class="settings-block">
+        <h3>传输模式</h3>
+        <p>当前：<strong id="transport-active">—</strong></p>
+        <p class="muted">切换后 Bot/User 行为不同；Bot 无需 User 登录。</p>
+        <div id="transport-modes" class="btn-row"></div>
+      </div>
+
+      <div class="settings-block">
+        <h3>文件索引（User 模式）</h3>
+        <p class="muted">切换传输模式或 Telegram 会话变更后，可在此手动重建本地文件索引。刷新/搜索时的后台重建不会弹 toast。</p>
+        <button type="button" id="rebuild-index-btn" class="btn-secondary btn-sm" style="width:auto">重建文件索引</button>
+      </div>
+
+      <div class="settings-block">
+        <h3>监控</h3>
+        <p class="muted" id="metrics-hint">检测 /metrics …</p>
+        <a id="metrics-link" href="/metrics" target="_blank" rel="noopener" class="btn-secondary btn-sm" style="display:none;width:auto">打开 Prometheus Metrics</a>
+      </div>
+
+      <div class="settings-block">
+        <h3>分享域名</h3>
+        <label for="share-domain-input">公网 / Tailscale 域名（写入服务端 ui_settings.json）</label>
+        <input type="text" id="share-domain-input" placeholder="Headless 网关: 100.x.x.x:1334（桌面应用请用 :14201）" />
+        <p class="muted">Headless 统一端口 1334；桌面独立应用流媒体 14201 — 见 <a href="/docs.html">API 文档</a> / README。</p>
+        <p class="muted">环境变量 BASE_URL：<code id="env-base-url">—</code></p>
+        <p class="muted">当前生效基址（API 请求 Host）：<code id="effective-base-url">—</code></p>
+        <p class="muted">分享链接基址（/d/* 实际生成）：<code id="effective-share-base-url">—</code></p>
+        <p class="muted">流媒体端口参考（桌面 REST）：<code id="effective-stream-base-url">—</code></p>
+        <button type="button" id="save-share-domain" class="btn-secondary btn-sm" style="width:auto;margin-top:8px">保存域名</button>
+      </div>
+
+      <div class="settings-block">
+        <h3>上传 / 分片配置（只读）</h3>
+        <p id="chunk-info" class="muted">加载中…</p>
+      </div>
+
+      <div class="settings-block">
+        <h3>Headless 网络（Docker）</h3>
+        <p class="muted">写入 <code>data_dir/network_settings.json</code>，与桌面端 VPN Optimizer 格式一致。</p>
+        <label><input type="checkbox" id="proxy-enabled" /> 启用 SOCKS5 代理</label>
+        <label for="proxy-host">SOCKS5 主机</label>
+        <input type="text" id="proxy-host" placeholder="127.0.0.1" />
+        <label for="proxy-port">端口</label>
+        <input type="number" id="proxy-port" min="1" max="65535" value="1080" />
+        <label for="proxy-username">用户名（可选）</label>
+        <input type="text" id="proxy-username" autocomplete="off" />
+        <label for="proxy-password">密码（可选，留空不修改）</label>
+        <input type="password" id="proxy-password" autocomplete="new-password" placeholder="已设置则显示为已配置" />
+        <label style="display:block;margin-top:8px"><input type="checkbox" id="vpn-enabled" /> 启用 VPN Optimizer</label>
+        <button type="button" id="save-network" class="btn-secondary btn-sm" style="width:auto;margin-top:12px">保存网络设置</button>
+      </div>
+
+      <div class="settings-block">
+        <h3>API 鉴权说明</h3>
+        <p class="muted">Web 控制台使用登录密码作为 <code>X-Access-Pwd</code> 调用 <code>/api/v1/*</code>。外部集成请使用 <code>X-API-Key</code>（见 OpenAPI / docs）。</p>
+      </div>
+    </section>
+  </div>
+  <script src="/assets/api-client.js"></script>
+  <script src="/assets/share-domain.js"></script>
+  <script src="/assets/web-pure.js"></script>
+  <script src="/assets/settings-core.js"></script>
+</body>
+</html>

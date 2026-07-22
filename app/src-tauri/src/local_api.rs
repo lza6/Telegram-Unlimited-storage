@@ -77,6 +77,28 @@ pub async fn desktop_uses_asset_index(
 }
 
 #[cfg(not(feature = "headless-server"))]
+pub async fn desktop_is_bot_mode(
+    app: &tauri::AppHandle,
+    db_pool: &crate::db::DbConnection,
+) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::commands::api_settings::load_settings_at(&data_dir);
+    let config = crate::server_config::for_desktop_api(
+        data_dir.clone(),
+        settings.port,
+        settings.key_hash.clone(),
+        crate::STREAM_PORT,
+        None,
+    );
+    let transport = crate::telegram_transport::TransportHandle::new(
+        &config.data_dir,
+        config.default_transport_mode,
+    );
+    let mode = transport.effective_mode(&config).await;
+    Ok(mode == crate::telegram_transport::TelegramTransportMode::Bot)
+}
+
+#[cfg(not(feature = "headless-server"))]
 pub async fn fetch_file_to_path(
     bridge: &LocalApiBridge,
     message_id: i32,

@@ -154,7 +154,6 @@ pub fn revoke_share(db_pool: &DbConnection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Revoke only if share belongs to `owner_id` (multi-tenant isolation).
 pub fn revoke_share_for_owner(
     db_pool: &DbConnection,
     id: &str,
@@ -179,6 +178,37 @@ pub fn revoke_share_for_owner(
     }
     revoke_share(db_pool, id)?;
     Ok(true)
+}
+
+/// Revoke all active share links pointing at a deleted or de-indexed file.
+pub fn revoke_shares_for_message_id(
+    db_pool: &DbConnection,
+    message_id: i32,
+    owner_id: Option<&str>,
+) -> Result<usize, String> {
+    let conn = db_pool.get().map_err(|e| e.to_string())?;
+    let changed = if let Some(owner) = owner_id {
+        let mut stmt = conn
+            .prepare(
+                "UPDATE shared_links SET revoked = 1
+                 WHERE message_id = ? AND revoked = 0 AND owner_id = ?",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.bind((1, message_id as i64))
+            .map_err(|e| e.to_string())?;
+        stmt.bind((2, owner)).map_err(|e| e.to_string())?;
+        stmt.next().map_err(|e| e.to_string())?;
+        conn.change_count()
+    } else {
+        let mut stmt = conn
+            .prepare("UPDATE shared_links SET revoked = 1 WHERE message_id = ? AND revoked = 0")
+            .map_err(|e| e.to_string())?;
+        stmt.bind((1, message_id as i64))
+            .map_err(|e| e.to_string())?;
+        stmt.next().map_err(|e| e.to_string())?;
+        conn.change_count()
+    };
+    Ok(changed as usize)
 }
 
 /// Re-export cleanup function for convenience.
@@ -211,6 +241,30 @@ mod tests {
         let listed = list_shares(&db, "http://test.local", Some("tenant:test")).expect("list");
         assert_eq!(listed.len(), 1);
         revoke_share(&db, &info.id).expect("revoke");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn revoke_shares_for_message_id_revokes_active_links() {
+        let dir = std::env::temp_dir().join(format!("td-share-rev-{}", uuid::Uuid::new_v4()));
+        let db = init_db_at(&dir).expect("db");
+        let info = create_share(
+            &db,
+            "http://test.local",
+            None,
+            99,
+            "gone.bin".to_string(),
+            1,
+            None,
+            None,
+            None,
+        )
+        .expect("share");
+        let n = revoke_shares_for_message_id(&db, 99, None).expect("revoke");
+        assert_eq!(n, 1);
+        let listed = list_shares(&db, "http://test.local", None).expect("list");
+        assert!(listed.is_empty());
+        let _ = revoke_shares_for_message_id(&db, 99, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

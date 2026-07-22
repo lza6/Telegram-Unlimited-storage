@@ -94,6 +94,22 @@ pub fn resolve_caller(
     CallerIdentity::Anonymous
 }
 
+/// Resolve an authenticated caller and fail closed when authentication and
+/// owner scoping disagree. In multi-tenant mode a global API key must never
+/// authenticate successfully and then become an anonymous asset owner.
+pub fn resolve_authenticated_caller(
+    req: &HttpRequest,
+    config: &ServerConfig,
+    db: &DbConnection,
+) -> Result<CallerIdentity, &'static str> {
+    let caller = resolve_caller(req, config, db);
+    if matches!(caller, CallerIdentity::Anonymous) {
+        Err("authenticated request has no tenant or administrator identity")
+    } else {
+        Ok(caller)
+    }
+}
+
 pub fn api_key_tenant(
     req: &HttpRequest,
     db: &DbConnection,
@@ -175,5 +191,15 @@ mod tests {
             .insert_header(("X-Access-Pwd", config.access_pwd.as_str()))
             .to_http_request();
         assert_eq!(resolve_caller(&req, &config, &db), CallerIdentity::Admin);
+    }
+
+    #[test]
+    fn authenticated_caller_rejects_unscoped_global_key_in_multi_tenant_mode() {
+        let config = crate::server_config::test_config();
+        let db = test_db();
+        let req = TestRequest::default()
+            .insert_header(("X-API-Key", "test-api-key"))
+            .to_http_request();
+        assert!(resolve_authenticated_caller(&req, &config, &db).is_err());
     }
 }

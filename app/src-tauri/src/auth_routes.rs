@@ -4,6 +4,7 @@ use grammers_client::SignInError;
 use grammers_tl_types as tl;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::commands::TelegramState;
 use crate::server_config::ServerConfig;
@@ -129,12 +130,53 @@ mod phone_tests {
     }
 }
 
-/// True when User-mode Telegram client exists and `get_me()` succeeds (same bar as auth status).
-pub async fn user_telegram_connected(tg_state: &Arc<crate::commands::TelegramState>) -> bool {
-    match tg_state.client.lock().await.clone() {
-        Some(client) => client.get_me().await.is_ok(),
-        None => false,
+const USER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn user_telegram_identity(tg_state: &Arc<crate::commands::TelegramState>) -> Option<String> {
+    if tg_state.client.lock().await.is_none() {
+        tg_state.user_probe_cache.record(None).await;
+        return None;
     }
+    if let Some(cached) = tg_state.user_probe_cache.cached().await {
+        return cached;
+    }
+
+    let _probe_guard = tg_state.user_probe_cache.acquire_probe_lock().await;
+    if let Some(cached) = tg_state.user_probe_cache.cached().await {
+        return cached;
+    }
+    let Some(client) = tg_state.client.lock().await.clone() else {
+        tg_state.user_probe_cache.record(None).await;
+        return None;
+    };
+
+    let user = match tokio::time::timeout(USER_PROBE_TIMEOUT, client.get_me()).await {
+        Ok(Ok(me)) => Some(
+            format!(
+                "{} {}",
+                me.first_name().unwrap_or(""),
+                me.last_name().unwrap_or("")
+            )
+            .trim()
+            .to_string(),
+        ),
+        Ok(Err(error)) => {
+            log::warn!("User Telegram readiness probe failed: {error}");
+            None
+        }
+        Err(_) => {
+            log::warn!("User Telegram readiness probe timed out");
+            None
+        }
+    };
+    tg_state.user_probe_cache.record(user.clone()).await;
+    user
+}
+
+/// Cached, single-flight User-mode readiness. Failures are negatively cached
+/// so public health probes cannot amplify Telegram `get_me()` traffic.
+pub async fn user_telegram_connected(tg_state: &Arc<crate::commands::TelegramState>) -> bool {
+    user_telegram_identity(tg_state).await.is_some()
 }
 
 #[get("/api/v1/auth/status")]
@@ -182,26 +224,16 @@ async fn auth_status(
         });
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    if let Some(client) = client_opt {
-        if let Ok(me) = client.get_me().await {
-            let name = format!(
-                "{} {}",
-                me.first_name().unwrap_or(""),
-                me.last_name().unwrap_or("")
-            )
-            .trim()
-            .to_string();
-            return HttpResponse::Ok().json(AuthStatus {
-                connected: true,
-                user: Some(name),
-                credentials_ok,
-                transport_mode: mode.as_str().to_string(),
-                bot_configured,
-                user_configured,
-                hint,
-            });
-        }
+    if let Some(name) = user_telegram_identity(&tg_state).await {
+        return HttpResponse::Ok().json(AuthStatus {
+            connected: true,
+            user: Some(name),
+            credentials_ok,
+            transport_mode: mode.as_str().to_string(),
+            bot_configured,
+            user_configured,
+            hint,
+        });
     }
     HttpResponse::Ok().json(AuthStatus {
         connected: false,

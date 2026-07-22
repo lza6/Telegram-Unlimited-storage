@@ -384,7 +384,7 @@ impl StorageFactory {
     /// Check if a specific backend is healthy
     pub async fn health_check_backend(&self, backend_type: BackendType) -> Result<bool, String> {
         match backend_type {
-            BackendType::Telegram => Ok(true), // Checked via /api/v1/health
+            BackendType::Telegram => Ok(true), // Runtime traffic readiness is checked via /health/ready.
             _ => match &self.fallback {
                 Some(fb) if fb.backend_type() == backend_type => fb.health_check().await,
                 _ => Ok(false),

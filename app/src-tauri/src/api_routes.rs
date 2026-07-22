@@ -4,7 +4,9 @@ use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use futures_util::StreamExt;
 use grammers_client::types::{Media, Peer};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Shared state for the API server — holds the key hash for auth checks
 pub struct ApiState {
@@ -35,34 +37,247 @@ fn json_error(code: &str, message: &str, status: u16) -> HttpResponse {
     HttpResponse::build(status).json(body)
 }
 
+async fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| "SAGA_STAGING_READ_FAILED".to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 256 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|_| "SAGA_STAGING_READ_FAILED".to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+async fn persist_saga_source(
+    original: &std::path::Path,
+    target: &std::path::Path,
+    expected_size: i64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    async fn validate_source(
+        path: &std::path::Path,
+        expected_size: i64,
+        expected_sha256: &str,
+    ) -> Result<bool, String> {
+        let size = tokio::fs::metadata(path)
+            .await
+            .map_err(|_| "SAGA_STAGING_READ_FAILED".to_string())?
+            .len() as i64;
+        let digest = sha256_file(path).await?;
+        Ok(size == expected_size && digest == expected_sha256)
+    }
+
+    if target.exists() {
+        return if validate_source(target, expected_size, expected_sha256).await? {
+            Ok(())
+        } else {
+            Err("SAGA_STAGING_CONFLICT".to_string())
+        };
+    }
+    let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    if tokio::fs::copy(original, &temporary).await.is_err() {
+        return Err("SAGA_STAGING_COPY_FAILED".to_string());
+    }
+    let result = async {
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .await
+            .map_err(|_| "SAGA_STAGING_WRITE_FAILED".to_string())?;
+        file.sync_all()
+            .await
+            .map_err(|_| "SAGA_STAGING_SYNC_FAILED".to_string())?;
+        drop(file);
+        if !validate_source(&temporary, expected_size, expected_sha256).await? {
+            return Err("SAGA_STAGING_COPY_MISMATCH".to_string());
+        }
+        match crate::postgres_upload_saga::atomic_promote(&temporary, target).await {
+            Ok(()) => {
+                if let Some(parent) = target.parent() {
+                    crate::postgres_upload_saga::sync_parent_directory(parent).await?;
+                }
+                Ok(())
+            }
+            Err(_) if target.exists() => {
+                if validate_source(target, expected_size, expected_sha256).await? {
+                    Ok(())
+                } else {
+                    Err("SAGA_STAGING_CONFLICT".to_string())
+                }
+            }
+            Err(_) => Err("SAGA_STAGING_PROMOTE_FAILED".to_string()),
+        }
+    }
+    .await;
+    if temporary.exists() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
+}
+async fn compensate_saga_upload(
+    control_plane: &crate::postgres_control_plane::PostgresControlPlane,
+    pending: &crate::postgres_control_plane::PendingUpload,
+    receipt: &crate::telegram_transport::TelegramUploadReceipt,
+    folder_id: Option<i64>,
+    tg_state: &TelegramState,
+    net_config: &Arc<crate::vpn_optimizer::NetworkConfig>,
+    config: &crate::server_config::ServerConfig,
+    db: &crate::db::DbConnection,
+    transport: &crate::telegram_transport::TransportHandle,
+    error_code: &str,
+    recovery_record: &crate::postgres_upload_saga::UploadRecoveryRecord,
+) -> Result<(), String> {
+    let data_dir = &config.data_dir;
+    crate::postgres_upload_saga::advance_upload_recovery_record(
+        data_dir,
+        recovery_record,
+        crate::postgres_upload_saga::UploadRecoveryPhase::CompensationPending,
+        Some(error_code),
+    )
+    .await?;
+    control_plane
+        .mark_compensation_pending(pending, error_code, None)
+        .await?;
+    match crate::http_upload::compensate_uploaded_receipt(
+        receipt,
+        folder_id,
+        tg_state,
+        net_config,
+        config,
+        db,
+        transport,
+        &recovery_record.transport_mode,
+    )
+    .await
+    {
+        Ok(()) => {
+            crate::postgres_upload_saga::advance_upload_recovery_record(
+                data_dir,
+                recovery_record,
+                crate::postgres_upload_saga::UploadRecoveryPhase::DeleteConfirmed,
+                None,
+            )
+            .await?;
+            control_plane
+                .mark_compensation_delete_confirmed(pending)
+                .await?;
+            control_plane.mark_compensated(pending).await?;
+            crate::postgres_upload_saga::clear_upload_recovery_records(data_dir, &pending.job_id)
+                .await
+        }
+        Err(delete_error) => {
+            let delete_error: String = delete_error.chars().take(512).collect();
+            crate::postgres_upload_saga::advance_upload_recovery_record(
+                data_dir,
+                recovery_record,
+                crate::postgres_upload_saga::UploadRecoveryPhase::CompensationPending,
+                Some(&delete_error),
+            )
+            .await?;
+            control_plane
+                .mark_compensation_pending(
+                    pending,
+                    error_code,
+                    Some(&format!("Telegram delete failed: {delete_error}")),
+                )
+                .await?;
+            Err("UPLOAD_COMPENSATION_PENDING".to_string())
+        }
+    }
+}
+async fn compensate_recorded_without_journal(
+    control_plane: &crate::postgres_control_plane::PostgresControlPlane,
+    pending: &crate::postgres_control_plane::PendingUpload,
+    receipt: &crate::telegram_transport::TelegramUploadReceipt,
+    folder_id: Option<i64>,
+    tg_state: &TelegramState,
+    net_config: &Arc<crate::vpn_optimizer::NetworkConfig>,
+    config: &crate::server_config::ServerConfig,
+    db: &crate::db::DbConnection,
+    transport: &crate::telegram_transport::TransportHandle,
+    error_code: &str,
+    expected_transport_mode: &str,
+) -> Result<(), String> {
+    control_plane
+        .mark_compensation_pending(pending, error_code, None)
+        .await?;
+    match crate::http_upload::compensate_uploaded_receipt(
+        receipt,
+        folder_id,
+        tg_state,
+        net_config,
+        config,
+        db,
+        transport,
+        expected_transport_mode,
+    )
+    .await
+    {
+        Ok(()) => {
+            control_plane
+                .mark_compensation_delete_confirmed(pending)
+                .await?;
+            control_plane.mark_compensated(pending).await
+        }
+        Err(delete_error) => {
+            let delete_error: String = delete_error.chars().take(512).collect();
+            control_plane
+                .mark_compensation_pending(
+                    pending,
+                    error_code,
+                    Some(&format!("Telegram delete failed: {delete_error}")),
+                )
+                .await?;
+            Err("UPLOAD_COMPENSATION_PENDING".to_string())
+        }
+    }
+}
 fn include_field(fields: Option<&Vec<String>>, name: &str) -> bool {
     fields.map(|f| f.iter().any(|x| x == name)).unwrap_or(true)
 }
 
-/// Validate API access: tenant key, global `X-API-Key`, or Web 管理台 `X-Access-Pwd`.
+/// Validate API access and return the identity used by owner-scoped handlers.
 pub(crate) fn check_auth(
     req: &HttpRequest,
     api_state: &web::Data<ApiState>,
     db: &crate::db::DbConnection,
     config: &crate::server_config::ServerConfig,
-) -> Result<(), HttpResponse> {
+) -> Result<crate::tenant_auth::CallerIdentity, HttpResponse> {
+    if crate::admin_routes::check_access_pwd(req, config) {
+        return Ok(crate::tenant_auth::CallerIdentity::Admin);
+    }
+
     if config.multi_tenant_enabled {
-        if crate::tenant_auth::api_key_tenant(req, db, config).is_some() {
-            return Ok(());
-        }
+        return crate::tenant_auth::resolve_authenticated_caller(req, config, db).map_err(|_| {
+            json_error(
+                "UNSCOPED_API_KEY",
+                "X-API-Key must belong to an active tenant in multi-tenant mode",
+                401,
+            )
+        });
     }
 
     if let Some(key) = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok()) {
         if let Some(h) = &api_state.key_hash {
             if crate::commands::api_settings::verify_and_upgrade_key(key, h, &config.data_dir) {
-                return Ok(());
+                return Ok(crate::tenant_auth::CallerIdentity::Tenant {
+                    tenant_id: "default".to_string(),
+                });
             }
             return Err(json_error("UNAUTHORIZED", "Invalid API key", 401));
         }
-    }
-
-    if crate::admin_routes::check_access_pwd(req, config) {
-        return Ok(());
     }
 
     if req.headers().get("X-API-Key").is_some() {
@@ -84,25 +299,45 @@ pub(crate) fn check_auth(
     ))
 }
 
-fn api_caller(
-    req: &HttpRequest,
+fn authorize_message_ids(
     db: &crate::db::DbConnection,
     config: &crate::server_config::ServerConfig,
-) -> crate::tenant_auth::CallerIdentity {
-    crate::tenant_auth::api_key_tenant(req, db, config)
-        .map(|tenant_id| crate::tenant_auth::CallerIdentity::Tenant { tenant_id })
-        .unwrap_or(crate::tenant_auth::CallerIdentity::Tenant {
-            tenant_id: "default".to_string(),
-        })
+    caller: &crate::tenant_auth::CallerIdentity,
+    ids: &[i32],
+) -> Result<(), HttpResponse> {
+    if !config.multi_tenant_enabled {
+        return Ok(());
+    }
+    for message_id in ids {
+        if crate::file_access::assert_download_allowed(db, *message_id, caller, true).is_err() {
+            return Err(json_error(
+                "FORBIDDEN",
+                "Access denied for one or more files",
+                403,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn caller_owner_filter(
+    caller: &crate::tenant_auth::CallerIdentity,
+    multi_tenant: bool,
+) -> Option<String> {
+    if !multi_tenant || matches!(caller, crate::tenant_auth::CallerIdentity::Admin) {
+        None
+    } else {
+        Some(caller.owner_id_for_asset())
+    }
 }
 
 fn asset_record_to_api_file(r: crate::db::FileAssetRecord) -> ApiFile {
     ApiFile {
         id: r.message_id as i64,
         folder_id: r.folder_id,
-        name: r.file_name,
+        name: r.file_name.clone(),
         size: r.file_size.max(0) as u64,
-        mime_type: None,
+        mime_type: crate::http_upload::guess_mime_from_name(&r.file_name),
         created_at: chrono::DateTime::from_timestamp(r.created_at, 0)
             .map(|d| d.to_rfc3339())
             .unwrap_or_else(|| r.created_at.to_string()),
@@ -128,9 +363,9 @@ fn file_from_bot_map(record: crate::db::BotFileRecord, folder_id: Option<i64>) -
     ApiFile {
         id: record.message_id as i64,
         folder_id,
-        name: record.file_name,
+        name: record.file_name.clone(),
         size: record.file_size,
-        mime_type: None,
+        mime_type: crate::http_upload::guess_mime_from_name(&record.file_name),
         created_at: chrono::Utc::now().to_rfc3339(),
     }
 }
@@ -165,6 +400,15 @@ async fn api_health(
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
     upload_gate: web::Data<Arc<crate::upload_gate::UploadGate>>,
 ) -> impl Responder {
+    HttpResponse::Ok().json(build_health_response(&tg_state, &auth, &transport, &upload_gate).await)
+}
+
+async fn build_health_response(
+    tg_state: &web::Data<Arc<TelegramState>>,
+    auth: &web::Data<crate::auth_routes::AuthRouteState>,
+    transport: &web::Data<Arc<crate::telegram_transport::TransportHandle>>,
+    upload_gate: &web::Data<Arc<crate::upload_gate::UploadGate>>,
+) -> HealthResponse {
     let mode = transport.effective_mode(&auth.config).await;
     let ready = match mode {
         crate::telegram_transport::TelegramTransportMode::Bot => {
@@ -174,7 +418,9 @@ async fn api_health(
             crate::auth_routes::user_telegram_connected(&tg_state).await
         }
     };
-    HttpResponse::Ok().json(HealthResponse {
+    HealthResponse {
+        // Compatibility endpoint keeps the legacy status contract; strict
+        // readiness is expressed by `ready` and `/health/ready` HTTP status.
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         telegram_connected: ready,
@@ -188,14 +434,41 @@ async fn api_health(
         transport_mode: mode.as_str().to_string(),
         bot_configured: crate::telegram_transport::TransportHandle::bot_configured(&auth.config),
         user_configured: crate::telegram_transport::TransportHandle::user_configured(&auth.config),
-        upload_queue: upload_gate.status(),
+        upload_queue: upload_gate.status_snapshot(),
         metadata_cache_enabled: auth.config.metadata_cache_enabled,
         metadata_cache_ttl_secs: auth.config.metadata_cache_ttl_secs,
         public_file_id_download: auth.config.public_file_id_download,
         upload_share_ttl_hours: auth.config.upload_share_ttl_hours,
         presigned_download_enabled: auth.config.download_signing_secret.is_some(),
         multi_tenant_enabled: auth.config.multi_tenant_enabled,
-    })
+    }
+}
+
+/// Process liveness only. Dependency outages must not restart a healthy process.
+#[get("/health/live")]
+async fn health_live() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "alive",
+        "uptime_secs": crate::server_uptime::uptime_secs(),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+/// Strict traffic readiness. A disconnected Telegram transport returns 503.
+#[get("/health/ready")]
+async fn health_ready(
+    tg_state: web::Data<Arc<TelegramState>>,
+    auth: web::Data<crate::auth_routes::AuthRouteState>,
+    transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
+    upload_gate: web::Data<Arc<crate::upload_gate::UploadGate>>,
+) -> impl Responder {
+    let mut response = build_health_response(&tg_state, &auth, &transport, &upload_gate).await;
+    if response.ready && upload_gate.ready() {
+        HttpResponse::Ok().json(response)
+    } else {
+        response.status = "not_ready".to_string();
+        HttpResponse::ServiceUnavailable().json(response)
+    }
 }
 
 fn metadata_cache_header(
@@ -320,9 +593,10 @@ async fn api_list_files(
     auth: web::Data<crate::auth_routes::AuthRouteState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
 
     let mode = transport.effective_mode(&auth.config).await;
     let use_asset_index = uses_asset_index(mode, &auth.config, &db);
@@ -334,7 +608,7 @@ async fn api_list_files(
         let (has_folder_id, parsed_folder_id) = parse_files_folder_scope(req.query_string());
 
         let owner_id = if auth.config.multi_tenant_enabled {
-            Some(api_caller(&req, &db, &auth.config).owner_id_for_asset())
+            Some(caller.owner_id_for_asset())
         } else {
             None
         };
@@ -646,13 +920,13 @@ async fn api_get_file(
     auth: web::Data<crate::auth_routes::AuthRouteState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
 
     let message_id = path.into_inner() as i32;
     if auth.config.multi_tenant_enabled {
-        let caller = api_caller(&req, &db, &auth.config);
         if let Err(msg) =
             crate::file_access::assert_download_allowed(&db, message_id, &caller, true)
         {
@@ -728,35 +1002,111 @@ async fn api_download_file(
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
     net_config: web::Data<Arc<crate::vpn_optimizer::NetworkConfig>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
 
     let message_id = path.into_inner() as i32;
+    let mut canonical_locator = None;
     if auth.config.multi_tenant_enabled {
-        let caller = api_caller(&req, &db, &auth.config);
-        if let Err(msg) =
-            crate::file_access::assert_download_allowed(&db, message_id, &caller, true)
-        {
-            return json_error("FORBIDDEN", &msg, 403);
+        let owner_scope = match &caller {
+            crate::tenant_auth::CallerIdentity::Tenant { .. } => Some(caller.owner_id_for_asset()),
+            crate::tenant_auth::CallerIdentity::Admin => None,
+            crate::tenant_auth::CallerIdentity::Anonymous => {
+                return json_error("FORBIDDEN", "Anonymous download is not allowed", 403)
+            }
+        };
+        match crate::asset_locator::resolve(
+            &db,
+            message_id,
+            query.folder_id,
+            owner_scope.as_deref(),
+        ) {
+            Ok(crate::asset_locator::LocatorResolution::Found(locator)) => {
+                if !caller.can_access_owner(&locator.owner_id) {
+                    return json_error("FORBIDDEN", "Asset belongs to another tenant", 403);
+                }
+                canonical_locator = Some(locator);
+            }
+            Ok(crate::asset_locator::LocatorResolution::Ambiguous { .. }) => {
+                return json_error(
+                    "AMBIGUOUS_FILE_ID",
+                    "message_id resolves to multiple storage peers; specify folder_id",
+                    409,
+                )
+            }
+            Ok(crate::asset_locator::LocatorResolution::NotFound) => {
+                if let Err(message) =
+                    crate::file_access::assert_download_allowed(&db, message_id, &caller, true)
+                {
+                    return json_error("FORBIDDEN", &message, 403);
+                }
+            }
+            Err(error) => return json_error("ASSET_LOCATOR_FAILED", &error, 500),
         }
     }
 
-    match crate::http_download::download_message_stream(
-        &req,
-        message_id,
-        query.folder_id,
-        &tg_state,
-        false,
-        &auth.config,
-        &db,
-        &transport,
-        &net_config,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(r) => r,
+    let accounting = if let Some(locator) = canonical_locator.as_ref() {
+        let control_plane = match crate::postgres_control_plane::PostgresControlPlane::from_env() {
+            Ok(control_plane) => control_plane,
+            Err(error) => return json_error("DOWNLOAD_CONTROL_PLANE_FAILED", &error, 503),
+        };
+        let request_id = req
+            .headers()
+            .get("X-Request-ID")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty() && value.len() <= 200)
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        match control_plane
+            .begin_download(
+                &locator.owner_id,
+                locator,
+                &request_id,
+                locator.file_size.max(0) as u64,
+            )
+            .await
+        {
+            Ok(Some(context)) => Some((control_plane, context)),
+            Ok(None) => None,
+            Err(error) => return json_error("DOWNLOAD_PREFLIGHT_FAILED", &error, 503),
+        }
+    } else {
+        None
+    };
+
+    let result = if let Some(locator) = canonical_locator.as_ref() {
+        crate::http_download::download_asset_locator_stream(
+            &req,
+            locator,
+            &tg_state,
+            false,
+            &auth.config,
+            &db,
+            &transport,
+            &net_config,
+            accounting,
+            None,
+        )
+        .await
+    } else {
+        crate::http_download::download_message_stream(
+            &req,
+            message_id,
+            query.folder_id,
+            &tg_state,
+            false,
+            &auth.config,
+            &db,
+            &transport,
+            &net_config,
+        )
+        .await
+    };
+    match result {
+        Ok(response) => response,
+        Err(response) => response,
     }
 }
 
@@ -802,6 +1152,13 @@ struct BulkResponse {
     /// Per-ID successes when the backend can determine them (Bot partial delete, User full batch).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     succeeded_ids: Vec<i32>,
+    /// Active share links revoked while deleting indexed files.
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    shares_revoked: usize,
+}
+
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
 }
 
 #[post("/api/v1/files/bulk")]
@@ -814,9 +1171,10 @@ async fn api_bulk_files(
     auth: web::Data<crate::auth_routes::AuthRouteState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
 
     let ids: Vec<i32> = body
         .file_ids
@@ -856,6 +1214,11 @@ async fn api_bulk_files(
             }
         });
 
+    if let Err(response) = authorize_message_ids(&db, &auth.config, &caller, &ids) {
+        return response;
+    }
+    let owner_filter = caller_owner_filter(&caller, auth.config.multi_tenant_enabled);
+
     let mode = transport.effective_mode(&auth.config).await;
     if mode == crate::telegram_transport::TelegramTransportMode::Bot {
         if body.action != "delete" {
@@ -865,21 +1228,14 @@ async fn api_bulk_files(
                 400,
             );
         }
-        let owner_filter = if auth.config.multi_tenant_enabled {
-            Some(api_caller(&req, &db, &auth.config).owner_id_for_asset())
-        } else {
-            None
-        };
         let mut deleted = 0usize;
+        let mut shares_revoked = 0usize;
         let mut succeeded_ids: Vec<i32> = Vec::new();
         for mid in &ids {
-            if auth.config.multi_tenant_enabled {
-                let caller = api_caller(&req, &db, &auth.config);
-                if crate::file_access::assert_download_allowed(&db, *mid, &caller, true).is_err() {
-                    continue;
-                }
-            }
-            if crate::db::delete_file_asset(&db, *mid, owner_filter.as_deref()).unwrap_or(false) {
+            let result =
+                crate::file_access::purge_file_index_entry(&db, *mid, owner_filter.as_deref());
+            shares_revoked += result.shares_revoked;
+            if result.purged {
                 deleted += 1;
                 succeeded_ids.push(*mid);
             }
@@ -888,6 +1244,7 @@ async fn api_bulk_files(
             success: true,
             count: deleted,
             succeeded_ids,
+            shares_revoked,
         });
     }
 
@@ -906,10 +1263,19 @@ async fn api_bulk_files(
             if let Err(e) = client.delete_messages(&peer, &ids).await {
                 return json_error("DELETE_FAILED", &e.to_string(), 500);
             }
+            let mut shares_revoked = 0usize;
             for mid in &ids {
-                let _ = crate::db::delete_file_asset(&db, *mid, None);
+                let result =
+                    crate::file_access::purge_file_index_entry(&db, *mid, owner_filter.as_deref());
+                shares_revoked += result.shares_revoked;
             }
             crate::metadata_cache::invalidate_files(&db, source_folder);
+            return HttpResponse::Ok().json(BulkResponse {
+                success: true,
+                count: ids.len(),
+                succeeded_ids: ids.clone(),
+                shares_revoked,
+            });
         }
         "move" => {
             let source_peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await
@@ -981,6 +1347,7 @@ async fn api_bulk_files(
         success: true,
         count: ids.len(),
         succeeded_ids: ids.clone(),
+        shares_revoked: 0,
     })
 }
 
@@ -1003,9 +1370,10 @@ async fn api_search_files(
     auth: web::Data<crate::auth_routes::AuthRouteState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
 
     let search_q = match query.q.as_deref() {
         Some(q) if !q.trim().is_empty() => q.trim(),
@@ -1023,7 +1391,7 @@ async fn api_search_files(
 
     if uses_asset_index(mode, &auth.config, &db) {
         let owner = if auth.config.multi_tenant_enabled {
-            Some(api_caller(&req, &db, &auth.config).owner_id_for_asset())
+            Some(caller.owner_id_for_asset())
         } else {
             None
         };
@@ -1119,9 +1487,10 @@ async fn api_list_folders(
     auth: web::Data<crate::auth_routes::AuthRouteState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
-    }
+    let _caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
 
     let mode = transport.effective_mode(&auth.config).await;
     if mode == crate::telegram_transport::TelegramTransportMode::Bot {
@@ -1221,15 +1590,35 @@ async fn api_upload_file(
     upload_gate: web::Data<Arc<crate::upload_gate::UploadGate>>,
     share_state: web::Data<crate::share_api_routes::ShareApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+
+    let owner_id = caller.owner_id_for_asset();
+    let control_plane = match crate::postgres_control_plane::PostgresControlPlane::from_env() {
+        Ok(control_plane) => control_plane,
+        Err(error) => return json_error("CONTROL_PLANE_CONFIG_INVALID", &error, 503),
+    };
+    let idempotency_key = req
+        .headers()
+        .get("Idempotency-Key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if control_plane.enabled() && idempotency_key.is_none() {
+        return json_error(
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required when PostgreSQL control-plane mode is enabled",
+            400,
+        );
     }
 
-    let owner_id = api_caller(&req, &db, &auth.config).owner_id_for_asset();
-
-    let _file_slot = match upload_gate.try_acquire_file() {
+    // Wait for a whole-file slot rather than rejecting immediately (H1).
+    let _file_slot = match upload_gate.acquire_file().await {
         Some(p) => p,
-        None => return crate::upload_gate::response_upload_busy(3),
+        None => return crate::upload_gate::response_upload_busy(5),
     };
 
     let max_upload_bytes = (api_state.max_upload_size_mb as usize).saturating_mul(1024 * 1024);
@@ -1237,6 +1626,7 @@ async fn api_upload_file(
     let mut folder_id: Option<i64> = None;
     let mut temp_guard: Option<TempFileGuard> = None;
     let mut filename = String::from("upload.bin");
+    let mut content_sha256: Option<String> = None;
 
     while let Some(item) = payload.next().await {
         let mut field = match item {
@@ -1263,17 +1653,18 @@ async fn api_upload_file(
                 }
             }
             let tmp = std::env::temp_dir().join(format!("td-api-{}", uuid::Uuid::new_v4()));
-            let mut f = match std::fs::File::create(&tmp) {
+            let mut f = match tokio::fs::File::create(&tmp).await {
                 Ok(file) => file,
                 Err(e) => return json_error("IO_ERROR", &e.to_string(), 500),
             };
             let mut total_read = 0usize;
+            let mut content_hasher = Sha256::new();
             while let Some(chunk) = field.next().await {
                 match chunk {
                     Ok(b) => {
                         total_read += b.len();
                         if total_read > max_upload_bytes {
-                            let _ = std::fs::remove_file(&tmp);
+                            let _ = tokio::fs::remove_file(&tmp).await;
                             return json_error(
                                 "PAYLOAD_TOO_LARGE",
                                 &format!(
@@ -1283,17 +1674,29 @@ async fn api_upload_file(
                                 413,
                             );
                         }
-                        if std::io::Write::write_all(&mut f, &b).is_err() {
-                            let _ = std::fs::remove_file(&tmp);
+                        content_hasher.update(&b);
+                        if f.write_all(&b).await.is_err() {
+                            let _ = tokio::fs::remove_file(&tmp).await;
                             return json_error("IO_ERROR", "write failed", 500);
                         }
                     }
                     Err(e) => {
-                        let _ = std::fs::remove_file(&tmp);
+                        let _ = tokio::fs::remove_file(&tmp).await;
                         return json_error("MULTIPART_ERROR", &e.to_string(), 400);
                     }
                 }
             }
+            if f.flush().await.is_err() {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return json_error("IO_ERROR", "write failed", 500);
+            }
+            content_sha256 = Some(
+                content_hasher
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            );
             temp_guard = Some(TempFileGuard::new(tmp));
         }
     }
@@ -1303,36 +1706,513 @@ async fn api_upload_file(
         None => return json_error("MISSING_FILE", "file field required", 400),
     };
 
-    let path_str = guard.path().to_string_lossy().to_string();
-    let file_size = std::fs::metadata(&path_str)
-        .map(|m| m.len() as i64)
+    let original_path = guard.path().to_path_buf();
+    let file_size = tokio::fs::metadata(&original_path)
+        .await
+        .map(|metadata| metadata.len() as i64)
         .unwrap_or(0);
+    let content_sha256 = match content_sha256 {
+        Some(hash) => hash,
+        None => return json_error("MISSING_FILE_HASH", "file hash was not calculated", 500),
+    };
+    let active_mode = transport.effective_mode(&auth.config).await;
+    let transport_mode = match active_mode {
+        crate::telegram_transport::TelegramTransportMode::Bot => "bot",
+        crate::telegram_transport::TelegramTransportMode::User => "user",
+    };
+    let target = match active_mode {
+        crate::telegram_transport::TelegramTransportMode::Bot => auth
+            .config
+            .storage_channel_id
+            .clone()
+            .unwrap_or_else(|| "unconfigured".to_string()),
+        crate::telegram_transport::TelegramTransportMode::User => folder_id
+            .map(|id| format!("dialog:{id}"))
+            .unwrap_or_else(|| "saved_messages".to_string()),
+    };
 
-    if let Err(e) = crate::telegram_transport::ensure_transport_ready(
-        &transport,
-        &auth.config,
-        &auth.config.data_dir,
-        &tg_state,
-        &net_config,
-    )
-    .await
+    let selected_bot = if control_plane.enabled()
+        && active_mode == crate::telegram_transport::TelegramTransportMode::Bot
     {
-        return json_error("TRANSPORT_NOT_READY", &e, 503);
+        match crate::telegram_transport::preselect_bot(&tg_state.bot_pool).await {
+            Ok(bot) => Some(bot),
+            Err(error) => return json_error("SCHEDULER_BOT_PRESELECT_FAILED", &error, 503),
+        }
+    } else {
+        None
+    };
+    let scheduler_credentials = if control_plane.enabled() {
+        match crate::postgres_upload_saga::SagaNodeCredentials::from_env(&auth.config.data_dir) {
+            Ok(credentials) => Some(credentials),
+            Err(error) => return json_error("SCHEDULER_NODE_CREDENTIALS_REQUIRED", &error, 503),
+        }
+    } else {
+        None
+    };
+    let mut scheduler_guard: Option<crate::durable_scheduler::SchedulerLeaseGuard> = None;
+
+    let mut pending_upload: Option<crate::postgres_control_plane::PendingUpload> = None;
+    let mut replay_receipt: Option<crate::telegram_transport::TelegramUploadReceipt> = None;
+    let mut staged_source_path: Option<std::path::PathBuf> = None;
+    let mut saga_source_ref: Option<String> = None;
+    let mut staging_node_id: Option<String> = None;
+    let mut upload_path = original_path.clone();
+
+    if control_plane.enabled() {
+        let idempotency_key = idempotency_key.as_deref().expect("validated header");
+        let node_id = match crate::postgres_upload_saga::saga_node_id(&auth.config.data_dir) {
+            Ok(node_id) => node_id,
+            Err(error) => return json_error("SAGA_NODE_ID_INVALID", &error, 503),
+        };
+        let mut source_hasher = Sha256::new();
+        source_hasher.update(owner_id.as_bytes());
+        source_hasher.update(b"\0");
+        source_hasher.update(idempotency_key.as_bytes());
+        let source_key: String = source_hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let source_ref = format!("saga-staging/{source_key}.upload");
+        let source_path = auth.config.data_dir.join(&source_ref);
+        if let Some(parent) = source_path.parent() {
+            if tokio::fs::create_dir_all(parent).await.is_err() {
+                return json_error("SAGA_STAGING_FAILED", "unable to create Saga staging", 500);
+            }
+        }
+        let source_existed = source_path.exists();
+        if let Err(error) =
+            persist_saga_source(&original_path, &source_path, file_size, &content_sha256).await
+        {
+            if error == "SAGA_STAGING_CONFLICT" {
+                return json_error(
+                    "IDEMPOTENCY_CONFLICT",
+                    "Idempotency-Key was already used for different staged content",
+                    409,
+                );
+            }
+            return json_error("SAGA_STAGING_FAILED", &error, 500);
+        }
+        let staged_source_created = !source_existed;
+        upload_path = source_path.clone();
+        staged_source_path = Some(source_path);
+        saga_source_ref = Some(source_ref.clone());
+        staging_node_id = Some(node_id.clone());
+        let fingerprint = crate::postgres_control_plane::upload_request_fingerprint(
+            &filename,
+            file_size,
+            folder_id,
+            &content_sha256,
+            &source_ref,
+            transport_mode,
+            &target,
+        );
+        match control_plane
+            .begin_upload(crate::postgres_control_plane::BeginUploadRequest {
+                owner_id: &owner_id,
+                idempotency_key,
+                request_fingerprint: &fingerprint,
+                file_name: &filename,
+                size_bytes: file_size,
+                folder_id,
+                source_ref: &source_ref,
+                transport_mode,
+                target: &target,
+                staging_node_id: &node_id,
+            })
+            .await
+        {
+            Ok(crate::postgres_control_plane::BeginUploadDecision::Proceed(pending)) => {
+                pending_upload = Some(pending);
+            }
+            Ok(crate::postgres_control_plane::BeginUploadDecision::Completed(completed)) => {
+                let _ = crate::file_access::record_uploaded_file(
+                    &db,
+                    completed.receipt.message_id,
+                    folder_id,
+                    &owner_id,
+                    &completed.receipt.file_name,
+                    completed.receipt.file_size as i64,
+                );
+                replay_receipt = Some(completed.receipt);
+            }
+            Ok(crate::postgres_control_plane::BeginUploadDecision::ResumeFinalize(pending)) => {
+                match control_plane.finalize_upload(&pending).await {
+                    Ok(completed) => replay_receipt = Some(completed.receipt),
+                    Err(_) => {
+                        return json_error(
+                            "UPLOAD_FINALIZE_PENDING",
+                            "upload receipt is awaiting finalization",
+                            503,
+                        )
+                    }
+                }
+            }
+            Ok(crate::postgres_control_plane::BeginUploadDecision::InProgress {
+                correlation_id,
+                ..
+            }) => {
+                return json_error(
+                    "UPLOAD_IN_PROGRESS",
+                    &format!("upload is already in progress; correlation_id={correlation_id}"),
+                    409,
+                );
+            }
+            Ok(crate::postgres_control_plane::BeginUploadDecision::NeedsReconciliation {
+                correlation_id,
+                ..
+            }) => {
+                return json_error(
+                    "UPLOAD_RECONCILIATION_REQUIRED",
+                    &format!(
+                        "expired upload requires reconciliation; correlation_id={correlation_id}"
+                    ),
+                    409,
+                );
+            }
+            Ok(crate::postgres_control_plane::BeginUploadDecision::CompensationRequired {
+                correlation_id,
+                ..
+            }) => {
+                return json_error(
+                    "UPLOAD_COMPENSATION_PENDING",
+                    &format!("upload compensation is pending; correlation_id={correlation_id}"),
+                    409,
+                );
+            }
+            Ok(crate::postgres_control_plane::BeginUploadDecision::Terminal {
+                status,
+                correlation_id,
+                ..
+            }) => {
+                if staged_source_created {
+                    let _ = tokio::fs::remove_file(&upload_path).await;
+                }
+                return json_error(
+                    "UPLOAD_TERMINAL",
+                    &format!(
+                        "upload is in terminal state {status}; correlation_id={correlation_id}"
+                    ),
+                    409,
+                );
+            }
+            Err(error) if error == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" => {
+                if staged_source_created {
+                    let _ = tokio::fs::remove_file(&upload_path).await;
+                }
+                return json_error(
+                    "IDEMPOTENCY_CONFLICT",
+                    "Idempotency-Key was already used for a different upload",
+                    409,
+                );
+            }
+            Err(error) => {
+                if staged_source_created {
+                    let _ = tokio::fs::remove_file(&upload_path).await;
+                }
+                return json_error("UPLOAD_SAGA_BEGIN_FAILED", &error, 503);
+            }
+        }
     }
 
-    match crate::http_upload::upload_file_path(
-        path_str,
-        folder_id,
-        &tg_state,
-        &net_config,
-        &auth.config,
-        &db,
-        &transport,
-    )
-    .await
+    if let (Some(pending), Some(credentials)) =
+        (pending_upload.as_ref(), scheduler_credentials.as_ref())
     {
-        Ok((message_id, saved_name)) => {
-            guard.keep();
+        let peer = if active_mode == crate::telegram_transport::TelegramTransportMode::Bot {
+            match auth
+                .config
+                .storage_channel_id
+                .as_deref()
+                .and_then(|v| v.parse::<i64>().ok())
+            {
+                Some(id) => Some(("bot", crate::telegram_transport::bot_api_peer_kind(id), id)),
+                None => {
+                    return json_error("SCHEDULER_PEER_REQUIRED", "storage peer id is invalid", 503)
+                }
+            }
+        } else {
+            None
+        };
+        let resources = match crate::durable_scheduler::SchedulerResourceSet::transfer(
+            transport_mode,
+            "upload",
+            &pending.tenant_id,
+            "upload",
+            selected_bot.as_ref().map(|bot| bot.stable_id.as_str()),
+            peer,
+        ) {
+            Ok(resources) => resources,
+            Err(error) => return json_error("SCHEDULER_RESOURCE_INVALID", &error, 503),
+        };
+        match control_plane
+            .acquire_scheduler_lease(credentials, &pending.job_id, &resources, 300)
+            .await
+        {
+            Ok(Some(lease)) => {
+                scheduler_guard =
+                    Some(crate::durable_scheduler::SchedulerLeaseGuard::start_upload(
+                        control_plane.clone(),
+                        credentials.clone(),
+                        lease.clone(),
+                    ));
+            }
+            Ok(None) => {
+                return json_error(
+                    "POSTGRES_SCHEDULER_REQUIRED",
+                    "durable scheduler is required in PostgreSQL mode",
+                    503,
+                )
+            }
+            Err(error) => return json_error("SCHEDULER_ACQUIRE_FAILED", &error, 503),
+        }
+    }
+
+    let lease_heartbeat = pending_upload.clone().map(|pending| {
+        crate::postgres_upload_saga::spawn_upload_lease_heartbeat(control_plane.clone(), pending)
+    });
+
+    if let Some(pending) = &pending_upload {
+        if control_plane.renew_upload_lease(pending).await.is_err() {
+            return json_error(
+                "UPLOAD_LEASE_LOST",
+                "upload ownership could not be confirmed before contacting Telegram",
+                503,
+            );
+        }
+    }
+    let upload_result = if let Some(receipt) = replay_receipt {
+        Ok(receipt)
+    } else {
+        if pending_upload.is_some() {
+            if let Err(error) =
+                crate::postgres_upload_saga::ensure_upload_recovery_storage(&auth.config.data_dir)
+                    .await
+            {
+                if let Some(pending) = &pending_upload {
+                    let _ = control_plane
+                        .mark_upload_retryable(pending, "RECOVERY_STORAGE_UNAVAILABLE")
+                        .await;
+                }
+                return json_error("UPLOAD_RECOVERY_STORAGE_UNAVAILABLE", &error, 503);
+            }
+        }
+        if let Err(error) = crate::telegram_transport::ensure_transport_ready(
+            &transport,
+            &auth.config,
+            &auth.config.data_dir,
+            &tg_state,
+            &net_config,
+        )
+        .await
+        {
+            if let Some(pending) = &pending_upload {
+                let _ = control_plane
+                    .mark_upload_retryable(pending, "TRANSPORT_NOT_READY")
+                    .await;
+            }
+            return json_error("TRANSPORT_NOT_READY", &error, 503);
+        }
+        match crate::http_upload::upload_file_path_with_receipt(
+            upload_path.to_string_lossy().to_string(),
+            folder_id,
+            &tg_state,
+            &net_config,
+            &auth.config,
+            &db,
+            &transport,
+            &owner_id,
+            selected_bot.as_ref(),
+            Some(filename.clone()),
+        )
+        .await
+        {
+            Ok(receipt) => {
+                if let Some(pending) = &pending_upload {
+                    let node_id = staging_node_id
+                        .as_deref()
+                        .ok_or_else(|| "SAGA_NODE_ID_MISSING".to_string());
+                    let source_ref = saga_source_ref
+                        .as_deref()
+                        .ok_or_else(|| "SAGA_SOURCE_REF_MISSING".to_string());
+                    let (node_id, source_ref) = match (node_id, source_ref) {
+                        (Ok(node_id), Ok(source_ref)) => (node_id, source_ref),
+                        _ => {
+                            return json_error(
+                                "UPLOAD_SAGA_CONTEXT_MISSING",
+                                "upload Saga context is incomplete",
+                                500,
+                            )
+                        }
+                    };
+                    let recovery_record =
+                        crate::postgres_upload_saga::persist_upload_recovery_record(
+                            &auth.config.data_dir,
+                            pending,
+                            &receipt,
+                            node_id,
+                            folder_id,
+                            source_ref,
+                            transport_mode,
+                            &target,
+                        )
+                        .await;
+                    match recovery_record {
+                        Ok(recovery_record) => {
+                            if lease_heartbeat
+                                .as_ref()
+                                .is_some_and(|heartbeat| heartbeat.ownership_lost())
+                            {
+                                return json_error(
+                                    "UPLOAD_LEASE_LOST",
+                                    "Telegram receipt is retained for recovery after lease loss",
+                                    503,
+                                );
+                            }
+                            if control_plane
+                                .record_upload_receipt(pending, &receipt)
+                                .await
+                                .is_err()
+                            {
+                                let _ = compensate_saga_upload(
+                                    &control_plane,
+                                    pending,
+                                    &receipt,
+                                    folder_id,
+                                    &tg_state,
+                                    &net_config,
+                                    &auth.config,
+                                    &db,
+                                    &transport,
+                                    "RECEIPT_PERSIST_FAILED",
+                                    &recovery_record,
+                                )
+                                .await;
+                                return json_error(
+                                    "UPLOAD_RECEIPT_PERSIST_FAILED",
+                                    "Telegram receipt is retained for reconciliation",
+                                    503,
+                                );
+                            }
+                            match control_plane.finalize_upload(pending).await {
+                                Ok(completed) => {
+                                    let _ =
+                                        crate::postgres_upload_saga::clear_upload_recovery_records(
+                                            &auth.config.data_dir,
+                                            &pending.job_id,
+                                        )
+                                        .await;
+                                    Ok(completed.receipt)
+                                }
+                                Err(_) => {
+                                    let _ = compensate_saga_upload(
+                                        &control_plane,
+                                        pending,
+                                        &receipt,
+                                        folder_id,
+                                        &tg_state,
+                                        &net_config,
+                                        &auth.config,
+                                        &db,
+                                        &transport,
+                                        "FINALIZE_FAILED",
+                                        &recovery_record,
+                                    )
+                                    .await;
+                                    Err("UPLOAD_FINALIZE_FAILED".to_string())
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            if control_plane
+                                .record_upload_receipt(pending, &receipt)
+                                .await
+                                .is_err()
+                            {
+                                return json_error(
+                                    "UPLOAD_RECOVERY_UNSAFE",
+                                    "Telegram succeeded but neither the recovery journal nor PostgreSQL accepted the receipt",
+                                    503,
+                                );
+                            }
+                            match control_plane.finalize_upload(pending).await {
+                                Ok(completed) => Ok(completed.receipt),
+                                Err(_) => {
+                                    let _ = compensate_recorded_without_journal(
+                                        &control_plane,
+                                        pending,
+                                        &receipt,
+                                        folder_id,
+                                        &tg_state,
+                                        &net_config,
+                                        &auth.config,
+                                        &db,
+                                        &transport,
+                                        "FINALIZE_FAILED_WITHOUT_JOURNAL",
+                                        transport_mode,
+                                    )
+                                    .await;
+                                    Err("UPLOAD_FINALIZE_FAILED".to_string())
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Ok(receipt)
+                }
+            }
+            Err(error) => {
+                if let Some(pending) = &pending_upload {
+                    let _ = control_plane
+                        .mark_upload_retryable(pending, "TELEGRAM_UPLOAD_FAILED")
+                        .await;
+                }
+                Err(error)
+            }
+        }
+    };
+
+    if let Some(guard) = scheduler_guard.as_ref() {
+        if let Err(error) = guard.ensure_owned() {
+            let _ = guard
+                .finish(
+                    crate::durable_scheduler::SchedulerOutcome::Retry { after_seconds: 5 },
+                    Some("UPLOAD_SCHEDULER_LOST"),
+                    Some(&error),
+                )
+                .await;
+            return json_error(
+                "UPLOAD_SCHEDULER_LOST",
+                "upload scheduler ownership was lost",
+                503,
+            );
+        }
+    }
+
+    if let Some(guard) = scheduler_guard.as_ref() {
+        let outcome = if upload_result.is_ok() {
+            crate::durable_scheduler::SchedulerOutcome::Success
+        } else {
+            crate::durable_scheduler::SchedulerOutcome::Retry { after_seconds: 5 }
+        };
+        let _ = guard.finish(outcome, None, None).await;
+    }
+
+    match upload_result {
+        Ok(receipt) => {
+            if let Err(error) = crate::http_upload::persist_uploaded_receipt_projection(
+                &db, &receipt, folder_id, &owner_id,
+            ) {
+                return json_error(
+                    "UPLOAD_LOCAL_PROJECTION_FAILED",
+                    &format!("Telegram/PG upload completed but local projection failed: {error}"),
+                    503,
+                );
+            }
+            let message_id = receipt.message_id;
+            let saved_name = receipt.file_name;
+            if let Some(path) = staged_source_path.as_ref() {
+                let _ = tokio::fs::remove_file(path).await;
+            }
             let share_base = if share_state.use_stream_port_for_shares {
                 crate::share_api_routes::share_link_base(&req, &share_state)
             } else {
@@ -1397,8 +2277,12 @@ async fn api_rebuild_file_index(
     auth: web::Data<crate::auth_routes::AuthRouteState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &auth.config) {
-        return e;
+    let caller = match check_auth(&req, &api_state, &db, &auth.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+    if !matches!(caller, crate::tenant_auth::CallerIdentity::Admin) {
+        return json_error("FORBIDDEN", "Administrator access is required", 403);
     }
 
     let mode = transport.effective_mode(&auth.config).await;
@@ -1434,6 +2318,8 @@ async fn api_rebuild_file_index(
 /// Register all API routes on the Actix App
 pub fn configure_api(cfg: &mut web::ServiceConfig) {
     cfg.service(api_health)
+        .service(health_live)
+        .service(health_ready)
         .service(api_list_folders)
         .service(api_list_files)
         .service(api_upload_file)
@@ -1458,6 +2344,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = crate::db::init_db_at(&dir).unwrap();
         let config = crate::server_config::test_config();
+        crate::tenant_auth::bootstrap_tenants(&db, &config).unwrap();
         let api_state = web::Data::new(ApiState {
             key_hash: Some(crate::commands::api_settings::hash_key_public("secret")),
             max_upload_size_mb: 100,
@@ -1475,13 +2362,50 @@ mod tests {
 
     #[test]
     fn check_auth_accepts_valid_key() {
-        let key = "secret";
+        let key = "test-api-key";
         let (db, config, api_state) = test_auth_context();
         let req = TestRequest::get()
             .uri("/api/v1/files")
             .insert_header(("X-API-Key", key))
             .to_http_request();
-        assert!(check_auth(&req, &api_state, &db, &config).is_ok());
+        assert_eq!(
+            check_auth(&req, &api_state, &db, &config).unwrap(),
+            crate::tenant_auth::CallerIdentity::Tenant {
+                tenant_id: "default".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn check_auth_rejects_global_key_without_tenant_scope() {
+        let (db, config, api_state) = test_auth_context();
+        let req = TestRequest::get()
+            .uri("/api/v1/files")
+            .insert_header(("X-API-Key", "secret"))
+            .to_http_request();
+        let err = check_auth(&req, &api_state, &db, &config)
+            .expect_err("global key must not bypass tenant identity");
+        assert_eq!(err.status(), 401);
+    }
+
+    #[test]
+    fn check_auth_maps_single_tenant_global_key_to_default_owner() {
+        let (db, config, api_state) = test_auth_context();
+        let mut single_tenant = (*config).clone();
+        single_tenant.multi_tenant_enabled = false;
+        let req = TestRequest::get()
+            .uri("/api/v1/files")
+            .insert_header(("X-API-Key", "secret"))
+            .to_http_request();
+
+        let caller = check_auth(&req, &api_state, &db, &single_tenant).unwrap();
+        assert_eq!(
+            caller,
+            crate::tenant_auth::CallerIdentity::Tenant {
+                tenant_id: "default".to_string()
+            }
+        );
+        assert_eq!(caller.owner_id_for_asset(), "tenant:default");
     }
 
     #[test]
@@ -1491,7 +2415,52 @@ mod tests {
             .uri("/api/v1/files")
             .insert_header(("X-Access-Pwd", config.access_pwd.as_str()))
             .to_http_request();
-        assert!(check_auth(&req, &api_state, &db, &config).is_ok());
+        assert_eq!(
+            check_auth(&req, &api_state, &db, &config).unwrap(),
+            crate::tenant_auth::CallerIdentity::Admin
+        );
+    }
+
+    #[test]
+    fn authorize_message_ids_rejects_other_tenant_asset() {
+        let (db, config, _) = test_auth_context();
+        crate::db::upsert_file_asset(&db, 42, None, "tenant:other", "private.bin", 1)
+            .expect("asset");
+        let caller = crate::tenant_auth::CallerIdentity::Tenant {
+            tenant_id: "caller".to_string(),
+        };
+        let response = authorize_message_ids(&db, &config, &caller, &[42])
+            .expect_err("other tenant must be rejected");
+        assert_eq!(response.status(), 403);
+    }
+
+    #[test]
+    fn authorize_message_ids_allows_admin() {
+        let (db, config, _) = test_auth_context();
+        crate::db::upsert_file_asset(&db, 42, None, "tenant:other", "private.bin", 1)
+            .expect("asset");
+        assert!(authorize_message_ids(
+            &db,
+            &config,
+            &crate::tenant_auth::CallerIdentity::Admin,
+            &[42],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn caller_owner_filter_is_scoped_for_tenants_only() {
+        let tenant = crate::tenant_auth::CallerIdentity::Tenant {
+            tenant_id: "tenant-a".to_string(),
+        };
+        assert_eq!(
+            caller_owner_filter(&tenant, true).as_deref(),
+            Some("tenant:tenant-a")
+        );
+        assert_eq!(
+            caller_owner_filter(&crate::tenant_auth::CallerIdentity::Admin, true),
+            None
+        );
     }
 
     #[test]
@@ -1508,10 +2477,24 @@ mod tests {
             success: true,
             count: 2,
             succeeded_ids: vec![10, 20],
+            shares_revoked: 1,
         };
         let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["count"], 2);
         assert_eq!(json["succeeded_ids"].as_array().unwrap().len(), 2);
+        assert_eq!(json["shares_revoked"], 1);
+    }
+
+    #[test]
+    fn bulk_response_omits_zero_shares_revoked() {
+        let resp = BulkResponse {
+            success: true,
+            count: 1,
+            succeeded_ids: vec![1],
+            shares_revoked: 0,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("shares_revoked"));
     }
 
     #[test]
@@ -1520,9 +2503,36 @@ mod tests {
             success: true,
             count: 0,
             succeeded_ids: vec![],
+            shares_revoked: 0,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("succeeded_ids"));
+    }
+
+    #[tokio::test]
+    async fn saga_staging_reuses_only_matching_content() {
+        let dir = std::env::temp_dir().join(format!("td-saga-stage-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let original = dir.join("original.bin");
+        let target = dir.join("target.upload");
+        tokio::fs::write(&original, b"payload").await.unwrap();
+        let digest = sha256_file(&original).await.unwrap();
+        persist_saga_source(&original, &target, 7, &digest)
+            .await
+            .expect("first stage");
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"payload");
+        persist_saga_source(&original, &target, 7, &digest)
+            .await
+            .expect("matching replay");
+        tokio::fs::write(&original, b"changed").await.unwrap();
+        let changed = sha256_file(&original).await.unwrap();
+        assert_eq!(
+            persist_saga_source(&original, &target, 7, &changed)
+                .await
+                .unwrap_err(),
+            "SAGA_STAGING_CONFLICT"
+        );
+        let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
     #[test]

@@ -3,7 +3,55 @@ use grammers_client::types::{LoginToken, PasswordToken, Peer};
 use grammers_client::Client;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
+
+const USER_PROBE_SUCCESS_TTL: Duration = Duration::from_secs(30);
+const USER_PROBE_FAILURE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug)]
+struct UserProbeSnapshot {
+    checked_at: Instant,
+    user: Option<String>,
+}
+
+/// Process-local snapshot for User-mode Telegram readiness.
+///
+/// The probe lock provides single-flight behavior so an unthrottled readiness
+/// endpoint cannot fan out one `get_me()` request per HTTP request.
+#[derive(Default)]
+pub struct UserProbeCache {
+    state: RwLock<Option<UserProbeSnapshot>>,
+    probe_lock: Mutex<()>,
+}
+
+impl UserProbeCache {
+    pub async fn cached(&self) -> Option<Option<String>> {
+        let state = self.state.read().await;
+        let snapshot = state.as_ref()?;
+        let ttl = if snapshot.user.is_some() {
+            USER_PROBE_SUCCESS_TTL
+        } else {
+            USER_PROBE_FAILURE_TTL
+        };
+        if snapshot.checked_at.elapsed() <= ttl {
+            Some(snapshot.user.clone())
+        } else {
+            None
+        }
+    }
+
+    pub async fn record(&self, user: Option<String>) {
+        *self.state.write().await = Some(UserProbeSnapshot {
+            checked_at: Instant::now(),
+            user,
+        });
+    }
+
+    pub async fn acquire_probe_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.probe_lock.lock().await
+    }
+}
 
 /// Tracks the lifecycle of the Telegram connection
 ///
@@ -31,6 +79,8 @@ pub struct TelegramState {
     /// Bot token pool with FloodWait awareness (shared across all requests).
     /// Initialized from TG_BOT_TOKENS environment variable.
     pub bot_pool: Arc<BotPool>,
+    /// Cached, single-flight User-mode `get_me()` readiness probe.
+    pub user_probe_cache: Arc<UserProbeCache>,
 }
 
 /// Signal the grammers network runner to exit. Safe from sync or async contexts.
@@ -63,6 +113,21 @@ mod signal_tests {
         assert!(signal_runner_shutdown(&shutdown));
         assert!(!signal_runner_shutdown(&shutdown));
         rx.try_recv().expect("shutdown signal");
+    }
+}
+
+#[cfg(test)]
+mod user_probe_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn user_probe_cache_records_success_and_failure() {
+        let cache = UserProbeCache::default();
+        assert_eq!(cache.cached().await, None);
+        cache.record(Some("Ada".to_string())).await;
+        assert_eq!(cache.cached().await, Some(Some("Ada".to_string())));
+        cache.record(None).await;
+        assert_eq!(cache.cached().await, Some(None));
     }
 }
 

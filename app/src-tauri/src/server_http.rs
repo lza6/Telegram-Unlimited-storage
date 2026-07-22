@@ -125,10 +125,10 @@ pub async fn start_unified_server(
             .configure(crate::auth_routes::configure_auth)
             .configure(crate::settings_routes::configure_settings_routes)
             .configure(crate::share_api_routes::configure_share_api)
+            .configure(crate::legacy_routes::configure_legacy)
             .configure(crate::share_routes::configure_share_routes)
             .configure(crate::server::configure_stream)
             .configure(crate::admin_routes::configure_admin)
-            .configure(crate::legacy_routes::configure_legacy)
             .configure(crate::upload_progress::configure_upload_progress)
             .configure(|cfg| {
                 if config.webdav_enabled {

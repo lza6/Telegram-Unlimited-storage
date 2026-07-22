@@ -98,10 +98,6 @@ fn parse_session_id(req: &HttpRequest) -> String {
     parse_query_param(req, "session_id")
 }
 
-fn parse_access_pwd(req: &HttpRequest) -> String {
-    parse_query_param(req, "pwd")
-}
-
 fn parse_progress_exp(req: &HttpRequest) -> Option<i64> {
     let raw = parse_query_param(req, "exp");
     if raw.is_empty() {
@@ -151,7 +147,7 @@ pub fn verify_upload_progress_token(
     if session_id.trim().is_empty() || token.trim().is_empty() || expires_at <= 0 {
         return false;
     }
-    if chrono::Utc::now().timestamp() > expires_at {
+    if chrono::Utc::now().timestamp() >= expires_at {
         return false;
     }
     let secret = progress_hmac_secret(access_pwd);
@@ -175,10 +171,6 @@ fn verify_upload_progress_access(req: &HttpRequest, access_pwd: &str) -> Option<
         if verify_upload_progress_token(&session_id, exp, &token, access_pwd) {
             return None;
         }
-    }
-    let pwd = parse_access_pwd(req);
-    if !pwd.is_empty() && crate::http_middleware::constant_time_eq(&pwd, access_pwd) {
-        return None;
     }
     Some(HttpResponse::Unauthorized().body("missing or invalid upload progress auth"))
 }
@@ -316,13 +308,31 @@ struct UploadProgressTokenResponse {
     expires_at: i64,
 }
 
+fn require_progress_token_admin(
+    req: &HttpRequest,
+    config: &crate::server_config::ServerConfig,
+) -> Option<HttpResponse> {
+    if crate::admin_routes::check_access_pwd(req, config) {
+        return None;
+    }
+    Some(HttpResponse::Unauthorized().json(serde_json::json!({
+        "error": {
+            "code": "ADMIN_REQUIRED",
+            "message": "X-Access-Pwd is required to issue an upload progress token"
+        }
+    })))
+}
+
 #[post("/upload_progress_token")]
 async fn post_upload_progress_token(
     req: HttpRequest,
     body: web::Json<UploadProgressTokenBody>,
     auth: web::Data<crate::auth_routes::AuthRouteState>,
 ) -> impl Responder {
-    if let Some(resp) = crate::admin_routes::require_admin_or_api_key(&req, &auth.config) {
+    // Legacy browser upload progress belongs to the administrator Web session.
+    // API keys (especially unscoped global keys in multi-tenant mode) must not
+    // mint a token for an arbitrary session_id.
+    if let Some(resp) = require_progress_token_admin(&req, &auth.config) {
         return resp;
     }
     let session_id = body.session_id.trim();
@@ -420,5 +430,55 @@ mod tests {
         assert!(!verify_upload_progress_token(
             "other", exp, &token, "test-pwd"
         ));
+        assert!(!verify_upload_progress_token(
+            "sess-abc",
+            chrono::Utc::now().timestamp(),
+            &token,
+            "test-pwd"
+        ));
+    }
+
+    #[test]
+    fn progress_request_rejects_access_password_in_query() {
+        let req = actix_web::test::TestRequest::get()
+            .uri("/upload_events?session_id=sess-abc&pwd=test-pwd")
+            .to_http_request();
+
+        let response = verify_upload_progress_request(&req, "test-pwd")
+            .expect("query password must not authorize upload progress");
+        assert_eq!(response.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn progress_request_accepts_valid_token() {
+        let (token, exp) = issue_upload_progress_token("sess-abc", "test-pwd").unwrap();
+        let uri = format!("/upload_events?session_id=sess-abc&exp={exp}&token={token}");
+        let req = actix_web::test::TestRequest::get()
+            .uri(&uri)
+            .to_http_request();
+
+        assert!(verify_upload_progress_request(&req, "test-pwd").is_none());
+    }
+
+    #[test]
+    fn progress_token_issuer_accepts_admin_password() {
+        let config = crate::server_config::test_config();
+        let req = actix_web::test::TestRequest::post()
+            .insert_header(("X-Access-Pwd", config.access_pwd.as_str()))
+            .to_http_request();
+
+        assert!(require_progress_token_admin(&req, &config).is_none());
+    }
+
+    #[test]
+    fn progress_token_issuer_rejects_api_key() {
+        let config = crate::server_config::test_config();
+        let req = actix_web::test::TestRequest::post()
+            .insert_header(("X-API-Key", "test-api-key"))
+            .to_http_request();
+
+        let response = require_progress_token_admin(&req, &config)
+            .expect("API key must not mint an administrator progress token");
+        assert_eq!(response.status(), actix_web::http::StatusCode::UNAUTHORIZED);
     }
 }

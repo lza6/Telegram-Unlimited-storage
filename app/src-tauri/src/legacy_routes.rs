@@ -73,10 +73,6 @@ async fn upload_chunk(
     upload_gate: web::Data<Arc<crate::upload_gate::UploadGate>>,
     progress_hub: web::Data<Arc<crate::upload_progress::UploadProgressHub>>,
 ) -> impl Responder {
-    let _chunk_slot = match upload_gate.try_acquire_chunk() {
-        Some(p) => p,
-        None => return crate::upload_gate::response_upload_busy(2),
-    };
     let mut pwd_ok = check_access_pwd(&req, &admin.config);
     let mut chunk_data: Option<Vec<u8>> = None;
     let mut chunk_index = String::new();
@@ -117,6 +113,12 @@ async fn upload_chunk(
     if !pwd_ok {
         return HttpResponse::Unauthorized().body("密码错误");
     }
+    // Acquire capacity only after the request has passed authentication. This
+    // prevents slow invalid multipart requests from consuming global slots.
+    let _chunk_slot = match upload_gate.acquire_chunk().await {
+        Some(p) => p,
+        None => return crate::upload_gate::response_upload_busy(5),
+    };
     let data = match chunk_data {
         Some(d) if !d.is_empty() => d,
         _ => return HttpResponse::BadRequest().body("missing chunk"),
@@ -152,6 +154,32 @@ async fn upload_chunk(
         log::error!("Failed to create upload session: {}", e);
         return HttpResponse::InternalServerError().body("failed to create upload session");
     }
+    // A client may retry after losing the response. If the database already
+    // recorded this exact chunk, return its receipt instead of creating a
+    // second Telegram message.
+    if let Ok(existing) = db::get_upload_session_chunks(&admin.db_pool, &session_id) {
+        if let Some(chunk) = existing.iter().find(|c| c.chunk_index == idx) {
+            if chunk.status == "uploaded" {
+                if chunk.sha256.as_deref() == Some(sha256_hash.as_str()) {
+                    if let Some(file_id) = chunk.file_id.clone() {
+                        crate::upload_progress::emit_chunk_progress(
+                            &progress_hub,
+                            &admin.db_pool,
+                            &session_id,
+                            &filename,
+                        )
+                        .await;
+                        return HttpResponse::Ok().json(ChunkResult {
+                            file_id,
+                            sha256: sha256_hash,
+                        });
+                    }
+                } else {
+                    return HttpResponse::Conflict().body("chunk content conflicts with session");
+                }
+            }
+        }
+    }
 
     let caption = format!("blob [{}/{}] - {}", idx, total, filename);
     match crate::http_upload::upload_bytes_with_caption(
@@ -159,6 +187,7 @@ async fn upload_chunk(
         "blob",
         &caption,
         None,
+        crate::tenant_auth::OWNER_WEB,
         &tg_state,
         &net_config,
         &admin.config,
@@ -188,10 +217,34 @@ async fn upload_chunk(
             })
         }
         Err(e) => {
+            // H3: surface FloodWait as 503 + Retry-After so clients back off
+            // instead of hammering on a bare 500.
+            if let Some(secs) = parse_flood_wait_for_retry(&e) {
+                log::warn!("upload_chunk FloodWait: {}s ({})", secs, e);
+                return HttpResponse::ServiceUnavailable()
+                    .insert_header(("Retry-After", secs.to_string()))
+                    .json(serde_json::json!({
+                        "error": { "code": "FLOOD_WAIT", "retry_after": secs }
+                    }));
+            }
             log::error!("Internal error: {}", e);
             HttpResponse::InternalServerError().body("internal error")
         }
     }
+}
+
+/// Parse FloodWait seconds from a bot/user upload error for the Retry-After header.
+fn parse_flood_wait_for_retry(err: &str) -> Option<u64> {
+    // Bot transport: "FLOOD_WAIT:{index}:{secs}"
+    if let Some(secs) = err
+        .strip_prefix("FLOOD_WAIT:")
+        .and_then(|s| s.rsplit(':').next())
+        .and_then(|s| s.parse().ok())
+    {
+        return Some(secs);
+    }
+    // User / grammers path: "FLOOD_WAIT_X" / generic flood text
+    crate::vpn_optimizer::parse_flood_wait_secs(err)
 }
 
 #[get("/upload_status")]
@@ -292,10 +345,6 @@ async fn merge_chunks(
     upload_gate: web::Data<Arc<crate::upload_gate::UploadGate>>,
     progress_hub: web::Data<Arc<crate::upload_progress::UploadProgressHub>>,
 ) -> impl Responder {
-    let _chunk_slot = match upload_gate.try_acquire_chunk() {
-        Some(p) => p,
-        None => return crate::upload_gate::response_upload_busy(2),
-    };
     let body = match crate::legacy_form::parse_request_form(&req, payload).await {
         Ok(f) => f,
         Err(r) => return r,
@@ -304,6 +353,10 @@ async fn merge_chunks(
     if !check_pwd_form(pwd, &admin.config) && !check_access_pwd(&req, &admin.config) {
         return HttpResponse::Unauthorized().body("密码错误");
     }
+    let _chunk_slot = match upload_gate.acquire_chunk().await {
+        Some(p) => p,
+        None => return crate::upload_gate::response_upload_busy(5),
+    };
 
     let filename = match body.get("filename") {
         Some(f) if !f.is_empty() => f.clone(),
@@ -316,6 +369,37 @@ async fn merge_chunks(
         .unwrap_or("")
         .to_string();
     let folder_id = crate::legacy_form::parse_optional_i64_field(&body, "folder_id");
+
+    // A completed session is the durable idempotency record for merge. Return
+    // the existing manifest link on a replay instead of uploading a duplicate.
+    if !session_id.is_empty() {
+        if let Ok(Some(manifest_id)) =
+            db::get_upload_session_manifest_file_id(&admin.db_pool, &session_id)
+        {
+            if let Ok(mid) = manifest_id.parse::<i32>() {
+                let base = host_base(&req, &admin.config);
+                let owner_id =
+                    crate::tenant_auth::check_pwd_caller(pwd, &admin.config).owner_id_for_asset();
+                if let Ok(link) = crate::secure_download::issue_upload_download_link(
+                    &admin.db_pool,
+                    &admin.config,
+                    &base,
+                    folder_id,
+                    mid,
+                    filename.clone(),
+                    0,
+                    &owner_id,
+                    true,
+                ) {
+                    return HttpResponse::Ok().json(LegacyUploadResult {
+                        filename,
+                        file_id: link.file_id,
+                        download_url: link.download_url,
+                    });
+                }
+            }
+        }
+    }
 
     let chunk_ids: Vec<String> = if let Some(j) = body.get("chunk_ids") {
         if j.is_empty() && session_id.is_empty() {
@@ -338,8 +422,10 @@ async fn merge_chunks(
         vec![]
     };
 
-    // If no chunk_ids provided but session_id is present, fetch from DB
-    let final_chunk_ids: Vec<String> = if chunk_ids.is_empty() && !session_id.is_empty() {
+    // A session is authoritative. Never trust a caller-supplied list when a
+    // session id is present; reject a mismatch instead of merging unrelated
+    // Telegram messages.
+    let final_chunk_ids: Vec<String> = if !session_id.is_empty() {
         let db_chunks = match db::get_upload_session_chunks(&admin.db_pool, &session_id) {
             Ok(c) => c,
             Err(e) => return HttpResponse::InternalServerError().body(e),
@@ -359,6 +445,9 @@ async fn merge_chunks(
         }
         if ids.is_empty() {
             return HttpResponse::BadRequest().body("no chunks found for session");
+        }
+        if !chunk_ids.is_empty() && chunk_ids != ids {
+            return HttpResponse::Conflict().body("chunk_ids do not match upload session");
         }
         ids
     } else {
@@ -384,6 +473,7 @@ async fn merge_chunks(
         "fileAll.txt",
         &filename,
         folder_id,
+        crate::tenant_auth::OWNER_WEB,
         &tg_state,
         &net_config,
         &admin.config,
@@ -434,6 +524,15 @@ async fn merge_chunks(
             }
         }
         Err(e) => {
+            // H3: FloodWait from manifest upload → 503 + Retry-After.
+            if let Some(secs) = parse_flood_wait_for_retry(&e) {
+                log::warn!("merge_chunks FloodWait: {}s ({})", secs, e);
+                return HttpResponse::ServiceUnavailable()
+                    .insert_header(("Retry-After", secs.to_string()))
+                    .json(serde_json::json!({
+                        "error": { "code": "FLOOD_WAIT", "retry_after": secs }
+                    }));
+            }
             log::error!("Internal error: {}", e);
             HttpResponse::InternalServerError().body("internal error")
         }
@@ -460,7 +559,7 @@ async fn presigned_download_query(
     admin: web::Data<AdminState>,
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
     net_config: web::Data<Arc<crate::vpn_optimizer::NetworkConfig>>,
-    counter: web::Data<crate::download_counter::DownloadCounter>,
+    counter: web::Data<Arc<crate::download_counter::DownloadCounter>>,
 ) -> impl Responder {
     let secret = match admin.config.download_signing_secret.as_deref() {
         Some(s) => s,
@@ -515,21 +614,80 @@ async fn presigned_download_query(
         }));
     }
 
-    match crate::http_download::download_message_stream(
+    let namespace = format!(
+        "presigned:{}",
+        crate::postgres_control_plane::deterministic_uuid(
+            "presigned-scope",
+            &format!("{}:{}", params.owner_id, params.message_id),
+        )
+    );
+    let prepared = match crate::secure_download::prepare_canonical_download(
         &req,
+        &admin.db_pool,
         params.message_id,
         params.folder_id,
-        &tg_state,
-        false,
-        &admin.config,
-        &admin.db_pool,
-        &transport,
-        &net_config,
+        Some(&params.owner_id),
+        &namespace,
     )
     .await
     {
-        Ok(r) => r,
-        Err(r) => r,
+        Ok(prepared) => prepared,
+        Err(crate::secure_download::DownloadPreflightError::Forbidden(message)) => {
+            return HttpResponse::Forbidden()
+                .json(serde_json::json!({"error":{"code":"FORBIDDEN","message":message}}));
+        }
+        Err(crate::secure_download::DownloadPreflightError::Ambiguous) => {
+            return HttpResponse::Conflict().json(serde_json::json!({"error":{"code":"AMBIGUOUS_FILE_ID","message":"The signed asset resolves to multiple storage peers"}}));
+        }
+        Err(crate::secure_download::DownloadPreflightError::Locator(error)) => {
+            log::error!("Presigned canonical locator failed: {error}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":{"code":"ASSET_LOOKUP_FAILED","message":"Asset lookup failed"}}));
+        }
+        Err(crate::secure_download::DownloadPreflightError::ControlPlane(error)) => {
+            log::error!("Presigned download preflight failed: {error}");
+            return HttpResponse::ServiceUnavailable().json(serde_json::json!({"error":{"code":"DOWNLOAD_ACCOUNTING_UNAVAILABLE","message":"Download accounting unavailable"}}));
+        }
+    };
+    let result = if let Some(prepared) = prepared {
+        let accounting_on_setup_error = prepared.accounting.clone();
+        let result = crate::http_download::download_asset_locator_stream(
+            &req,
+            &prepared.locator,
+            &tg_state,
+            false,
+            &admin.config,
+            &admin.db_pool,
+            &transport,
+            &net_config,
+            prepared.accounting,
+            prepared.scheduler,
+        )
+        .await;
+        if result.is_err() {
+            if let Some((control_plane, context)) = accounting_on_setup_error {
+                let _ = control_plane
+                    .finish_download(&context, Some("DOWNLOAD_STREAM_SETUP_FAILED"))
+                    .await;
+            }
+        }
+        result
+    } else {
+        crate::http_download::download_message_stream(
+            &req,
+            params.message_id,
+            params.folder_id,
+            &tg_state,
+            false,
+            &admin.config,
+            &admin.db_pool,
+            &transport,
+            &net_config,
+        )
+        .await
+    };
+    match result {
+        Ok(response) => response,
+        Err(response) => response,
     }
 }
 

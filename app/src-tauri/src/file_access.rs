@@ -138,14 +138,69 @@ pub fn default_owner_if_missing(owner_id: &str) -> &str {
     }
 }
 
-/// Share token download: when multi-tenant is on, file must still exist in the asset index.
+/// Bot downloads resolve telegram_file_id via bot_file_map — required for share links too.
+pub fn assert_bot_downloadable(db: &DbConnection, message_id: i32) -> Result<(), String> {
+    if db::get_bot_file_map(db, message_id)?.is_some() {
+        Ok(())
+    } else {
+        Err("File is not registered for Bot download (missing bot_file_map)".to_string())
+    }
+}
+
+/// Result of removing index rows and revoking share links for one message id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PurgeIndexResult {
+    pub purged: bool,
+    pub shares_revoked: usize,
+}
+
+/// Remove list index and Bot download mapping for a message id (Bot bulk delete / desktop Bot delete).
+pub fn purge_file_index_entry(
+    db: &DbConnection,
+    message_id: i32,
+    owner_id: Option<&str>,
+) -> PurgeIndexResult {
+    let asset = db::delete_file_asset(db, message_id, owner_id).unwrap_or(false);
+    let bot = db::delete_bot_file_map(db, message_id).unwrap_or(false);
+    let shares_revoked =
+        crate::sharing_core::revoke_shares_for_message_id(db, message_id, owner_id).unwrap_or(0);
+    PurgeIndexResult {
+        purged: asset || bot,
+        shares_revoked,
+    }
+}
+
+/// Strict compensation cleanup: propagate any local projection/share cleanup failure.
+pub fn purge_file_index_entry_strict(
+    db: &DbConnection,
+    message_id: i32,
+    owner_id: Option<&str>,
+) -> Result<PurgeIndexResult, String> {
+    let asset = db::delete_file_asset(db, message_id, owner_id)
+        .map_err(|error| format!("file_assets purge failed: {error}"))?;
+    let bot = db::delete_bot_file_map(db, message_id)
+        .map_err(|error| format!("bot_file_map purge failed: {error}"))?;
+    let shares_revoked =
+        crate::sharing_core::revoke_shares_for_message_id(db, message_id, owner_id)
+            .map_err(|error| format!("share purge failed: {error}"))?;
+    Ok(PurgeIndexResult {
+        purged: asset || bot,
+        shares_revoked,
+    })
+}
+
+/// Share token download: multi-tenant requires asset index; Bot mode also requires bot_file_map.
 pub fn assert_share_download_allowed(
     db: &DbConnection,
     message_id: i32,
     folder_id: Option<i64>,
     share_owner_id: Option<&str>,
     multi_tenant: bool,
+    bot_mode: bool,
 ) -> Result<(), String> {
+    if bot_mode {
+        assert_bot_downloadable(db, message_id)?;
+    }
     if !multi_tenant {
         return Ok(());
     }
@@ -159,6 +214,23 @@ pub fn assert_share_download_allowed(
     }
     if asset.folder_id != folder_id {
         return Err("Folder mismatch".to_string());
+    }
+    Ok(())
+}
+
+/// Validate share can be created for the given file (Bot transport needs bot_file_map).
+pub fn assert_share_create_allowed(
+    db: &DbConnection,
+    message_id: i32,
+    caller: &CallerIdentity,
+    multi_tenant: bool,
+    bot_mode: bool,
+) -> Result<(), String> {
+    if multi_tenant {
+        assert_download_allowed(db, message_id, caller, true)?;
+    }
+    if bot_mode {
+        assert_bot_downloadable(db, message_id)?;
     }
     Ok(())
 }
@@ -177,8 +249,61 @@ mod tests {
     fn share_download_requires_asset_when_multi_tenant() {
         let db = temp_db();
         db::upsert_file_asset(&db, 42, Some(1), "tenant:a", "a.txt", 10).expect("asset");
-        assert!(assert_share_download_allowed(&db, 42, Some(1), Some("tenant:a"), true).is_ok());
-        assert!(assert_share_download_allowed(&db, 99, Some(1), None, true).is_err());
+        assert!(
+            assert_share_download_allowed(&db, 42, Some(1), Some("tenant:a"), true, false).is_ok()
+        );
+        assert!(assert_share_download_allowed(&db, 99, Some(1), None, true, false).is_err());
+    }
+
+    #[test]
+    fn bot_share_requires_bot_file_map() {
+        let db = temp_db();
+        db::upsert_file_asset(&db, 7, None, "admin", "x.bin", 1).expect("asset");
+        assert!(assert_share_download_allowed(&db, 7, None, None, false, true).is_err());
+        db::upsert_bot_file_map(&db, 7, "tg-file-1", "x.bin", 1, None, 0).expect("bot map");
+        assert!(assert_share_download_allowed(&db, 7, None, None, false, true).is_ok());
+    }
+
+    #[test]
+    fn purge_file_index_entry_removes_both_tables() {
+        let db = temp_db();
+        db::upsert_file_asset(&db, 5, None, "admin", "a.txt", 10).expect("asset");
+        db::upsert_bot_file_map(&db, 5, "tg-5", "a.txt", 10, None, 0).expect("bot");
+        crate::sharing_core::create_share(
+            &db,
+            "http://127.0.0.1:14201",
+            None,
+            5,
+            "a.txt".to_string(),
+            10,
+            None,
+            None,
+            Some("admin"),
+        )
+        .expect("share");
+        let result = purge_file_index_entry(&db, 5, None);
+        assert!(result.purged);
+        assert_eq!(result.shares_revoked, 1);
+        assert!(db::get_file_asset(&db, 5).expect("get").is_none());
+        assert!(db::get_bot_file_map(&db, 5).expect("get").is_none());
+        let listed = crate::sharing_core::list_shares(&db, "http://127.0.0.1:14201", Some("admin"))
+            .expect("list");
+        assert!(listed.is_empty());
+        let again = purge_file_index_entry(&db, 5, None);
+        assert!(!again.purged);
+        assert_eq!(again.shares_revoked, 0);
+    }
+
+    #[test]
+    fn strict_purge_propagates_local_cleanup_failure() {
+        let db = temp_db();
+        db::upsert_file_asset(&db, 8, None, "admin", "b.txt", 10).expect("asset");
+        {
+            let conn = db.get().expect("conn");
+            conn.execute("DROP TABLE bot_file_map").expect("drop");
+        }
+        let error = purge_file_index_entry_strict(&db, 8, None).unwrap_err();
+        assert!(error.contains("bot_file_map"));
     }
 
     #[test]

@@ -175,13 +175,10 @@ async fn legacy_upload(
     transport: web::Data<Arc<crate::telegram_transport::TransportHandle>>,
     upload_gate: web::Data<Arc<crate::upload_gate::UploadGate>>,
 ) -> impl Responder {
-    let _file_slot = match upload_gate.try_acquire_file() {
-        Some(p) => p,
-        None => return crate::upload_gate::response_upload_busy(3),
-    };
     let mut pwd_ok = check_access_pwd(&req, &admin.config);
     let mut folder_id: Option<i64> = None;
     let mut temp_guard: Option<TempFileGuard> = None;
+    let mut original_filename: Option<String> = None;
     let max_bytes = (admin.config.max_upload_size_mb as usize).saturating_mul(1024 * 1024);
 
     while let Some(item) = payload.next().await {
@@ -213,6 +210,14 @@ async fn legacy_upload(
             continue;
         }
         if name == "file" {
+            if let Some(cd) = field.content_disposition() {
+                if let Some(fname) = cd.get_filename() {
+                    let cleaned = crate::http_upload::sanitize_upload_filename(fname);
+                    if !cleaned.is_empty() {
+                        original_filename = Some(cleaned);
+                    }
+                }
+            }
             let tmp = std::env::temp_dir().join(format!("td-upload-{}", uuid::Uuid::new_v4()));
             let mut f = match std::fs::File::create(&tmp) {
                 Ok(file) => file,
@@ -248,6 +253,10 @@ async fn legacy_upload(
     if !pwd_ok {
         return HttpResponse::Unauthorized().body("密码错误");
     }
+    let _file_slot = match upload_gate.acquire_file().await {
+        Some(p) => p,
+        None => return crate::upload_gate::response_upload_busy(3),
+    };
 
     let guard = match temp_guard {
         Some(g) => g,
@@ -270,7 +279,8 @@ async fn legacy_upload(
     let file_size = std::fs::metadata(&path_str)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
-    match crate::http_upload::upload_file_path(
+    let owner_id = crate::tenant_auth::CallerIdentity::Admin.owner_id_for_asset();
+    match crate::http_upload::upload_file_path_named(
         path_str,
         folder_id,
         &tg_state,
@@ -278,6 +288,8 @@ async fn legacy_upload(
         &admin.config,
         &admin.db_pool,
         &transport,
+        &owner_id,
+        original_filename,
     )
     .await
     {
@@ -285,7 +297,6 @@ async fn legacy_upload(
             guard.keep();
             let base = host_base(&req, &admin.config);
             let size = file_size;
-            let owner_id = crate::tenant_auth::CallerIdentity::Admin.owner_id_for_asset();
             match crate::secure_download::issue_upload_download_link(
                 &admin.db_pool,
                 &admin.config,

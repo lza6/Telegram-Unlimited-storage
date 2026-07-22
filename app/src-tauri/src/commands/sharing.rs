@@ -45,6 +45,12 @@ pub async fn cmd_create_share(
             Some(t.to_string())
         }
     });
+    #[cfg(not(feature = "headless-server"))]
+    {
+        if crate::local_api::desktop_is_bot_mode(&app, &db_pool).await? {
+            crate::file_access::assert_bot_downloadable(&db_pool, message_id)?;
+        }
+    }
     let base = share_base_for_app(&app)?;
     let info = sharing_core::create_share(
         &db_pool,

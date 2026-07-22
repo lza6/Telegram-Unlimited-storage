@@ -33,6 +33,27 @@ fn share_json_error(message: &str) -> HttpResponse {
     }))
 }
 
+fn share_owner_filter(
+    caller: &crate::tenant_auth::CallerIdentity,
+    multi_tenant_enabled: bool,
+) -> Result<Option<String>, HttpResponse> {
+    if matches!(caller, crate::tenant_auth::CallerIdentity::Anonymous) {
+        return Err(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": { "code": "FORBIDDEN", "message": "Authenticated identity is required" }
+        })));
+    }
+    if !multi_tenant_enabled {
+        return Ok(None);
+    }
+    match caller {
+        crate::tenant_auth::CallerIdentity::Admin => Ok(None),
+        crate::tenant_auth::CallerIdentity::Tenant { tenant_id } => {
+            Ok(Some(format!("tenant:{tenant_id}")))
+        }
+        crate::tenant_auth::CallerIdentity::Anonymous => unreachable!("handled above"),
+    }
+}
+
 pub fn share_link_base(req: &HttpRequest, state: &ShareApiState) -> String {
     if state.use_stream_port_for_shares {
         crate::ui_settings::share_base_url_from_data_dir(
@@ -51,14 +72,13 @@ async fn list_share_links(
     share_state: web::Data<ShareApiState>,
     db: web::Data<DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &share_state.config) {
-        return e;
-    }
-    let owner_filter = if share_state.config.multi_tenant_enabled {
-        crate::tenant_auth::api_key_tenant(&req, &db, &share_state.config)
-            .map(|tid| format!("tenant:{tid}"))
-    } else {
-        None
+    let caller = match check_auth(&req, &api_state, &db, &share_state.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+    let owner_filter = match share_owner_filter(&caller, share_state.config.multi_tenant_enabled) {
+        Ok(owner_filter) => owner_filter,
+        Err(response) => return response,
     };
     // Lazy cleanup: prune expired shares on every list request
     let _ = crate::sharing_core::cleanup_expired(&db);
@@ -80,9 +100,10 @@ async fn create_share_link(
     share_state: web::Data<ShareApiState>,
     db: web::Data<DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &share_state.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &share_state.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
     if body.message_id <= 0 || body.file_name.trim().is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": {
@@ -100,24 +121,33 @@ async fn create_share_link(
         }
     });
     let owner_id = if share_state.config.multi_tenant_enabled {
-        crate::tenant_auth::api_key_tenant(&req, &db, &share_state.config)
-            .map(|tid| format!("tenant:{tid}"))
+        Some(caller.owner_id_for_asset())
     } else {
         None
     };
-    if share_state.config.multi_tenant_enabled {
-        let caller = crate::tenant_auth::api_key_tenant(&req, &db, &share_state.config)
-            .map(|tenant_id| crate::tenant_auth::CallerIdentity::Tenant { tenant_id })
-            .unwrap_or(crate::tenant_auth::CallerIdentity::Tenant {
-                tenant_id: "default".to_string(),
-            });
-        if let Err(msg) =
-            crate::file_access::assert_download_allowed(&db, body.message_id, &caller, true)
-        {
+    let transport = crate::telegram_transport::TransportHandle::new(
+        &share_state.config.data_dir,
+        share_state.config.default_transport_mode,
+    );
+    let mode = transport.effective_mode(&share_state.config).await;
+    let bot_mode = mode == crate::telegram_transport::TelegramTransportMode::Bot;
+    if let Err(msg) = crate::file_access::assert_share_create_allowed(
+        &db,
+        body.message_id,
+        &caller,
+        share_state.config.multi_tenant_enabled,
+        bot_mode,
+    ) {
+        let forbidden = share_state.config.multi_tenant_enabled
+            && (msg.contains("Access denied") || msg.contains("asset index"));
+        if forbidden {
             return HttpResponse::Forbidden().json(serde_json::json!({
                 "error": { "code": "FORBIDDEN", "message": msg }
             }));
         }
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": { "code": "NOT_DOWNLOADABLE", "message": msg }
+        }));
     }
     match create_share(
         &db,
@@ -143,28 +173,36 @@ async fn delete_share_link(
     share_state: web::Data<ShareApiState>,
     db: web::Data<DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state, &db, &share_state.config) {
-        return e;
-    }
+    let caller = match check_auth(&req, &api_state, &db, &share_state.config) {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
     let id = path.into_inner();
-    if share_state.config.multi_tenant_enabled {
-        let owner = crate::tenant_auth::api_key_tenant(&req, &db, &share_state.config)
-            .map(|tid| format!("tenant:{tid}"))
-            .unwrap_or_else(|| "tenant:default".to_string());
-        match revoke_share_for_owner(&db, &id, &owner) {
-            Ok(true) => HttpResponse::Ok().json(serde_json::json!({ "revoked": true })),
-            Ok(false) => HttpResponse::NotFound().json(serde_json::json!({
-                "error": "Share not found",
-            })),
-            Err(e) if e.contains("not owned") => {
-                HttpResponse::Forbidden().json(serde_json::json!({ "error": e }))
-            }
-            Err(e) => share_json_error(&e),
-        }
-    } else {
-        match revoke_share(&db, &id) {
+    match caller {
+        crate::tenant_auth::CallerIdentity::Admin => match revoke_share(&db, &id) {
             Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "revoked": true })),
             Err(e) => share_json_error(&e),
+        },
+        crate::tenant_auth::CallerIdentity::Tenant { tenant_id }
+            if share_state.config.multi_tenant_enabled =>
+        {
+            match revoke_share_for_owner(&db, &id, &format!("tenant:{tenant_id}")) {
+                Ok(true) => HttpResponse::Ok().json(serde_json::json!({ "revoked": true })),
+                Ok(false) => HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "Share not found",
+                })),
+                Err(e) if e.contains("not owned") => {
+                    HttpResponse::Forbidden().json(serde_json::json!({ "error": e }))
+                }
+                Err(e) => share_json_error(&e),
+            }
+        }
+        crate::tenant_auth::CallerIdentity::Tenant { .. } => match revoke_share(&db, &id) {
+            Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "revoked": true })),
+            Err(e) => share_json_error(&e),
+        },
+        crate::tenant_auth::CallerIdentity::Anonymous => {
+            HttpResponse::Forbidden().json(serde_json::json!({ "error": "Forbidden" }))
         }
     }
 }
@@ -173,4 +211,35 @@ pub fn configure_share_api(cfg: &mut web::ServiceConfig) {
     cfg.service(list_share_links)
         .service(create_share_link)
         .service(delete_share_link);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tenant_share_filter_uses_authenticated_identity() {
+        let caller = crate::tenant_auth::CallerIdentity::Tenant {
+            tenant_id: "tenant-a".to_string(),
+        };
+        assert_eq!(
+            share_owner_filter(&caller, true).unwrap().as_deref(),
+            Some("tenant:tenant-a")
+        );
+    }
+
+    #[test]
+    fn admin_share_filter_can_view_all_tenants() {
+        assert_eq!(
+            share_owner_filter(&crate::tenant_auth::CallerIdentity::Admin, true).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn anonymous_share_filter_fails_closed() {
+        let response = share_owner_filter(&crate::tenant_auth::CallerIdentity::Anonymous, true)
+            .expect_err("anonymous owner filtering must not fail open");
+        assert_eq!(response.status(), actix_web::http::StatusCode::FORBIDDEN);
+    }
 }

@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 
 use crate::server_config::ServerConfig;
@@ -30,15 +30,26 @@ struct BotEntry {
     flood_count: AtomicUsize,
     /// Last time this bot was used successfully
     last_success: RwLock<Option<Instant>>,
+    /// Per-bot minimum interval between requests (token bucket cap).
+    /// When 0, no per-bot throttling is applied.
+    min_interval: Duration,
+    /// Timestamp of the last request dispatched to this bot.
+    last_dispatch: Mutex<Option<Instant>>,
 }
 
 impl BotEntry {
     fn new(token: String) -> Self {
+        Self::with_interval(token, Duration::ZERO)
+    }
+
+    fn with_interval(token: String, min_interval: Duration) -> Self {
         Self {
             token,
             flood_until: AtomicI64::new(0),
             flood_count: AtomicUsize::new(0),
             last_success: RwLock::new(None),
+            min_interval,
+            last_dispatch: Mutex::new(None),
         }
     }
 
@@ -75,6 +86,27 @@ impl BotEntry {
     fn clear_flood_wait(&self) {
         self.flood_until.store(0, Ordering::Relaxed);
         *self.last_success.write() = Some(Instant::now());
+    }
+
+    /// Return how long the caller must wait before dispatching to this bot,
+    /// based on the per-bot minimum interval. `None` means dispatch now.
+    fn reserve(&self) -> Option<Duration> {
+        if self.min_interval.is_zero() {
+            return None;
+        }
+        let mut last = self.last_dispatch.lock();
+        let now = Instant::now();
+        let earliest = last.map(|t| t + self.min_interval);
+        match earliest {
+            Some(e) if e > now => {
+                // Not yet eligible — do not stamp; caller waits then retries.
+                Some(e - now)
+            }
+            _ => {
+                *last = Some(now);
+                None
+            }
+        }
     }
 }
 
@@ -116,12 +148,23 @@ pub struct BotPool {
 impl BotPool {
     /// Create bot pool from server config
     pub fn from_config(config: &ServerConfig) -> Self {
-        Self::new(config.all_bot_tokens())
+        let interval = Duration::from_millis(config.bot_rate_limit_ms.max(1) as u64);
+        Self::with_interval(config.all_bot_tokens(), interval)
     }
 
-    /// Create bot pool with token list
+    /// Create bot pool with token list (no per-bot throttle)
     pub fn new(tokens: Vec<String>) -> Self {
-        let entries: Vec<BotEntry> = tokens.into_iter().map(BotEntry::new).collect();
+        Self::with_interval(tokens, Duration::ZERO)
+    }
+
+    /// Create bot pool with a per-bot minimum interval between dispatches.
+    /// The interval is applied per-bot, so N bots yield up to N×(1/interval) req/s
+    /// instead of a single global 1/interval serial rate.
+    pub fn with_interval(tokens: Vec<String>, min_interval: Duration) -> Self {
+        let entries: Vec<BotEntry> = tokens
+            .into_iter()
+            .map(|t| BotEntry::with_interval(t, min_interval))
+            .collect();
 
         if entries.is_empty() {
             log::warn!("BotPool created with no tokens!");
@@ -172,6 +215,46 @@ impl BotPool {
         // All bots are flooded
         log::warn!("All {} bots are in FloodWait state", self.entries.len());
         None
+    }
+
+    /// Try to acquire a token that is both available (not FloodWait) and
+    /// eligible now (per-bot interval elapsed). Stamps the bot's last-dispatch
+    /// time on success. Returns `None` if no bot is ready this instant — the
+    /// caller should sleep `earliest_eligible_in()` and retry.
+    pub fn try_acquire_now(&self) -> Option<(String, u32)> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let start_idx = self.next.fetch_add(1, Ordering::Relaxed);
+        for offset in 0..self.entries.len() {
+            let idx = (start_idx + offset) % self.entries.len();
+            let entry = &self.entries[idx];
+            if entry.is_available() && entry.reserve().is_none() {
+                self.next
+                    .store((idx + 1) % self.entries.len(), Ordering::Relaxed);
+                return Some((entry.token.clone(), idx as u32));
+            }
+        }
+        None
+    }
+
+    /// Minimum duration until some available bot becomes eligible. Returns
+    /// `None` when every bot is in FloodWait (nothing to wait for) or the pool
+    /// has no per-bot interval configured.
+    pub fn earliest_eligible_in(&self) -> Option<Duration> {
+        let mut soonest: Option<Duration> = None;
+        for entry in &self.entries {
+            if !entry.is_available() {
+                continue;
+            }
+            if let Some(wait) = entry.reserve() {
+                soonest = Some(match soonest {
+                    Some(prev) if prev < wait => prev,
+                    _ => wait,
+                });
+            }
+        }
+        soonest
     }
 
     /// Get next token (legacy method - always returns token regardless of FloodWait)
@@ -406,5 +489,47 @@ mod tests {
 
         assert_eq!(pool.metrics().flooded_bots, 0);
         assert!(pool.next_available_token().is_some());
+    }
+
+    #[test]
+    fn per_bot_interval_allows_parallel_dispatch() {
+        // Two bots, 1s interval each → first dispatch to each is immediate,
+        // second to the SAME bot within 1s blocks, but the OTHER bot is free.
+        let pool = BotPool::with_interval(vec!["a".into(), "b".into()], Duration::from_secs(1));
+
+        let (t1, _) = pool.try_acquire_now().expect("first acquire");
+        let (t2, _) = pool.try_acquire_now().expect("second acquire to other bot");
+        assert_ne!(t1, t2, "two distinct bots must be dispatched in parallel");
+
+        // Both bots now cooling; third immediate acquire must fail.
+        assert!(pool.try_acquire_now().is_none());
+        // But an eligible wait is reported (≤1s).
+        let wait = pool.earliest_eligible_in().expect("some bot eligible soon");
+        assert!(wait <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn zero_interval_always_eligible() {
+        let pool = BotPool::new(vec!["a".into()]);
+        assert!(pool.try_acquire_now().is_some());
+        assert!(pool.try_acquire_now().is_some());
+        assert!(pool.earliest_eligible_in().is_none());
+    }
+
+    #[test]
+    fn try_acquire_skips_flooded_bots() {
+        let pool = BotPool::with_interval(vec!["a".into(), "b".into()], Duration::from_secs(1));
+        pool.mark_flood_wait(0, 30);
+        // Only 'b' available and eligible now.
+        let (t, _) = pool.try_acquire_now().expect("acquire non-flooded bot");
+        assert_eq!(t, "b");
+    }
+
+    #[test]
+    fn all_flooded_acquires_none_and_no_wait() {
+        let pool = BotPool::with_interval(vec!["a".into()], Duration::from_secs(1));
+        pool.mark_flood_wait(0, 30);
+        assert!(pool.try_acquire_now().is_none());
+        assert!(pool.earliest_eligible_in().is_none());
     }
 }

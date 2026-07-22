@@ -47,3 +47,19 @@ app/coverage/
 *.aab
 .gradle/
 local.properties
+.env.backup-*
+/data/postgres/
+/data/backup-staging/
+/data/backup-state/
+/data/backup-retained/
+
+# Local analysis and runtime evidence (never publish)
+/.wolf/
+/evidence/
+/workflow_status.md
+/AGENTS.md
+/tests/e2e/test-results/
+**/*.db-shm
+**/*.db-wal
+scripts/native/**/__pycache__/
+/x.tmp

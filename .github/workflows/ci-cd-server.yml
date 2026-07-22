@@ -21,8 +21,6 @@ on:
       - 'Dockerfile'
       - 'docker-compose*.yml'
       - 'tests/**'
-  release:
-    types: [published]
 
 env:
   REGISTRY: ghcr.io
@@ -136,17 +134,25 @@ jobs:
             -e RATE_LIMIT_RPM=600 \
             telegram-drive-api:ci
 
-      - name: Wait for health
+      - name: Wait for process liveness
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:11334/api/v1/health | grep -q '"status":"ok"'; then
-              curl -fsS http://127.0.0.1:11334/api/v1/health
+            if curl -fsS http://127.0.0.1:11334/health/live | grep -q '"status":"alive"'; then
+              curl -fsS http://127.0.0.1:11334/health/live
               exit 0
             fi
             sleep 2
           done
           docker logs td-api
           exit 1
+
+      - name: Readiness rejects an unconnected Telegram transport
+        run: |
+          status=$(curl -sS -o /tmp/td-readiness.json -w '%{http_code}' http://127.0.0.1:11334/health/ready)
+          cat /tmp/td-readiness.json
+          test "$status" = "503"
+          grep -q '"status":"not_ready"' /tmp/td-readiness.json
+          grep -q '"ready":false' /tmp/td-readiness.json
 
       - name: Integration tests
         run: |
@@ -164,7 +170,7 @@ jobs:
   publish-image:
     name: Publish Docker Image
     needs: [build-and-smoke]
-    if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -218,7 +224,9 @@ jobs:
 
   tauri-release:
     name: Tauri Desktop Release
-    if: github.event_name == 'release'
+    # Product delivery is Web UI + Headless API. Keep the legacy job visible for
+    # historical context, but never run it from the current release workflow.
+    if: ${{ false }}
     needs: [rust-test, frontend-test]
     permissions:
       contents: write

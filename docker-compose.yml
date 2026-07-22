@@ -15,7 +15,8 @@ services:
     container_name: telegram-drive-api
     restart: unless-stopped
     ports:
-      - "${PORT:-1334}:${PORT:-1334}"
+      # Keep plaintext HTTP local; put TLS termination in a reverse proxy when publishing.
+      - "127.0.0.1:${PORT:-1334}:${PORT:-1334}"
     volumes:
       - ./data:/data
       - ./deploy/web:/app/deploy/web:ro
@@ -27,10 +28,11 @@ services:
       DATA_DIR: /data
       STATIC_DIR: /app/deploy/web
       DOCS_DIR: /app/docs
+      # Container listens on its network interface; the host mapping above stays loopback-only.
       BIND_HOST: 0.0.0.0
       PORT: ${PORT:-1334}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${PORT:-1334}/api/v1/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${PORT:-1334}/health/live | grep -q '\"status\":\"alive\"' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

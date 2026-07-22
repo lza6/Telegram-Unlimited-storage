@@ -90,7 +90,7 @@ ENV DATA_DIR=/data STATIC_DIR=/app/deploy/web DOCS_DIR=/app/docs PORT=1334 BIND_
     CARGO_INCREMENTAL=1 RUST_LOG=info
 EXPOSE 1334
 HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:1334/api/v1/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-1334}/health/live" || exit 1
 # --poll：Windows 下 bind mount 文件变更检测；debug 编比 release 快，适合开发
 CMD ["cargo", "watch", "--poll", "-d", "5", "-w", "src", "-w", "build.rs", \
      "-s", "cargo run --bin telegram-drive-server --features headless-server"]
@@ -124,14 +124,13 @@ RUN mkdir -p /data && chown telegram:telegram /data
 ENV DATA_DIR=/data \
     STATIC_DIR=/app/deploy/web \
     DOCS_DIR=/app/docs \
-    PORT=1334 \
-    BIND_HOST=0.0.0.0
+    PORT=1334
 
 EXPOSE 1334
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:1334/api/v1/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-1334}/health/live" || exit 1
 
 # Run as non-root user
 USER telegram

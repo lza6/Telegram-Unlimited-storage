@@ -1,17 +1,7 @@
-name: Docker API
+name: Docker API Quality Gate
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'app/src-tauri/**'
-      - 'app/src/**'
-      - 'deploy/**'
-      - 'docs/**'
-      - 'Dockerfile'
-      - 'docker-compose.yml'
-      - 'tests/integration/**'
-      - 'tests/e2e/**'
+  workflow_call:
   pull_request:
     branches: [main]
     paths:
@@ -24,17 +14,46 @@ on:
       - 'tests/integration/**'
       - 'tests/e2e/**'
 
+      - .github/workflows/**
+      - app/package.json
+      - app/package-lock.json
+      - tests/e2e/package.json
+      - tests/e2e/package-lock.json
+
+permissions:
+  contents: read
+
 jobs:
   rust-test:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
+
+      - name: cargo fmt
+        working-directory: app/src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (headless)
+        working-directory: app/src-tauri
+        run: cargo clippy --no-default-features --features headless-server --lib --tests
 
       - name: cargo test (headless lib + integration)
         working-directory: app/src-tauri
@@ -52,21 +71,34 @@ jobs:
       - name: Vitest (app)
         working-directory: app
         run: |
-          npm install
+          npm ci
           npm run test
           npm run test:coverage
+
+      - name: npm audit (high severity)
+        working-directory: app
+        run: npm audit --audit-level=high
 
       - name: cargo audit
         working-directory: app/src-tauri
         run: |
           cargo install cargo-audit --locked 2>/dev/null || true
-          cargo audit || echo "audit warnings (non-blocking in beta)"
+          cargo audit
 
-  build-and-smoke:
+  docker-smoke:
     needs: rust-test
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
 
       - name: Build Docker image
         run: docker build -t telegram-drive-api:ci .
@@ -81,17 +113,25 @@ jobs:
             -e RATE_LIMIT_RPM=600 \
             telegram-drive-api:ci
 
-      - name: Wait for health
+      - name: Wait for process liveness
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:11334/api/v1/health | grep -q '"status":"ok"'; then
-              curl -fsS http://127.0.0.1:11334/api/v1/health
+            if curl -fsS http://127.0.0.1:11334/health/live | grep -q '"status":"alive"'; then
+              curl -fsS http://127.0.0.1:11334/health/live
               exit 0
             fi
             sleep 2
           done
           docker logs td-api
           exit 1
+
+      - name: Readiness rejects an unconnected Telegram transport
+        run: |
+          status=$(curl -sS -o /tmp/td-readiness.json -w '%{http_code}' http://127.0.0.1:11334/health/ready)
+          cat /tmp/td-readiness.json
+          test "$status" = "503"
+          grep -q '"status":"not_ready"' /tmp/td-readiness.json
+          grep -q '"ready":false' /tmp/td-readiness.json
 
       - name: Integration tests (bash)
         run: |
@@ -119,7 +159,7 @@ jobs:
           E2E_BASE_URL: http://127.0.0.1:11334
           E2E_ACCESS_PWD: ci-test-pwd
         run: |
-          npm install
+          npm ci
           npx playwright install chromium --with-deps
           npm test
 

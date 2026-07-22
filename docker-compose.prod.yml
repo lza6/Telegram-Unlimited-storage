@@ -4,8 +4,8 @@
 #   set COMPOSE_FILE=docker-compose.yml;docker-compose.prod.yml   (PowerShell 用分号)
 #   docker compose up -d --build
 #
-# 水平扩展（需共享 ./data 卷，如 NFS；否则仅用于 UploadGate 压测）：
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale telegram-drive-api=2
+# SQLite metadata is a single-writer deployment. Horizontal replicas are deliberately unsupported:
+# do not use --scale or a shared SQLite/NFS volume. Migrate metadata to a server database before replicas.
 
 services:
   redis:
@@ -35,6 +35,7 @@ services:
       RATE_LIMIT_API_RPM: ${RATE_LIMIT_API_RPM:-1200}
       METADATA_CACHE_ENABLED: ${METADATA_CACHE_ENABLED:-false}
     deploy:
+      replicas: 1
       resources:
         limits:
           cpus: "4"

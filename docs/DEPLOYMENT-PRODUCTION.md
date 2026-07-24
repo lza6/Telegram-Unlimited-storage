@@ -40,7 +40,7 @@ flowchart TB
 | 分片上传 | `/upload_chunk` + merge + SHA256 | tg-disk 同款协议 |
 | 服务端背压 | UploadGate 503 + Retry-After | 优于 tg-disk 仅前端限流 |
 | 多 Bot | `TG_BOT_TOKENS` + bot_pool | Pentaract worker 池 |
-| 错误分类 | `telegram_error.rs` retriable/fatal | K-Vault classifyStorageError |
+| 错误分类 | `telegram_state.py` retriable/fatal | K-Vault classifyStorageError |
 | Bot 大文件下载 | **新增** HTML/JSON 降级页 | tg-disk 引导页 |
 | 健康检查 | `/health/live` 存活 + `/health/ready` 流量就绪；旧 `/api/v1/health` 仅兼容 | K-Vault compose depends_on |
 | 生产栈 | `docker-compose.prod.yml` + Redis | K-Vault 全栈 compose |
@@ -155,7 +155,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale te
 Bot 模式（默认，易部署）
   ↓ 单文件 >20MB 下载失败
   → 分片 re-upload（merge 后按 chunk 下载）  [tg-disk 方案]
-  → 或切换 TELEGRAM_TRANSPORT_MODE=user       [grammers 大文件]
+  → 或切换 TELEGRAM_TRANSPORT_MODE=user       [Telethon 大文件]
   ↓ Bot FloodWait 密集
   → 增加 TG_BOT_TOKENS（bot_pool 轮询）
   → 调大 BOT_RATE_LIMIT_MS（降速换稳定）
@@ -218,7 +218,7 @@ server {
 
 ### 发版前
 
-- [ ] `cargo test --features headless-server`
+- [ ] `cd backend && python -m pytest`
 - [ ] `docker compose up -d --build` + healthcheck 通过
 - [ ] `stress-upload-slots.ps1 -Parallel 32`（或 500 soak）
 

@@ -1,3 +1,7 @@
+> ⚠️ **归档说明（v5.0）**：本文件记录的是 Rust/Tauri 桌面端时代（grammers + actix-web）的审计与修复历史。桌面端及 Rust 后端已在 v5.0 完整移除，后端迁移至 Python（FastAPI + Telethon）。文中所有 `cargo test --features headless-server` 命令、Tauri 拖放（`onDragDropEvent`）等条目**均已失效**，仅作历史存档保留。当前测试入口见 [CLAUDE.md](../CLAUDE.md)（`cd backend && python -m pytest`）。
+
+---
+
 ## 第六十三轮修复（多租户授权、Headless 默认收口与交付证据）
 
 > 详表：[FINAL-AUDIT-R63.md](FINAL-AUDIT-R63.md)

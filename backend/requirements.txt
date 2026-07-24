@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+telethon
+cryptg
+python-socks[asyncio]
+python-multipart
+argon2-cffi
+pydantic-settings
+httpx[socks]

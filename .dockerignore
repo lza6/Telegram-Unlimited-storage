@@ -2,9 +2,11 @@
 .git
 .github
 data
-**/target
-app/src-tauri/target
 node_modules
+backend/.venv
+backend/tests
+**/__pycache__
+**/*.pyc
 *.md
 !README-DOCKER.md
 .wolf

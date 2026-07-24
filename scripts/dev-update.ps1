@@ -1,4 +1,7 @@
-# 智能更新：Web 秒级 / Rust 增量 / 全镜像（按需）
+# Smart update: Web instant / Python reload / full image (as needed)
+# Python backend runs uvicorn --reload in dev, so backend edits hot-reload
+# automatically; this script only needs to rebuild the image when
+# requirements.txt / Dockerfile change.
 param(
     [switch]$ForceFull,
     [string]$Container,
@@ -14,34 +17,49 @@ if (-not $Container) {
     $Container = if ($UseCompose) { $script:TD_COMPOSE_CONTAINER } else { Get-DevContainer "" }
 }
 
-if ($ForceFull) {
-    & (Join-Path $scriptDir "dev-build-api.ps1") -Container $Container -UseCompose:$UseCompose
+function Invoke-FullRebuild {
+    Write-Host "Full image rebuild (requirements.txt / Dockerfile) ..." -ForegroundColor Yellow
+    & (Join-Path $scriptDir "compose-up.ps1") -Rebuild
     exit $LASTEXITCODE
 }
 
-$rustChanged = $false
+if ($ForceFull) {
+    Invoke-FullRebuild
+}
+
+$depsChanged = $false
+$backendChanged = $false
 $webChanged = $false
 try {
     $status = git -C $root status --porcelain 2>$null
     if ($status) {
-        $rustChanged = $status -match 'app/src-tauri/'
-        $webChanged = $status -match 'deploy/web/|docs/'
+        $depsChanged    = $status -match 'requirements.*\.txt|Dockerfile|docker-compose'
+        $backendChanged = $status -match 'backend/'
+        $webChanged     = $status -match 'deploy/web/|docs/'
     } else {
-        $rustChanged = $true
+        $depsChanged = $true
     }
 } catch {
-    $rustChanged = $true
+    $depsChanged = $true
 }
 
-if ($webChanged -and -not $rustChanged) {
+if ($depsChanged) {
+    Invoke-FullRebuild
+}
+
+if ($webChanged -and -not $backendChanged) {
     Write-Host "Web-only changes -> dev-sync-web" -ForegroundColor Cyan
     & (Join-Path $scriptDir "dev-sync-web.ps1") -Container $Container
     exit $LASTEXITCODE
 }
 
-if ($rustChanged) {
-    Write-Host "Rust changes -> dev-build-rust (incremental)" -ForegroundColor Cyan
-    & (Join-Path $scriptDir "dev-build-rust.ps1") -Container $Container -UseCompose:$UseCompose
+if ($backendChanged) {
+    Write-Host "Backend changes -> uvicorn --reload hot-reloads in dev; restarting container to be safe" -ForegroundColor Cyan
+    if ($UseCompose) {
+        docker compose -f (Join-Path $root "docker-compose.yml") -f (Join-Path $root "docker-compose.dev.yml") restart telegram-drive-api
+    } elseif ($Container) {
+        docker restart $Container
+    }
     exit $LASTEXITCODE
 }
 

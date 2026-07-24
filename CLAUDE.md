@@ -1,6 +1,6 @@
 # Telegram Drive 开发指南
 
-Telegram Drive 是基于 **Tauri v2 + Rust + React** 的跨平台桌面应用，将 Telegram 账号转换为无限云存储。支持桌面端和 Docker Headless API 两种部署模式。
+Telegram Drive 是基于 **Python FastAPI + Telethon + 静态 Web UI** 的跨平台云存储服务，将 Telegram 账号转换为无限云存储。支持 Docker 部署和本地 Python 进程两种模式。
 
 ---
 
@@ -8,9 +8,9 @@ Telegram Drive 是基于 **Tauri v2 + Rust + React** 的跨平台桌面应用，
 
 | 层级 | 技术栈 | 位置 |
 |------|--------|------|
-| **前端** | React 19 + TypeScript + TailwindCSS 4 + Vite 7 | `app/src/` |
-| **后端** | Rust + Tauri v2 + Grammers (Telegram Client) | `app/src-tauri/src/` |
-| **API 服务** | Actix-web + Redis + SQLite | `app/src-tauri/src/bin/` |
+| **前端** | 静态 HTML/CSS/JS | `deploy/web/` |
+| **后端** | Python 3.11 + FastAPI + uvicorn + Telethon | `backend/app/` |
+| **数据库** | SQLite（默认）/ PostgreSQL（控制面模式） | `backend/app/storage.py` |
 | **部署** | Docker + docker-compose | `deploy/`, `Dockerfile` |
 
 ### 核心功能
@@ -19,8 +19,8 @@ Telegram Drive 是基于 **Tauri v2 + Rust + React** 的跨平台桌面应用，
 - 分片上传 / 流媒体播放 / PDF 查看
 - 分享链接（密码保护 + 过期时间）
 - REST API（AI 集成）+ Web 控制台
-- SOCKS5 代理 + VPN 优化器
-- 自动更新（Tauri Updater）
+- SOCKS5 代理支持
+- 多租户支持
 
 ---
 
@@ -28,20 +28,16 @@ Telegram Drive 是基于 **Tauri v2 + Rust + React** 的跨平台桌面应用，
 
 ### 前置依赖
 
-| 依赖 | 版本 | Windows 安装 |
-|------|------|--------------|
-| Node.js | ≥18 | [nodejs.org](https://nodejs.org/) |
-| Rust | stable | `rustup-init.exe` from [rustup.rs](https://rustup.rs/) |
-| Visual Studio Build Tools | 最新 | 选择 "Desktop development with C++" 工作负载 |
-| WebView2 | 已预装 | Windows 10/11 通常自带 |
+| 依赖 | 版本 | 安装 |
+|------|------|------|
+| Python | ≥3.11 | [python.org](https://www.python.org/downloads/) |
+| Docker（可选） | 最新 | [docker.com](https://www.docker.com/) |
 
 ### 验证安装
 
 ```bash
-node --version   # ≥18
-rustc --version  # stable
-cargo --version
-where.exe cargo  # Windows 使用 where.exe 而非 which
+python --version   # ≥3.11
+pip --version
 ```
 
 ### Telegram API 凭证
@@ -54,33 +50,38 @@ where.exe cargo  # Windows 使用 where.exe 而非 which
 
 ```
 Telegram-Drive/
-├── app/                        # Tauri 应用主目录
-│   ├── src/                    # React 前端
-│   │   ├── components/         # UI 组件（Dashboard, AuthWizard 等）
-│   │   ├── hooks/              # 自定义 hooks（useFileUpload, useFileDownload 等）
-│   │   ├── context/            # React Context（SettingsContext）
-│   │   ├── lib/                # 工具函数
-│   │   ├── types/              # TypeScript 类型定义
-│   │   └── App.tsx             # 入口组件
-│   ├── src-tauri/              # Rust 后端
-│   │   ├── src/
-│   │   │   ├── commands/       # Tauri 命令（auth, fs, sharing 等）
-│   │   │   ├── server.rs       # API 服务器核心
-│   │   │   ├── api_routes.rs   # REST API 路由
-│   │   │   ├── share_routes.rs # 分享功能路由
-│   │   │   ├── vpn_optimizer.rs # VPN 网络优化
-│   │   │   └── bin/            # Headless Server 入口
-│   │   ├── Cargo.toml          # Rust 依赖
-│   │   └── tauri.conf.json     # Tauri 配置
-│   ├── package.json            # Node 依赖
-│   └── tsconfig.json           # TypeScript 配置
+├── backend/                    # Python 后端
+│   ├── app/
+│   │   ├── main.py             # FastAPI 应用入口 + 中间件
+│   │   ├── config.py           # 配置（pydantic-settings）
+│   │   ├── auth.py             # 认证逻辑
+│   │   ├── security.py         # 安全工具（Argon2, HMAC, 令牌）
+│   │   ├── storage.py          # SQLite/PostgreSQL 存储层
+│   │   ├── telegram_state.py   # Telegram 连接状态
+│   │   ├── transfers.py        # 传输管理（上传/下载）
+│   │   ├── downloads.py        # 下载逻辑
+│   │   ├── links.py            # 分享链接逻辑
+│   │   ├── bot_transport.py    # Bot 传输模式
+│   │   ├── settings_store.py   # 设置存储
+│   │   ├── state.py            # 应用状态
+│   │   └── routers/            # API 路由
+│   │       ├── auth.py         # 认证路由
+│   │       ├── files.py        # 文件操作路由
+│   │       ├── health.py       # 健康检查路由
+│   │       ├── legacy.py       # 兼容旧接口路由
+│   │       ├── settings.py     # 设置路由
+│   │       └── shares.py       # 分享路由
+│   ├── tests/                  # pytest 测试
+│   ├── requirements.txt        # 生产依赖
+│   ├── requirements-dev.txt    # 开发依赖（含 pytest）
+│   └── pytest.ini              # pytest 配置
 ├── deploy/                     # Docker 部署配置
 │   ├── web/                    # Web 控制台静态页面
 │   └── docker-compose.yml
 ├── docs/                       # 项目文档
-│   ├── DESKTOP-API.md          # 桌面 REST API 说明
+│   ├── DESKTOP-API.md          # REST API 说明
 │   ├── DEPLOYMENT-PRODUCTION.md # 生产部署指南
-│   └── ROUND-*.md              # TDD 开发轮次记录
+│   └── ...
 ├── tests/                      # 集成测试
 ├── .env.example                # 环境变量模板
 └── CLAUDE.md                   # 本文件
@@ -90,31 +91,26 @@ Telegram-Drive/
 
 ## 常用命令
 
-### 开发模式
+### 本地开发
 
 ```bash
-cd app
-npm install                      # 安装依赖
-npm run tauri dev                # 启动开发模式（首次编译 5-15 分钟）
-```
+cd backend
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
+pip install -r requirements-dev.txt
 
-### 构建
-
-```bash
-npm run build                    # 前端构建
-npm run tauri build              # 全量构建（生成安装包）
+# 从仓库根启动（.env 自动加载）
+cd ..
+.venv\Scripts\python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 1334 --reload
 ```
 
 ### 测试
 
 ```bash
-npm run test                     # Vitest 单元测试
-npm run test:coverage            # 带覆盖率报告
-
-cd app/src-tauri
-cargo test                       # Rust 单元测试
-cargo clippy -- -D warnings      # Clippy lint（警告视为错误）
-cargo fmt -- --check             # 格式检查
+cd backend
+.venv\Scripts\python -m pytest           # 运行测试
+.venv\Scripts\python -m pytest --cov=app # 带覆盖率
 ```
 
 ### Docker 部署
@@ -128,83 +124,36 @@ docker-compose -f docker-compose.prod.yml up -d  # 生产环境
 
 ## 编码规范
 
-### TypeScript/React
+### Python
 
 #### 文件组织
 
 - 按功能组织，而非文件类型
 - 组件文件 `< 800 行`，函数 `< 50 行`
-- 自定义 hooks 使用 `use` 前缀
-
-#### 命名约定
-
-| 类型 | 约定 | 示例 |
-|------|------|------|
-| 组件 | PascalCase | `FileCard`, `Dashboard` |
-| hooks | camelCase + use | `useFileUpload` |
-| 函数/变量 | camelCase | `handleUpload`, `fileList` |
-| 类型/接口 | PascalCase | `FileItem`, `UploadConfig` |
-| 常量 | UPPER_SNAKE_CASE | `MAX_FILE_SIZE` |
-
-#### 状态管理
-
-| 场景 | 工具 |
-|------|------|
-| 服务端状态 | TanStack Query |
-| 全局状态 | React Context |
-| 表单状态 | 受控组件 |
-
-#### 不可变性
-
-```typescript
-// 正确：返回新对象
-const updated = { ...original, field: value };
-
-// 错误：就地修改
-original.field = value;
-```
-
-### Rust
-
-#### 格式化
-
-```bash
-cargo fmt                        # 自动格式化
-cargo clippy -- -D warnings      # lint 检查
-```
-
-#### 错误处理
-
-- 使用 `Result<T, E>` + `?` 传播错误
-- 库代码使用 `thiserror` 定义类型错误
-- 应用代码使用 `anyhow` 添加上下文
-
-```rust
-// 正确：带上下文的错误传播
-use anyhow::Context;
-
-fn load_config(path: &str) -> anyhow::Result<Config> {
-    std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {path}"))?
-        .parse()
-        .with_context(|| format!("failed to parse {path}"))?
-}
-```
-
-#### 所有权
-
-- 默认借用 (`&T`)，仅在需要存储或消耗时获取所有权
-- 函数参数优先 `&str` 而非 `String`，`&[T]` 而非 `Vec<T>`
-- 构造函数使用 `impl Into<String>` 接收参数
+- 使用类型注解
 
 #### 命名约定
 
 | 类型 | 约定 | 示例 |
 |------|------|------|
 | 函数/变量 | snake_case | `get_file_list`, `peer_cache` |
-| 类型/枚举 | PascalCase | `TelegramState`, `ConnectionState` |
+| 类/类型 | PascalCase | `TelegramState`, `ConnectionState` |
 | 常量 | SCREAMING_SNAKE_CASE | `MAX_RETRY_COUNT` |
 | 模块 | snake_case | `commands`, `api_routes` |
+
+#### 错误处理
+
+- 使用 `Result<T, E>` 模式（Python: 异常 + try/except）
+- 库代码使用具体异常类型
+- 应用代码添加上下文信息
+
+```python
+# 正确：带上下文的错误传播
+try:
+    config = load_config(path)
+except FileNotFoundError:
+    raise ConfigError(f"Config file not found: {path}")
+```
 
 ---
 
@@ -214,7 +163,7 @@ fn load_config(path: &str) -> anyhow::Result<Config> {
 
 - [ ] 无硬编码密钥（API keys, tokens）
 - [ ] 用户输入已验证
-- [ ] SQL 使用参数化查询（`sqlite` crate 的 bind 参数）
+- [ ] SQL 使用参数化查询
 - [ ] 文件路径已净化（防止路径遍历）
 - [ ] 错误消息不泄露内部信息
 
@@ -224,10 +173,11 @@ fn load_config(path: &str) -> anyhow::Result<Config> {
 - `.env` 已在 `.gitignore` 中
 - 启动时验证必需密钥存在
 
-```rust
-// 正确：从环境变量加载
-std::env::var("API_KEY")
-    .context("API_KEY must be set")?
+```python
+# 正确：从环境变量加载
+api_key = os.environ.get("API_KEY")
+if not api_key:
+    raise ValueError("API_KEY must be set")
 ```
 
 ---
@@ -238,41 +188,21 @@ std::env::var("API_KEY")
 
 | 层级 | 工具 | 位置 |
 |------|------|------|
-| React 单元测试 | Vitest + Testing Library | `app/src/**/*.test.tsx` |
-| Rust 单元测试 | `#[test]` + `#[cfg(test)]` | `app/src-tauri/src/**/*.rs` |
-| 集成测试 | cargo test --test | `tests/` |
+| Python 单元测试 | pytest | `backend/tests/` |
+| 集成测试 | PowerShell/curl | `tests/integration/` |
 
 ### 测试结构（AAA 模式）
 
-```typescript
-test('calculates file size correctly', () => {
-  // Arrange
-  const file = { size: 1024 };
+```python
+def test_calculate_file_size():
+    # Arrange
+    file_size = 1024
 
-  // Act
-  const result = formatFileSize(file.size);
+    # Act
+    result = format_file_size(file_size)
 
-  // Assert
-  expect(result).toBe('1 KB');
-});
-```
-
-### Rust 测试
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signal_runner_shutdown_sends_once() {
-        let shutdown = Arc::new(std::sync::Mutex::new(None));
-        let (tx, mut rx) = oneshot::channel();
-        *shutdown.lock().unwrap() = Some(tx);
-        assert!(signal_runner_shutdown(&shutdown));
-        rx.try_recv().expect("shutdown signal");
-    }
-}
+    # Assert
+    assert result == "1 KB"
 ```
 
 ---
@@ -300,48 +230,33 @@ mod tests {
 
 ## 架构要点
 
-### Tauri 命令模式
+### FastAPI 应用结构
 
-Rust 后端通过 `#[tauri::command]` 暴露给前端：
+`main.py` 是核心入口：
 
-```rust
-#[tauri::command]
-async fn cmd_upload_file(
-    path: String,
-    folder_id: i64,
-    state: State<'_, TelegramState>,
-) -> Result<UploadResult, String> {
-    // 实现...
-}
-```
+```python
+app = create_app()
 
-前端调用：
-
-```typescript
-import { invoke } from '@tauri-apps/api';
-
-const result = await invoke('cmd_upload_file', { 
-  path, 
-  folderId 
-});
+@app.on_event("startup")
+async def startup():
+    # 初始化 TelegramState, Storage, Authenticator 等
+    ...
 ```
 
 ### Telegram 连接状态
 
 `TelegramState` 是核心状态结构：
 
-```rust
-pub struct TelegramState {
-    pub client: Arc<Mutex<Option<Client>>>,
-    pub login_token: Arc<Mutex<Option<LoginToken>>>,
-    pub password_token: Arc<Mutex<Option<PasswordToken>>>,
-    pub runner_shutdown: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
-    pub peer_cache: Arc<RwLock<HashMap<i64, Peer>>>,
-    pub cancelled_transfers: Arc<RwLock<HashSet<String>>>,
-}
+```python
+class TelegramState:
+    client: Optional[TelegramClient]
+    login_token: Optional[str]
+    password_token: Optional[str]
+    peer_cache: Dict[int, Peer]
+    cancelled_transfers: Set[str]
 ```
 
-**关键注意**：重新连接前必须 shutdown 旧 runner，否则线程栈耗尽。
+**关键注意**：重新连接前必须断开旧连接。
 
 ### REST API 端点
 
@@ -353,24 +268,20 @@ pub struct TelegramState {
 | `/api/v1/auth/status` | 连接状态 |
 
 API 认证：
-- 桌面端：`X-Access-Pwd`（本地密码）
+- Web 控制台：`X-Access-Pwd`（本地密码）
 - 外部集成：`X-API-Key`（Argon2 hash 校验）
 
 ---
 
 ## 常见问题
 
-### 构建失败：`linker 'link.exe' not found`
+### 首次运行
 
-安装 Visual Studio Build Tools，选择 "Desktop development with C++"。
+首次需安装 Python 依赖，耗时 1-2 分钟。后续启动将快很多。
 
-### 首次编译时间长
+### .env 加载
 
-首次需编译 300+ Rust crates，耗时 5-15 分钟。后续构建将快很多。
-
-### NPM 漏洞警告
-
-通常与构建工具和 dev dependencies 相关，可选运行 `npm audit fix`。
+`.env` 文件从仓库根目录加载（`config.py` 使用绝对路径解析）。无论从哪个目录启动 uvicorn，都能正确加载。
 
 ---
 
@@ -390,11 +301,10 @@ API 认证：
 |------|------|
 | [README.md](README.md) | 项目简介与安装指南 |
 | [README-DOCKER.md](README-DOCKER.md) | Docker 部署快速开始 |
-| [docs/DESKTOP-API.md](docs/DESKTOP-API.md) | 桌面 REST API 详情 |
+| [docs/DESKTOP-API.md](docs/DESKTOP-API.md) | REST API 详情 |
 | [docs/DEPLOYMENT-PRODUCTION.md](docs/DEPLOYMENT-PRODUCTION.md) | 生产部署指南 |
-| [docs/ROUND-39-TDD.md](docs/ROUND-39-TDD.md) | 最新 TDD 方案 |
 
 ---
 
-*最后更新: 2026-06-12*
-*版本: 4.0.0-beta*
+*最后更新: 2026-07-24*
+*版本: 5.0.0-python*

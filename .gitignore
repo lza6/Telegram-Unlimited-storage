@@ -4,12 +4,6 @@ dist/
 .DS_Store
 .env
 
-# Rust
-/app/src-tauri/target/
-.build-cache/
-/app/src-tauri/gen/
-**/*.rs.bk
-
 # Editors
 .vscode/
 .idea/
@@ -37,16 +31,6 @@ Error.html
 /data/api_settings.json
 /data/network_settings.json
 
-# Test coverage output (generated)
-app/coverage/
-
-# Android local builds
-/android/
-/app/src-tauri/gen/android/
-*.apk
-*.aab
-.gradle/
-local.properties
 .env.backup-*
 /data/postgres/
 /data/backup-staging/
@@ -63,3 +47,16 @@ local.properties
 **/*.db-wal
 scripts/native/**/__pycache__/
 /x.tmp
+
+# ── Python backend artifacts (v5.0) ──
+backend/.venv/
+backend/data/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Pre-migration runtime backups (contain Telegram session secrets — never commit) ──
+/backups/

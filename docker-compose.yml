@@ -3,13 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
       pull: false
-      cache_from:
-        - telegram-drive-api:local
-        - telegram-drive-api:builder
       args:
-        RUST_VERSION: "1.85-bookworm"
-        DEBIAN_VERSION: "bookworm-slim"
+        PYTHON_VERSION: "3.11-slim-bookworm"
         BUILDKIT_INLINE_CACHE: "1"
     image: telegram-drive-api:local
     container_name: telegram-drive-api
@@ -32,7 +29,7 @@ services:
       BIND_HOST: 0.0.0.0
       PORT: ${PORT:-1334}
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${PORT:-1334}/health/live | grep -q '\"status\":\"alive\"' || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:1334/health/live',timeout=3).status==200 else 1)\" || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

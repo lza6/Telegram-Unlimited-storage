@@ -597,3 +597,20 @@ async def rebuild_index(request: Request, body: Optional[RebuildIndexRequest] = 
     return JSONResponse(
         {"folders_scanned": folders_scanned, "files_indexed": files_indexed}
     )
+
+
+@router.post("/files/sync-channel")
+async def sync_channel(request: Request) -> JSONResponse:
+    """Show sync status (background poller auto-indexes new channel posts)."""
+    state = get_state(request)
+    identity = state.authenticator.require_auth(request)
+    if state.effective_transport_mode() != "bot":
+        return api_error("NOT_SUPPORTED", "Channel sync is only available in bot mode", 400)
+    files = state.storage.list_bot_files(limit=100)
+    return JSONResponse({
+        "status": "ok",
+        "mode": "auto",
+        "total_files": len(files),
+        "note": "New channel posts are auto-indexed by background polling. "
+                "To import existing messages, forward them from the channel to the bot's DM.",
+    })

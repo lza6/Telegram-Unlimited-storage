@@ -63,6 +63,19 @@ Web 调用 API 使用登录密码作为 `X-Access-Pwd` 请求头；外部集成�
 *   **Database**: SQLite (default) / PostgreSQL (control-plane mode)
 *   **Deployment**: Docker + docker-compose, or local Python process
 
+## Default Credentials
+
+> ⚠️ **Important**: Change these before deploying to production!
+
+After first start, log in at http://127.0.0.1:1334/login.html
+
+| Field | Default Value | Description |
+|-------|--------------|-------------|
+| `ACCESS_PWD` | `change-me-strong-password` | Web console login password |
+| `API_KEY` | `generate-a-long-random-hex-key` | External API integration key |
+
+**How to change**: Edit the `ACCESS_PWD` and `API_KEY` values in `.env`, then restart the server.
+
 ## Getting Started
 
 ### Prerequisites

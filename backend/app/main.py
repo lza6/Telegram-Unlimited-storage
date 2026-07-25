@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
 from . import security
+from .audit import init_audit_logger
 from .auth import Authenticator
 from .bot_transport import BotTransport
 from .config import Settings, get_settings
@@ -38,6 +39,7 @@ from .routers import health as health_router
 from .routers import legacy as legacy_router
 from .routers import settings as settings_router
 from .routers import shares as shares_router
+from .routers import webdav as webdav_router
 from .settings_store import SettingsStore
 from .state import AppState
 from .storage import Storage
@@ -216,6 +218,10 @@ async def lifespan(app: FastAPI):
             "set a unique secret for production deployments"
         )
 
+    # Initialize audit logger
+    audit_log_path = settings.data_dir / "audit.log"
+    init_audit_logger(audit_log_path, enabled=True)
+
     # Background task: periodic cleanup of expired progress/download records
     async def _periodic_prune():
         try:
@@ -226,6 +232,13 @@ async def lifespan(app: FastAPI):
             pass
 
     prune_task = asyncio.create_task(_periodic_prune())
+
+    # Background task: poll channel posts (bot mode)
+    poll_task = None
+    if state.bot is not None:
+        poll_task = state.bot.start_polling(state.storage)
+        logger.info("started channel post polling for bot mode")
+
     try:
         yield
     finally:
@@ -234,6 +247,12 @@ async def lifespan(app: FastAPI):
             await prune_task
         except asyncio.CancelledError:
             pass
+        if poll_task is not None:
+            poll_task.cancel()
+            try:
+                await poll_task
+            except asyncio.CancelledError:
+                pass
         logger.info("shutting down")
         try:
             await state.telegram.disconnect()
@@ -311,6 +330,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(shares_router.router)
     app.include_router(settings_router.router)
     app.include_router(legacy_router.router)
+    app.include_router(webdav_router.router)
 
     # ── docs directory: /docs/* ─────────────────────────────────────────────
     @app.get("/docs/{rel:path}")

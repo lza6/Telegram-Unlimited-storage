@@ -8,6 +8,7 @@ Single-file cap is 20 MB (Bot API limit).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -66,8 +67,10 @@ class BotTransport:
             client_kwargs["proxy"] = proxy_url
         self._client = httpx.AsyncClient(**client_kwargs)
         self._flood_until: float = 0.0
+        self._storage: Any = None
 
     async def close(self) -> None:
+        self.stop_polling()
         await self._client.aclose()
 
     def _url(self, method: str) -> str:
@@ -167,3 +170,112 @@ class BotTransport:
                 yield chunk
                 if remaining is not None and remaining <= 0:
                     break
+
+    # ── channel post polling (sync new manual posts) ─────────────────────────
+
+    def start_polling(self, storage: Any) -> asyncio.Task:
+        """Start background task that polls getUpdates for channel posts.
+
+        First call with offset=0 fetches all pending updates (including
+        recent channel posts before the bot started). Subsequent calls
+        use long-polling for new posts.
+        """
+        self._storage = storage
+        self._poller_task = asyncio.create_task(self._poll_channel_posts())
+        return self._poller_task
+
+    def stop_polling(self) -> None:
+        if hasattr(self, "_poller_task"):
+            self._poller_task.cancel()
+
+    async def _poll_channel_posts(self) -> None:
+        """Long-poll getUpdates for channel_post and index files."""
+        offset = 0
+        while True:
+            try:
+                params: dict[str, Any] = {
+                    "timeout": 30,
+                    "allowed_updates": ["channel_post", "message"],
+                    "offset": offset,
+                }
+                result = await self._call("getUpdates", params=params)
+                if not result:
+                    continue
+                for update in result:
+                    uid = update.get("update_id", 0)
+                    offset = max(offset, uid + 1)
+                    post = update.get("channel_post") or update.get("message")
+                    if not post:
+                        continue
+                    await self._index_update(post)
+            except asyncio.CancelledError:
+                break
+            except BotFloodWaitError:
+                await asyncio.sleep(5)
+            except Exception:
+                logger.exception("channel poll error, retry in 10s")
+                await asyncio.sleep(10)
+
+    async def _index_update(self, post: dict) -> None:
+        """Index a single channel_post / forwarded message into bot_file_map."""
+        chat_id = post.get("chat", {}).get("id")
+        if str(chat_id) != self.storage_channel_id:
+            return
+
+        message_id = post.get("message_id")
+        if message_id is None:
+            return
+
+        caption = post.get("caption") or ""
+        doc = post.get("document")
+        photo = post.get("photo")
+        video = post.get("video")
+        audio = post.get("audio")
+
+        file_id = file_name = file_size = None
+
+        if doc:
+            file_id = doc.get("file_id")
+            file_name = doc.get("file_name") or f"file_{message_id}"
+            file_size = doc.get("file_size", 0)
+        elif video:
+            file_id = video.get("file_id")
+            ext = (video.get("mime_type") or "video/mp4").split("/")[-1] or "mp4"
+            file_name = f"video_{message_id}.{ext}"
+            file_size = video.get("file_size", 0)
+        elif audio:
+            file_id = audio.get("file_id")
+            ext = (audio.get("mime_type") or "audio/ogg").split("/")[-1] or "ogg"
+            file_name = audio.get("file_name") or f"audio_{message_id}.{ext}"
+            file_size = audio.get("file_size", 0)
+        elif photo:
+            largest = max(photo, key=lambda p: p.get("file_size", 0))
+            file_id = largest.get("file_id")
+            file_name = f"photo_{message_id}.jpg"
+            file_size = largest.get("file_size", 0)
+
+        if not file_id:
+            return
+
+        storage = getattr(self, "_storage", None)
+        if not storage:
+            return
+
+        try:
+            existing = storage.get_bot_file(message_id)
+            if existing:
+                return
+            storage.record_bot_file(
+                message_id=message_id,
+                telegram_file_id=file_id,
+                file_name=file_name,
+                file_size=file_size or 0,
+                caption=caption or None,
+                bot_pool_index=0,
+            )
+            logger.info(
+                "indexed channel post %d: %s (%d bytes)",
+                message_id, file_name, file_size or 0,
+            )
+        except Exception:
+            logger.exception("failed to index channel post %d", message_id)

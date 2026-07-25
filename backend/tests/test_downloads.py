@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.downloads import content_disposition, parse_range_header
+from app.downloads import content_disposition, guess_mime, parse_range_header
 
 
 class TestParseRangeHeader:
@@ -76,3 +76,26 @@ class TestContentDisposition:
     def test_filename_with_quotes_escaped(self):
         cd = content_disposition('file"name.txt', "text/plain")
         assert 'filename="file_name.txt"' in cd
+
+
+class TestGuessMime:
+    def test_guess_mime_jpeg(self):
+        assert guess_mime("photo.jpg") == "image/jpeg"
+
+    def test_guess_mime_png(self):
+        assert guess_mime("image.png") == "image/png"
+
+    def test_guess_mime_pdf(self):
+        assert guess_mime("document.pdf") == "application/pdf"
+
+    def test_guess_mime_unknown(self):
+        assert guess_mime("file.xyz") == "application/octet-stream"
+
+    def test_guess_mime_no_extension(self):
+        assert guess_mime("README") == "application/octet-stream"
+
+    def test_guess_mime_json(self):
+        assert guess_mime("data.json") == "application/json"
+
+    def test_guess_mime_html(self):
+        assert guess_mime("index.html") == "text/html"

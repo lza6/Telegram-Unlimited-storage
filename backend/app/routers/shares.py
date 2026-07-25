@@ -22,6 +22,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from .. import links, security
+from ..audit import AuditEvent, get_audit_logger
 from ..downloads import content_disposition, parse_range_header, resolve_download
 from ..settings_store import SettingsStore
 from ..state import AppState
@@ -134,6 +135,18 @@ async def create_share(request: Request) -> JSONResponse:
         owner_id=owner,
     )
     base = _share_base_url(state, request)
+
+    # Audit log: share creation
+    audit = get_audit_logger()
+    if audit:
+        client_ip = request.client.host if request.client else "unknown"
+        audit.log_share_create(
+            actor=client_ip,
+            share_id=token,
+            filename=file_name,
+            password_protected=bool(password_hash),
+        )
+
     return JSONResponse(_to_share_info(share, base))
 
 
@@ -149,6 +162,13 @@ async def delete_share(share_id: str, request: Request) -> JSONResponse:
         if share.get("owner_id") not in (expected_owner, None):
             return JSONResponse({"error": "Forbidden"}, status_code=403)
         state.storage.revoke_share(share_id)
+
+        # Audit log: share revoked
+        audit = get_audit_logger()
+        if audit:
+            client_ip = request.client.host if request.client else "unknown"
+            audit.log(AuditEvent.SHARE_REVOKE, client_ip, target=share_id, success=True)
+
         return JSONResponse({"revoked": True})
     # Admin (console / api): revoke any share.
     state.storage.revoke_share(share_id)
@@ -299,6 +319,12 @@ async def share_download(token: str, request: Request):
         if not cookie or not links.verify_share_cookie(token, password_hash, cookie):
             return _password_form(token, share["file_name"])
     try:
+        # Audit log: share download access
+        audit = get_audit_logger()
+        if audit:
+            client_ip = request.client.host if request.client else "unknown"
+            audit.log_share_download(actor=client_ip, share_id=token, file_id=share.get("message_id"))
+
         return await _stream_target(
             state, share.get("folder_id"), share["message_id"],
             share["file_name"], request.headers.get("range"),
@@ -347,6 +373,13 @@ async def share_verify(token: str, request: Request, password: str = Form("")):
         return response
     recent.append(now)
     state.share_verify_attempts[token] = recent
+
+    # Audit log: share password verification failed
+    audit = get_audit_logger()
+    if audit:
+        client_ip = request.client.host if request.client else "unknown"
+        audit.log_share_password_fail(actor=client_ip, share_id=token)
+
     return _password_form(token, share["file_name"], "Incorrect password. Please try again.")
 
 

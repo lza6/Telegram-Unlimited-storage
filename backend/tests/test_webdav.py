@@ -25,6 +25,8 @@ def client(tmp_path, monkeypatch):
     app = create_app(settings)
     with TestClient(app) as c:
         yield c
+        # 测试间隔离：清空爆破锁定计数器，避免跨用例污染。
+        c.app.state.app.authenticator.guard._attempts.clear()
 
 
 @pytest.fixture
@@ -168,3 +170,25 @@ class TestWebDAVDelete:
     def test_delete_requires_auth(self, client):
         resp = client.delete("/webdav/file.txt")
         assert resp.status_code == 401
+
+
+class TestWebDAVBruteForce:
+    def test_brute_force_lockout(self, client):
+        # 锁定阈值 ACCESS_LOCKOUT_MAX=8，每个 Basic 错误请求记录 1 次失败，
+        # 前 8 个请求返回 401（第 8 次在认证中达到阈值），第 9 个请求触发 429。
+        wrong_auth = {"Authorization": "Basic d3Jvbmc6d3Jvbmc="}
+        for _ in range(8):
+            resp = client.get("/webdav/", headers=wrong_auth)
+            assert resp.status_code == 401
+
+        # 9th request — already locked out (429)
+        resp = client.get("/webdav/", headers=wrong_auth)
+        assert resp.status_code == 429
+
+    def test_brute_force_failure_count(self, client):
+        # 每个 Basic 错误请求应累计 1 次失败（verify_access_pwd 内统一记录）。
+        wrong_auth = {"Authorization": "Basic d3Jvbmc6d3Jvbmc="}
+        attempts = client.app.state.app.authenticator.guard._attempts
+        client.get("/webdav/", headers=wrong_auth)
+        assert sum(len(v) for v in attempts.values()) == 1
+

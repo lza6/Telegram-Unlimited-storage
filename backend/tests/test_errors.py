@@ -98,3 +98,14 @@ def test_error_is_exception():
 def test_error_str():
     err = TelegramDriveError("X", "hello world")
     assert str(err) == "hello world"
+
+
+def test_global_exception_handler_integration(client):
+    # Pass authentication to avoid 401
+    from .conftest import API_KEY
+    response = client.get("/api/v1/files/99999999", headers={"X-API-Key": API_KEY})
+    # Since Telegram is not configured in tests, it should raise a TelegramError and return 503
+    assert response.status_code == 503
+    data = response.json()
+    assert data["error"]["code"] == "NOT_CONNECTED"
+

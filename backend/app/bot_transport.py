@@ -284,6 +284,15 @@ class BotTransport:
         text = (msg.get("text") or "").strip()
         entities = msg.get("entities") or []
 
+        # ── file uploads ────────────────────────────────────────────────────
+        doc = msg.get("document")
+        photo = msg.get("photo")
+        video = msg.get("video")
+        audio = msg.get("audio")
+        if doc or photo or video or audio:
+            await self._handle_dm_upload(chat_id, msg)
+            return
+
         # Check for bot commands
         cmd = ""
         if entities:
@@ -299,7 +308,7 @@ class BotTransport:
                 "/files — list all files\n"
                 "/search <name> — search files by name\n"
                 "/help — this message\n\n"
-                "Or just type a filename to search.")
+                "Send any file (document, photo, video) to upload it to the storage channel.")
         elif cmd == "/files":
             await self._send_file_list(chat_id, page=1)
         elif cmd == "/search" or text.startswith("/search "):
@@ -311,6 +320,76 @@ class BotTransport:
         else:
             # Treat bare text as filename search
             await self._send_search_results(chat_id, text)
+
+    async def _handle_dm_upload(self, chat_id: int, msg: dict) -> None:
+        """Forward a file sent to the bot DM to the storage channel."""
+        doc = msg.get("document")
+        photo = msg.get("photo")
+        video = msg.get("video")
+        audio = msg.get("audio")
+        caption = (msg.get("caption") or "").strip()
+
+        file_id: str | None = None
+        file_name: str = ""
+        file_size: int = 0
+        message_id = msg.get("message_id")
+
+        if doc:
+            file_id = doc.get("file_id")
+            file_name = doc.get("file_name") or f"doc_{message_id}"
+            file_size = doc.get("file_size", 0)
+        elif photo:
+            largest = max(photo, key=lambda p: p.get("file_size", 0))
+            file_id = largest.get("file_id")
+            file_name = f"photo_{message_id}.jpg"
+            file_size = largest.get("file_size", 0)
+        elif video:
+            file_id = video.get("file_id")
+            ext = (video.get("mime_type") or "video/mp4").split("/")[-1] or "mp4"
+            file_name = video.get("file_name") or f"video_{message_id}.{ext}"
+            file_size = video.get("file_size", 0)
+        elif audio:
+            file_id = audio.get("file_id")
+            ext = (audio.get("mime_type") or "audio/ogg").split("/")[-1] or "ogg"
+            file_name = audio.get("file_name") or f"audio_{message_id}.{ext}"
+            file_size = audio.get("file_size", 0)
+
+        if not file_id:
+            await self._send_message(chat_id, "Could not process this file.")
+            return
+
+        try:
+            # Forward to storage channel via copyMessage
+            result = await self._call("copyMessage", data={
+                "chat_id": self.storage_channel_id,
+                "from_chat_id": chat_id,
+                "message_id": message_id,
+            })
+            new_id = result.get("message_id")
+            if not new_id:
+                raise BotTransportError("copyMessage returned no message_id")
+
+            # Index in storage
+            storage = getattr(self, "_storage", None)
+            if storage:
+                storage.record_bot_file(
+                    message_id=int(new_id),
+                    telegram_file_id=file_id,
+                    file_name=file_name,
+                    file_size=file_size,
+                    caption=caption or None,
+                    bot_pool_index=0,
+                )
+
+            size_str = f"{file_size / 1024:.1f}KB" if file_size < 1024 * 1024 else f"{file_size / 1024 / 1024:.1f}MB"
+            await self._send_message(
+                chat_id,
+                f"\u2705 Uploaded: {file_name} ({size_str})"
+            )
+            logger.info("dm upload: %s (%d bytes) indexed as msg %d", file_name, file_size, new_id)
+        except Exception as exc:
+            await self._send_message(chat_id, f"\u274c Upload failed: {exc}")
+            logger.exception("dm upload failed")
 
     async def _send_message(self, chat_id: int, text: str, **kwargs) -> None:
         """Send a text message (optionally with reply_markup)."""

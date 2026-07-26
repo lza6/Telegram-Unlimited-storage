@@ -1,0 +1,18 @@
+{
+  "name": "Telegram Drive",
+  "short_name": "TG Drive",
+  "description": "将 Telegram 账号转换为无限云存储",
+  "start_url": "/dashboard.html",
+  "display": "standalone",
+  "background_color": "#070b12",
+  "theme_color": "#2aabee",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/assets/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

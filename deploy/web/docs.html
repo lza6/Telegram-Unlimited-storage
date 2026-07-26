@@ -66,6 +66,7 @@
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/assets/api-client.js"></script>
+  <script src="/assets/notifications.js"></script>
   <script>
     TdApi.initSidebar('docs');
     document.getElementById('copy-health').onclick = async function () {
@@ -152,5 +153,6 @@
     document.getElementById('retry-docs').addEventListener('click', loadDocs);
     loadDocs();
   </script>
+  <script src="/assets/pwa-register.js"></script>
 </body>
 </html>

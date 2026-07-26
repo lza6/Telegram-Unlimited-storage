@@ -54,16 +54,17 @@ def guess_mime(filename: str) -> str:
 
 
 async def _user_mode_stream(
-    state, folder_id: Optional[int], message_id: int, offset: int, length: Optional[int]
+    state, folder_id: Optional[int], message_id: int, offset: int, length: Optional[int],
+    file_size: int = 0,
 ) -> AsyncIterator[bytes]:
     """Stream from Telethon; offset aligned to 4096 like the Rust impl."""
     MIN_CHUNK = 4096
     aligned_start = (offset // MIN_CHUNK) * MIN_CHUNK
     skip = offset - aligned_start
     remaining = length
-    # part_size_kb must divide evenly; use 512KB parts for throughput.
+    part_size_kb = adaptive_part_size(file_size)
     async for chunk in state.telegram.iter_download_by_id(
-        folder_id, message_id, start_byte=aligned_start
+        folder_id, message_id, start_byte=aligned_start, part_size_kb=part_size_kb
     ):
         if skip:
             chunk = chunk[skip:]
@@ -76,6 +77,18 @@ async def _user_mode_stream(
         yield chunk
         if remaining is not None and remaining <= 0:
             break
+
+
+def adaptive_part_size(file_size: int) -> int:
+    """Return KB part size based on file size for optimal throughput/memory."""
+    if file_size < 10 * 1024 * 1024:       # < 10MB
+        return 256
+    elif file_size < 100 * 1024 * 1024:    # 10-100MB
+        return 512
+    elif file_size < 1024 * 1024 * 1024:   # 100MB-1GB
+        return 1024
+    else:                                   # > 1GB
+        return 2048
 
 
 async def resolve_download(
@@ -111,7 +124,7 @@ async def resolve_download(
     filename = filename_hint or (meta.name if meta else f"file_{message_id}")
     size = meta.size if meta else 0
     mime = (meta.mime_type if meta else "") or guess_mime(filename)
-    stream = _user_mode_stream(state, folder_id, message_id, offset, length)
+    stream = _user_mode_stream(state, folder_id, message_id, offset, length, file_size=size)
     return DownloadTarget(
         filename=filename, size=size, mime_type=mime, stream=stream
     )

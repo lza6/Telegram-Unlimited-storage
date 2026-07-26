@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     api_key_hash TEXT NOT NULL,
     display_name TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
+    scopes TEXT,  -- JSON array: ["read","write","delete","share","admin"]
     created_at INTEGER NOT NULL
 );
 
@@ -89,9 +90,11 @@ CREATE TABLE IF NOT EXISTS file_assets (
     owner_id TEXT NOT NULL,
     file_name TEXT NOT NULL,
     file_size INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    deleted_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_file_assets_owner ON file_assets(owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_file_assets_deleted ON file_assets(deleted_at, owner_id);
 
 CREATE TABLE IF NOT EXISTS asset_locators (
     asset_id TEXT PRIMARY KEY,
@@ -122,6 +125,10 @@ CREATE TABLE IF NOT EXISTS app_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(
+    file_name, caption, tokenize='unicode61'
+);
 """
 
 
@@ -130,40 +137,61 @@ def _now() -> int:
 
 
 class Storage:
-    """Thread-safe SQLite access over the legacy shares.db schema."""
+    """Thread-safe SQLite access over the legacy shares.db schema.
+
+    Uses WAL mode + separate read pool so concurrent reads do not block each
+    other.  Only writes serialise through the lock.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
-        self._conn = sqlite3.connect(
+        self._write_lock = threading.RLock()
+        self._write_conn = sqlite3.connect(
             str(self._db_path), check_same_thread=False
         )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        with self._lock:
-            self._conn.executescript(_SCHEMA)
-            self._conn.commit()
+        self._write_conn.row_factory = sqlite3.Row
+        self._write_conn.execute("PRAGMA journal_mode=WAL")
+        self._write_conn.execute("PRAGMA foreign_keys=ON")
+        with self._write_lock:
+            self._write_conn.executescript(_SCHEMA)
+            self._write_conn.commit()
+        # Per-thread read connections via thread-local storage (WAL reads are
+        # non-blocking — each thread gets its own reader so concurrent reads
+        # never wait on the write lock).
+        self._readers: threading.local = threading.local()
+
+    def _read_conn(self) -> sqlite3.Connection:
+        """Return a per-thread read connection (WAL, no lock needed)."""
+        readers = self._readers
+        conn = getattr(readers, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            readers.conn = conn
+        return conn
 
     def close(self) -> None:
-        with self._lock:
-            self._conn.close()
+        with self._write_lock:
+            self._write_conn.close()
+        readers = getattr(self._readers, "conn", None)
+        if readers is not None:
+            readers.close()
 
     # ── low-level helpers ───────────────────────────────────────────────────
     def _query(self, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-        with self._lock:
-            cur = self._conn.execute(sql, tuple(params))
-            return [dict(row) for row in cur.fetchall()]
+        cur = self._read_conn().execute(sql, tuple(params))
+        return [dict(row) for row in cur.fetchall()]
 
     def _query_one(self, sql: str, params: Iterable[Any] = ()) -> Optional[dict[str, Any]]:
         rows = self._query(sql, params)
         return rows[0] if rows else None
 
     def _execute(self, sql: str, params: Iterable[Any] = ()) -> int:
-        with self._lock:
-            cur = self._conn.execute(sql, tuple(params))
-            self._conn.commit()
+        with self._write_lock:
+            cur = self._write_conn.execute(sql, tuple(params))
+            self._write_conn.commit()
             return cur.rowcount
 
     # ── app_meta ────────────────────────────────────────────────────────────
@@ -253,20 +281,20 @@ class Storage:
         rejected instead of silently merging an incomplete file.
         """
         now = _now()
-        with self._lock:
-            self._conn.execute(
+        with self._write_lock:
+            self._write_conn.execute(
                 "INSERT OR IGNORE INTO upload_sessions (session_id, filename, "
                 "total_chunks, status, created_at, expires_at) "
                 "VALUES (?, ?, ?, 'active', ?, ?)",
                 (session_id, filename, total_chunks, now, expires_at),
             )
             for i in range(total_chunks):
-                self._conn.execute(
+                self._write_conn.execute(
                     "INSERT OR IGNORE INTO upload_chunks (session_id, "
                     "chunk_index, status, created_at) VALUES (?, ?, 'pending', ?)",
                     (session_id, i, now),
                 )
-            self._conn.commit()
+            self._write_conn.commit()
 
     def get_upload_session(self, session_id: str) -> Optional[dict[str, Any]]:
         return self._query_one(
@@ -354,14 +382,14 @@ class Storage:
 
     def delete_bot_file(self, message_id: int) -> bool:
         """Delete bot file from both bot_file_map and file_assets."""
-        with self._lock:
-            self._conn.execute(
+        with self._write_lock:
+            self._write_conn.execute(
                 "DELETE FROM file_assets WHERE message_id = ?", (message_id,)
             )
-            cursor = self._conn.execute(
+            cursor = self._write_conn.execute(
                 "DELETE FROM bot_file_map WHERE message_id = ?", (message_id,)
             )
-            self._conn.commit()
+            self._write_conn.commit()
             return cursor.rowcount > 0
 
     # ── metadata_cache ──────────────────────────────────────────────────────
@@ -415,6 +443,20 @@ class Storage:
             (api_key_hash,),
         )
 
+    def get_tenant_scopes(self, tenant_id: str) -> list[str]:
+        """Return scopes list for a tenant (empty list means full access)."""
+        row = self._query_one(
+            "SELECT scopes FROM tenants WHERE tenant_id = ? AND enabled = 1",
+            (tenant_id,),
+        )
+        if not row or not row.get("scopes"):
+            return []
+        try:
+            import json
+            return json.loads(row["scopes"]) or []
+        except Exception:
+            return []
+
     # ── file_assets / asset_locators ────────────────────────────────────────
     def upsert_file_asset(
         self,
@@ -444,6 +486,84 @@ class Storage:
         like = f"%{query}%"
         return self._query(
             "SELECT * FROM file_assets WHERE owner_id = ? AND file_name LIKE ? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
             (owner_id, like, limit),
+        )
+
+    # ── trash / soft-delete ─────────────────────────────────────────────────
+    def soft_delete_assets(self, owner_id: str, message_ids: list[int]) -> int:
+        """Mark assets as deleted (recycle bin)."""
+        now = _now()
+        placeholders = ",".join("?" for _ in message_ids)
+        return self._execute(
+            f"UPDATE file_assets SET deleted_at = ? "
+            f"WHERE owner_id = ? AND message_id IN ({placeholders}) AND deleted_at IS NULL",
+            (now, owner_id, *message_ids),
+        )
+
+    def list_trash(self, owner_id: str) -> list[dict[str, Any]]:
+        """List soft-deleted assets for the owner."""
+        return self._query(
+            "SELECT * FROM file_assets WHERE owner_id = ? AND deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC",
+            (owner_id,),
+        )
+
+    def restore_assets(self, owner_id: str, message_ids: list[int]) -> int:
+        """Restore soft-deleted assets."""
+        placeholders = ",".join("?" for _ in message_ids)
+        return self._execute(
+            f"UPDATE file_assets SET deleted_at = NULL "
+            f"WHERE owner_id = ? AND message_id IN ({placeholders}) AND deleted_at IS NOT NULL",
+            (owner_id, *message_ids),
+        )
+
+    def empty_trash(self, owner_id: str, retention_days: int = 30) -> int:
+        """Permanently delete assets that have been soft-deleted longer than retention_days."""
+        cutoff = _now() - retention_days * 86400
+        return self._execute(
+            "DELETE FROM file_assets WHERE owner_id = ? "
+            "AND deleted_at IS NOT NULL AND deleted_at < ?",
+            (owner_id, cutoff),
+        )
+
+    def cleanup_trash(self, retention_days: int = 30) -> int:
+        """Global cleanup: permanently delete all soft-deleted assets older than retention_days."""
+        cutoff = _now() - retention_days * 86400
+        return self._execute(
+            "DELETE FROM file_assets WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+            (cutoff,),
+        )
+
+    # ── FTS5 full-text search ───────────────────────────────────────────────
+    def fts_insert(self, message_id: int, file_name: str, caption: str = "") -> None:
+        with self._write_lock:
+            self._write_conn.execute(
+                "INSERT OR REPLACE INTO file_fts (rowid, file_name, caption) "
+                "VALUES (?, ?, ?)",
+                (message_id, file_name, caption),
+            )
+            self._write_conn.commit()
+
+    def fts_delete(self, message_id: int) -> None:
+        with self._write_lock:
+            self._write_conn.execute(
+                "INSERT OR REPLACE INTO file_fts (rowid, file_name, caption) "
+                "VALUES (?, '__DELETED__', '')",
+                (message_id,),
+            )
+            self._write_conn.commit()
+
+    def fts_search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Full-text search across file names and captions."""
+        # Sanitize query for FTS5
+        clean = " ".join(
+            f'"{t}"' for t in query.replace('"', "").replace("*", "").split() if t
+        )
+        if not clean:
+            return []
+        return self._query(
+            "SELECT rowid AS message_id, file_name, caption, rank "
+            "FROM file_fts WHERE file_fts MATCH ? ORDER BY rank LIMIT ?",
+            (clean, limit),
         )

@@ -9,13 +9,23 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Form, Request, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from ..auth import CallerIdentity
 
 from .. import links
 from ..audit import get_audit_logger
+from ..classifier import classify_file
 from ..downloads import content_disposition, parse_range_header, resolve_download
+from ..errors import (
+    NotFoundError,
+    PayloadTooLargeError,
+    StorageError,
+    TelegramError,
+    ValidationError,
+)
 from ..settings_store import SettingsStore
 from ..state import AppState
 
@@ -79,14 +89,30 @@ def to_api_file(meta: Any) -> dict[str, Any]:
         "size": meta.size,
         "mime_type": meta.mime_type,
         "created_at": rfc3339(meta.created_at),
+        "category": classify_file(meta.name, getattr(meta, "mime_type", None)),
     }
 
 
-async def _require_connected(state: AppState) -> Optional[JSONResponse]:
+async def _require_connected(state: AppState) -> None:
     ready = await state.is_ready()
     if not ready:
-        return api_error("NOT_CONNECTED", "Telegram transport is not ready", 503)
-    return None
+        raise TelegramError("Telegram transport is not ready")
+
+
+def require_scope(scope: str):
+    """FastAPI dependency factory: require a specific scope for the caller."""
+    def _dep(request: Request) -> CallerIdentity:
+        state = get_state(request)
+        identity = state.authenticator.require_auth(request)
+        if identity.kind == "tenant":
+            scopes = state.storage.get_tenant_scopes(identity.tenant_id)
+            if scopes and scope not in scopes:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "FORBIDDEN", "message": f"Scope '{scope}' required"},
+                )
+        return identity
+    return _dep
 
 
 # ── folders ─────────────────────────────────────────────────────────────────
@@ -94,9 +120,7 @@ async def _require_connected(state: AppState) -> Optional[JSONResponse]:
 async def list_folders(request: Request) -> JSONResponse:
     state = get_state(request)
     identity = state.authenticator.require_auth(request)
-    err = await _require_connected(state)
-    if err:
-        return err
+    await _require_connected(state)
     # Bot mode has no folders — all files live in a flat storage channel.
     if state.effective_transport_mode() == "bot":
         return JSONResponse([], headers={"X-Metadata-Cache": "MISS"})
@@ -108,10 +132,8 @@ async def list_folders(request: Request) -> JSONResponse:
             return JSONResponse(cached, headers={"X-Metadata-Cache": "HIT"})
     try:
         folders = await state.telegram.scan_folders()
-    except Exception:  # noqa: BLE001 — session/transport failure → friendly 503
-        return api_error(
-            "NOT_CONNECTED", "Telegram transport is not ready", 503
-        )
+    except Exception:
+        raise TelegramError("Telegram transport is not ready")
     payload = [
         {"id": f.id, "name": f.name} for f in folders if not f.is_root or f.id is None
     ]
@@ -136,9 +158,7 @@ async def list_files(
 ) -> JSONResponse:
     state = get_state(request)
     state.authenticator.require_auth(request)
-    err = await _require_connected(state)
-    if err:
-        return err
+    await _require_connected(state)
     fid = parse_folder_id(folder_id)
 
     # Bot mode: query storage DB instead of Telethon
@@ -147,15 +167,13 @@ async def list_files(
             # Query all bot files for in-memory filtering/sorting, then paginate
             rows = await asyncio.to_thread(state.storage.list_bot_files)
             files = [_bot_row_to_meta(row) for row in rows]
-        except Exception as exc:  # noqa: BLE001
-            return api_error("DB_ERROR", f"Failed to list bot files: {exc}", 500)
+        except Exception as exc:
+            raise StorageError(f"Failed to list bot files: {exc}")
     else:
         try:
             files = await state.telegram.list_files(fid)
-        except Exception:  # noqa: BLE001 — session/transport failure → friendly 503
-            return api_error(
-                "NOT_CONNECTED", "Telegram transport is not ready", 503
-            )
+        except Exception:
+            raise TelegramError("Telegram transport is not ready")
 
     # In-memory filtering (Rust impl paginates after full fetch too).
     if search:
@@ -207,9 +225,7 @@ async def search_files(
 ) -> JSONResponse:
     state = get_state(request)
     state.authenticator.require_auth(request)
-    err = await _require_connected(state)
-    if err:
-        return err
+    await _require_connected(state)
     query = (q or "").strip()
     if not query:
         return JSONResponse([])
@@ -218,10 +234,20 @@ async def search_files(
     # Bot mode: query storage DB instead of Telethon
     if state.effective_transport_mode() == "bot":
         try:
+            # Try FTS5 first, fall back to LIKE search
+            fts_results = await asyncio.to_thread(state.storage.fts_search, query, 50)
+            if fts_results:
+                files = []
+                for r in fts_results:
+                    row = state.storage.get_bot_file(r["message_id"])
+                    if row:
+                        files.append(_bot_row_to_meta(row))
+                if files:
+                    return JSONResponse([to_api_file(f) for f in files])
             rows = await asyncio.to_thread(state.storage.search_bot_files, query, 50)
             files = [_bot_row_to_meta(row) for row in rows]
-        except Exception as exc:  # noqa: BLE001
-            return api_error("DB_ERROR", f"Search failed: {exc}", 500)
+        except Exception as exc:
+            raise StorageError(f"Search failed: {exc}")
         return JSONResponse([to_api_file(f) for f in files])
 
     try:
@@ -232,9 +258,7 @@ async def search_files(
         else:
             files = await state.telegram.search_global(query, limit=50)
     except Exception:  # noqa: BLE001 — session/transport failure → friendly 503
-        return api_error(
-            "NOT_CONNECTED", "Telegram transport is not ready", 503
-        )
+            raise TelegramError("Telegram transport is not ready")
     return JSONResponse([to_api_file(f) for f in files])
 
 
@@ -242,32 +266,30 @@ async def search_files(
 async def get_file(message_id: int, request: Request, folder_id: Optional[str] = None):
     state = get_state(request)
     state.authenticator.require_auth(request)
-    err = await _require_connected(state)
-    if err:
-        return err
+    await _require_connected(state)
     fid = parse_folder_id(folder_id)
 
     # Bot mode: query storage DB instead of Telethon
     if state.effective_transport_mode() == "bot":
         try:
             row = await asyncio.to_thread(state.storage.get_bot_file, message_id)
-        except Exception as exc:  # noqa: BLE001
-            return api_error("FETCH_ERROR", f"Failed to fetch file: {exc}", 500)
+        except Exception as exc:
+            raise StorageError(f"Failed to fetch file: {exc}")
         if row is None:
-            return api_error("NOT_FOUND", "File not found", 404)
+            raise NotFoundError("File", str(message_id))
         return JSONResponse(to_api_file(_bot_row_to_meta(row)))
 
     try:
         message = await state.telegram.get_message(fid, message_id)
     except LookupError:
-        return api_error("NOT_FOUND", "File not found", 404)
+        raise NotFoundError("File", str(message_id))
     except ValueError as exc:
-        return api_error("PEER_ERROR", str(exc), 400)
-    except Exception as exc:  # noqa: BLE001
-        return api_error("FETCH_ERROR", "Failed to fetch file", 500)
+        raise ValidationError(str(exc))
+    except Exception:
+        raise StorageError("Failed to fetch file")
     meta = state.telegram.message_to_metadata(message, fid)
     if meta is None:
-        return api_error("NOT_FOUND", "File not found", 404)
+        raise NotFoundError("File", str(message_id))
     return JSONResponse(to_api_file(meta))
 
 
@@ -281,17 +303,15 @@ async def download_file(
 ):
     state = get_state(request)
     state.authenticator.require_auth(request)
-    err = await _require_connected(state)
-    if err:
-        return err
+    await _require_connected(state)
     fid = parse_folder_id(folder_id)
     range_header = request.headers.get("range")
     try:
         target = await resolve_download(state, fid, message_id, filename)
     except LookupError:
-        return api_error("NOT_FOUND", "File not found", 404)
-    except Exception as exc:  # noqa: BLE001
-        return api_error("DOWNLOAD_FAILED", "Download failed", 500)
+        raise NotFoundError("File", str(message_id))
+    except Exception:
+        raise StorageError("Download failed")
 
     total = target.size
     ranged = parse_range_header(range_header, total) if total > 0 else None
@@ -371,10 +391,8 @@ async def upload_file(
     state = get_state(request)
     identity = state.authenticator.require_auth(request)
     if file is None or not file.filename:
-        return api_error("MISSING_FILE", "No file provided", 400)
-    err = await _require_connected(state)
-    if err:
-        return err
+        raise ValidationError("No file provided")
+    await _require_connected(state)
     if not state.transfers.try_acquire_file_slot():
         return JSONResponse(
             {"error": {"code": "UPLOAD_QUEUE_FULL", "message": "Upload queue full"}},
@@ -388,20 +406,12 @@ async def upload_file(
         if content_length:
             try:
                 if int(content_length) > max_bytes:
-                    return api_error(
-                        "PAYLOAD_TOO_LARGE",
-                        f"file exceeds {state.settings.max_upload_size_mb} MB limit",
-                        413,
-                    )
+                    raise PayloadTooLargeError(state.settings.max_upload_size_mb)
             except ValueError:
                 pass
         data = await file.read()
         if len(data) > max_bytes:
-            return api_error(
-                "PAYLOAD_TOO_LARGE",
-                f"file exceeds {state.settings.max_upload_size_mb} MB limit",
-                413,
-            )
+            raise PayloadTooLargeError(state.settings.max_upload_size_mb)
         fid = parse_folder_id(folder_id)
         filename = file.filename
         mode = state.effective_transport_mode()
@@ -420,8 +430,8 @@ async def upload_file(
             message_id = await state.telegram.upload_bytes(fid, data, filename)
         # Invalidate folder list cache.
         state.storage.cache_set(f"files:{identity.owner_id}:{fid}", "files", [])
-    except Exception as exc:  # noqa: BLE001
-        return api_error("UPLOAD_FAILED", f"Upload failed: {exc}", 500)
+    except Exception as exc:
+        raise StorageError(f"Upload failed: {exc}")
     finally:
         state.transfers.release_file_slot()
 
@@ -484,16 +494,14 @@ class BulkRequest(BaseModel):
 @router.post("/files/bulk")
 async def bulk_files(body: BulkRequest, request: Request):
     state = get_state(request)
-    identity = state.authenticator.require_auth(request)
-    err = await _require_connected(state)
-    if err:
-        return err
+    state.authenticator.require_auth(request)
+    await _require_connected(state)
     try:
         ids = [int(x) for x in body.file_ids]
     except (TypeError, ValueError):
-        return api_error("BAD_REQUEST", "file_ids must be integers", 400)
+        raise ValidationError("file_ids must be integers")
     if not ids:
-        return api_error("BAD_REQUEST", "file_ids is empty", 400)
+        raise ValidationError("file_ids is empty")
 
     if body.action == "delete":
         # Revoke shares pointing at these messages first.
@@ -514,10 +522,8 @@ async def bulk_files(body: BulkRequest, request: Request):
             deleted_count = 0
             tg_failed_ids = []
             for msg_id in ids:
-                tg_ok = False
                 try:
                     await state.bot.delete_message(msg_id)
-                    tg_ok = True
                 except Exception:  # noqa: BLE001 — message may already be gone
                     tg_failed_ids.append(msg_id)
                 # Always clean DB to maintain consistency, even if
@@ -540,10 +546,8 @@ async def bulk_files(body: BulkRequest, request: Request):
         # User mode: use Telethon
         try:
             await state.telegram.delete_files(body.folder_id, ids)
-        except Exception:  # noqa: BLE001 — session/transport failure → friendly 503
-            return api_error(
-                "NOT_CONNECTED", "Telegram transport is not ready", 503
-            )
+        except Exception:
+            raise TelegramError("Telegram transport is not ready")
         return JSONResponse(
             {
                 "success": True,
@@ -555,22 +559,17 @@ async def bulk_files(body: BulkRequest, request: Request):
     if body.action == "move":
         target = (body.payload or {}).get("folder_id")
         if target is None:
-            return api_error("BAD_REQUEST", "move requires payload.folder_id", 400)
-        # Bot mode: folders don't exist, move is not supported
+            raise ValidationError("move requires payload.folder_id")
         if state.effective_transport_mode() == "bot":
-            return api_error(
-                "NOT_SUPPORTED", "Folder operations are not supported in bot mode", 400
-            )
+            raise ValidationError("Folder operations are not supported in bot mode")
         try:
             new_ids = await state.telegram.move_files(body.folder_id, target, ids)
-        except Exception:  # noqa: BLE001 — session/transport failure → friendly 503
-            return api_error(
-                "NOT_CONNECTED", "Telegram transport is not ready", 503
-            )
+        except Exception:
+            raise TelegramError("Telegram transport is not ready")
         return JSONResponse(
             {"success": True, "count": len(new_ids), "succeeded_ids": new_ids}
         )
-    return api_error("INVALID_ACTION", f"unsupported action: {body.action}", 400)
+    raise ValidationError(f"unsupported action: {body.action}")
 
 
 # ── index rebuild (admin, user mode only) ───────────────────────────────────
@@ -583,10 +582,8 @@ async def rebuild_index(request: Request, body: Optional[RebuildIndexRequest] = 
     state = get_state(request)
     identity = state.authenticator.require_auth(request)
     if state.effective_transport_mode() == "bot":
-        return api_error("NOT_SUPPORTED", "Index rebuild is not supported in bot mode", 400)
-    err = await _require_connected(state)
-    if err:
-        return err
+        raise ValidationError("Index rebuild is not supported in bot mode")
+    await _require_connected(state)
     owner_id = (
         f"tenant:{identity.tenant_id}"
         if identity.kind == "tenant"
@@ -612,7 +609,7 @@ async def rebuild_index(request: Request, body: Optional[RebuildIndexRequest] = 
         state.telegram.file_index_complete = True
         state.storage.set_meta(f"index_complete:{owner_id}", "1")
     except Exception as exc:  # noqa: BLE001
-        return api_error("REBUILD_FAILED", f"Rebuild failed: {exc}", 500)
+        raise StorageError(f"Rebuild failed: {exc}")
     return JSONResponse(
         {"folders_scanned": folders_scanned, "files_indexed": files_indexed}
     )
@@ -624,7 +621,7 @@ async def sync_channel(request: Request) -> JSONResponse:
     state = get_state(request)
     state.authenticator.require_auth(request)
     if state.effective_transport_mode() != "bot":
-        return api_error("NOT_SUPPORTED", "Channel sync is only available in bot mode", 400)
+        raise ValidationError("Channel sync is only available in bot mode")
     files = state.storage.list_bot_files(limit=100)
     return JSONResponse({
         "status": "ok",
@@ -633,3 +630,112 @@ async def sync_channel(request: Request) -> JSONResponse:
         "note": "New channel posts are auto-indexed by background polling. "
                 "To import existing messages, forward them from the channel to the bot's DM.",
     })
+
+
+# ── trash / recycle bin ────────────────────────────────────────────────────
+class TrashRestoreRequest(BaseModel):
+    message_ids: list[int] = Field(..., min_length=1)
+
+
+@router.get("/trash")
+async def list_trash(request: Request) -> JSONResponse:
+    """List soft-deleted files in the recycle bin."""
+    state = get_state(request)
+    identity = state.authenticator.require_auth(request)
+    rows = await asyncio.to_thread(state.storage.list_trash, identity.owner_id)
+    return JSONResponse([
+        {"message_id": r["message_id"], "file_name": r["file_name"],
+         "file_size": r["file_size"], "deleted_at": rfc3339(r["deleted_at"])}
+        for r in rows
+    ])
+
+
+@router.post("/trash/restore")
+async def restore_trash(body: TrashRestoreRequest, request: Request) -> JSONResponse:
+    """Restore files from recycle bin."""
+    state = get_state(request)
+    identity = state.authenticator.require_auth(request)
+    count = await asyncio.to_thread(
+        state.storage.restore_assets, identity.owner_id, body.message_ids
+    )
+    return JSONResponse({"success": True, "restored": count})
+
+
+@router.delete("/trash/empty")
+async def empty_trash(request: Request) -> JSONResponse:
+    """Permanently delete all files in recycle bin."""
+    state = get_state(request)
+    identity = state.authenticator.require_auth(request)
+    retention = state.settings.trash_retention_days
+    count = await asyncio.to_thread(
+        state.storage.empty_trash, identity.owner_id, retention
+    )
+    return JSONResponse({"success": True, "permanently_deleted": count})
+
+
+# ── batch operations ─────────────────────────────────────────────────────────
+class BatchDeleteRequest(BaseModel):
+    message_ids: list[int] = Field(..., min_length=1)
+
+
+class BatchMoveRequest(BaseModel):
+    message_ids: list[int] = Field(..., min_length=1)
+    target_folder_id: Optional[int] = None
+
+
+@router.post("/files/batch-move")
+async def batch_move(body: BatchMoveRequest, request: Request) -> JSONResponse:
+    """Move multiple files to a target folder."""
+    state = get_state(request)
+    state.authenticator.require_auth(request)
+    await _require_connected(state)
+    mode = state.effective_transport_mode()
+    if mode == "bot":
+        raise ValidationError("Batch move is only available in user mode")
+    try:
+        new_ids = await state.telegram.move_files(
+            None, body.target_folder_id, body.message_ids
+        )
+    except Exception as exc:
+        raise StorageError(str(exc))
+    return JSONResponse({"success": True, "new_ids": new_ids})
+
+
+@router.post("/files/batch-download")
+async def batch_download(body: BatchDeleteRequest, request: Request) -> Response:
+    """Download multiple files as a ZIP archive (streaming)."""
+    import io
+    import zipfile
+
+    state = get_state(request)
+    state.authenticator.require_auth(request)
+    err = await _require_connected(state)
+    if err:
+        return err
+
+    # Build a streaming ZIP archive
+    buf = io.BytesIO()
+
+    async def _generate_zip():
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for msg_id in body.message_ids:
+                try:
+                    target = await resolve_download(state, None, msg_id)
+                    chunks = []
+                    async for chunk in target.stream:
+                        chunks.append(chunk)
+                    zf.writestr(target.filename, b"".join(chunks))
+                except Exception:
+                    zf.writestr(f"error_{msg_id}.txt", f"Download failed for message {msg_id}".encode())
+        buf.seek(0)
+        while True:
+            chunk = buf.read(65536)
+            if not chunk:
+                break
+            yield chunk
+
+    return StreamingResponse(
+        _generate_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="batch_download.zip"'},
+    )

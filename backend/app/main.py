@@ -16,10 +16,12 @@ from __future__ import annotations
 import logging
 import mimetypes
 import secrets
+import shutil
 import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +35,7 @@ from .audit import init_audit_logger
 from .auth import Authenticator
 from .bot_transport import BotTransport
 from .config import Settings, get_settings
+from .errors import TelegramDriveError
 from .routers import auth as auth_router
 from .routers import files as files_router
 from .routers import health as health_router
@@ -117,6 +120,24 @@ def build_state(settings: Settings) -> AppState:
 
 
 # ── rate limiter ────────────────────────────────────────────────────────────
+class TieredRateLimiter:
+    """Layered rate limiting: IP-level + optional API-Key-level."""
+
+    def __init__(self, ip_rpm: int, api_rpm: int) -> None:
+        self._ip_limiter = SlidingWindowRateLimiter(max(1, ip_rpm))
+        self._api_limiter = SlidingWindowRateLimiter(max(1, api_rpm))
+
+    def allow(self, client_ip: str, api_key: str = "") -> tuple[bool, int]:
+        ip_ok, ip_retry = self._ip_limiter.allow(client_ip)
+        if not ip_ok:
+            return False, ip_retry
+        if api_key:
+            api_ok, api_retry = self._api_limiter.allow(api_key)
+            if not api_ok:
+                return False, api_retry
+        return True, 0
+
+
 class SlidingWindowRateLimiter:
     """Per-IP fixed-window-over-60s request counter (in-memory)."""
 
@@ -204,7 +225,7 @@ async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
     state = build_state(settings)
     app.state.app = state
-    app.state.rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_rpm)
+    app.state.rate_limiter = TieredRateLimiter(settings.rate_limit_rpm, settings.rate_limit_api_rpm)
     logger.info(
         "Telegram Drive %s starting on %s:%s (transport=%s)",
         state.version,
@@ -228,10 +249,46 @@ async def lifespan(app: FastAPI):
             while True:
                 await asyncio.sleep(300)  # every 5 minutes
                 state.transfers.prune_progress()
+                await asyncio.to_thread(
+                    state.storage.cleanup_trash, state.settings.trash_retention_days
+                )
+        except asyncio.CancelledError:
+            pass
+
+    # Background task: metadata cache warmup (non-blocking)
+    async def _warmup_cache():
+        try:
+            if settings.metadata_cache_enabled:
+                await asyncio.sleep(5)  # let server bind first
+                await asyncio.to_thread(
+                    state.storage.cache_set,
+                    "uptime:started",
+                    "system",
+                    {"started_at": time.time(), "version": state.version},
+                )
+                logger.info("metadata cache warmup complete")
+        except Exception as exc:
+            logger.debug("cache warmup skipped: %s", exc)
+
+    asyncio.create_task(_warmup_cache())
+
+    # Background task: hourly DB backup
+    async def _periodic_backup():
+        try:
+            while True:
+                await asyncio.sleep(3600)  # every hour
+                backup_dir = settings.data_dir / "backups"
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.fromtimestamp(time.time()).strftime("%Y%m%d_%H%M%S")
+                shutil.copy2(settings.db_path, backup_dir / f"shares_{ts}.db")
+                # Retain last 24 backups
+                for old in sorted(backup_dir.glob("shares_*.db"))[:-24]:
+                    old.unlink(missing_ok=True)
         except asyncio.CancelledError:
             pass
 
     prune_task = asyncio.create_task(_periodic_prune())
+    backup_task = asyncio.create_task(_periodic_backup())
 
     # Background task: poll channel posts (bot mode)
     poll_task = None
@@ -243,8 +300,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         prune_task.cancel()
+        backup_task.cancel()
         try:
             await prune_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await backup_task
         except asyncio.CancelledError:
             pass
         if poll_task is not None:
@@ -273,7 +335,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(
         title="Telegram Drive",
-        version="1.0.0-python",
+        version="2.0.0-python",
         lifespan=lifespan,
         docs_url="/api/docs" if not settings.disable_docs else None,
         redoc_url="/api/redoc" if not settings.disable_docs else None,
@@ -292,6 +354,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ── request size limit middleware ─────────────────────────────────────────
+    @app.middleware("http")
+    async def request_size_limit(request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                cl = int(content_length)
+                max_bytes = settings.max_upload_size_mb * 1024 * 1024
+                if max_bytes > 0 and cl > max_bytes:
+                    return JSONResponse(
+                        {"error": {"code": "PAYLOAD_TOO_LARGE",
+                         "message": f"Request body exceeds {settings.max_upload_size_mb}MB limit"}},
+                        status_code=413,
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
+
     # ── request pipeline: X-Request-Id + rate limit + security headers ──────
     @app.middleware("http")
     async def request_pipeline(request: Request, call_next):
@@ -301,8 +381,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         path = request.url.path
         if not path.startswith(_RATE_LIMIT_EXEMPT_PREFIXES):
-            limiter: SlidingWindowRateLimiter = app.state.rate_limiter
-            allowed, retry_after = limiter.allow(_client_ip(request))
+            limiter: TieredRateLimiter = app.state.rate_limiter
+            api_key = request.headers.get("X-API-Key") or ""
+            allowed, retry_after = limiter.allow(_client_ip(request), api_key)
             if not allowed:
                 return JSONResponse(
                     {"error": {"code": "RATE_LIMITED", "message": "Too many requests"}},
@@ -315,11 +396,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         # Security headers (CSP nonce only meaningful for HTML we serve).
         _security_headers(response, nonce)
         logger.info(
-            "%s %s %s rid=%s",
+            "rid=%s method=%s path=%s status=%s",
+            request_id,
             request.method,
             path,
             response.status_code,
-            request_id,
         )
         return response
 
@@ -331,6 +412,43 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(settings_router.router)
     app.include_router(legacy_router.router)
     app.include_router(webdav_router.router)
+
+    # ── Global exception handler for structured errors ──────────────────────
+    @app.exception_handler(TelegramDriveError)
+    async def telegram_drive_exception_handler(request: Request, exc: TelegramDriveError):
+        return JSONResponse(
+            content=exc.as_dict(),
+            status_code=exc.status_code,
+            headers={"X-Request-Id": getattr(request.state, "request_id", request.headers.get("x-request-id", ""))},
+        )
+
+    # ── Metrics middleware (record request count + duration) ────────────────
+    @app.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        from .metrics import get_registry
+        start = time.time()
+        response = await call_next(request)
+        duration = time.time() - start
+        try:
+            path = request.url.path
+            m = get_registry()
+            m.requests_total.labels(
+                method=request.method,
+                path=path,
+                status_code=str(response.status_code),
+            ).inc()
+            m.request_duration_seconds.labels(
+                method=request.method,
+                path=path,
+            ).observe(duration)
+            # Slow request warning (> 2s)
+            if duration > 2.0:
+                logger.warning(
+                    "slow request %s %s (%.1fs)", request.method, path, duration
+                )
+        except Exception:
+            pass
+        return response
 
     # ── docs directory: /docs/* ─────────────────────────────────────────────
     @app.get("/docs/{rel:path}")

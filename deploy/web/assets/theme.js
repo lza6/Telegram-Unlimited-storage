@@ -1,6 +1,8 @@
 /**
- * Theme toggle — dark/light mode with system preference detection.
- * Persists choice in localStorage; falls back to prefers-color-scheme.
+ * Theme system — dark/light mode with auto system-follow + manual toggle.
+ * - No saved preference → follows OS (prefers-color-scheme)
+ * - Manual toggle → saves to localStorage, overrides OS
+ * - "auto" mode clears saved preference → follows OS again
  * Include on every page that has a #theme-toggle button.
  */
 (function () {
@@ -60,11 +62,11 @@
     }
   }
 
-  // Apply saved or system theme immediately (before DOMContentLoaded paint).
+  // Apply saved or system theme immediately (before paint).
   var saved = getSavedTheme();
   applyTheme(saved || getSystemTheme());
 
-  // Listen for system theme changes when no explicit choice is saved.
+  // Listen for system theme changes.
   if (window.matchMedia) {
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function (e) {
       if (!getSavedTheme()) {
@@ -86,4 +88,12 @@
   } else {
     bind();
   }
+
+  // Expose for programmatic use
+  window.TdTheme = {
+    current: currentTheme,
+    toggle: toggle,
+    apply: applyTheme,
+    getSystem: getSystemTheme,
+  };
 })();

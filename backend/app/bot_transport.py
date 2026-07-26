@@ -59,8 +59,14 @@ class BotTransport:
         self.bot_token = bot_token
         self.storage_channel_id = storage_channel_id
         transport = httpx.AsyncHTTPTransport(retries=3)
+        limits = httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=100,
+            keepalive_expiry=30.0,
+        )
         client_kwargs: dict[str, Any] = {
             "transport": transport,
+            "limits": limits,
             "timeout": httpx.Timeout(300.0, connect=15.0),
         }
         if proxy_url:

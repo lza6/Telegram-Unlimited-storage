@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from telethon import TelegramClient, errors
-from telethon.sessions import SQLiteSession
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     DeleteChannelRequest,
@@ -34,8 +33,6 @@ from telethon.tl.types import (
     InputMessagesFilterDocument,
     MessageMediaDocument,
     MessageMediaPhoto,
-    Photo,
-    UpdateNewMessage,
 )
 
 logger = logging.getLogger("telegram_drive.telegram")
@@ -356,7 +353,7 @@ class TelegramState:
                 self._on_login_success()
                 return AuthResult(success=True, next_step="dashboard")
             return AuthResult(success=True, next_step="waiting")
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return AuthResult(success=True, next_step="waiting")
 
     def _on_login_success(self) -> None:
@@ -399,7 +396,6 @@ class TelegramState:
         client = await self.connect()
         folders: list[FolderInfo] = [FolderInfo(id=None, name="Saved Messages", is_root=True)]
         seen: set[int] = set()
-        me = await client.get_me()
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
             if not getattr(entity, "broadcast", False):

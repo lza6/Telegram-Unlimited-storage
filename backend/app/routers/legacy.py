@@ -17,7 +17,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from .. import links
 from ..settings_store import SettingsStore
@@ -28,6 +28,12 @@ router = APIRouter(tags=["legacy"])
 OWNER_WEB = "system:web"
 _MAX_TOTAL_CHUNKS = 10000
 _SESSION_TTL_SECS = 86400 * 7  # 7 days (Rust create_upload_session)
+
+
+def _replay_idempotency(cached: tuple) -> Response:
+    """Replay a cached idempotency response."""
+    status, media_type, body = cached
+    return Response(content=body, status_code=status, media_type=media_type)
 
 
 def get_state(request: Request) -> AppState:

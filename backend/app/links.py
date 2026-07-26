@@ -62,6 +62,14 @@ def verify_presign_signature(secret: str, canonical: str, signature: str) -> boo
     return hmac.compare_digest(expected, signature)
 
 
+def verify_presign_with_secrets(secrets: list[str], canonical: str, signature: str) -> bool:
+    """Verify a pre-signed signature against all valid secrets (key rotation)."""
+    for secret in secrets:
+        if verify_presign_signature(secret, canonical, signature):
+            return True
+    return False
+
+
 def presigned_url(
     base_url: str,
     secret: str,

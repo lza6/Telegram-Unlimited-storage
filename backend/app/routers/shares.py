@@ -274,8 +274,8 @@ async def signed_download(
     max_downloads: Optional[int] = None,
 ):
     state = get_state(request)
-    secret = state.settings.download_signing_secret
-    if len(secret) < 32:
+    secrets = state.settings.all_signing_secrets
+    if not secrets or len(secrets[0]) < 32:
         return api_error("PRESIGN_DISABLED", "Presigned downloads are not configured", 503)
     try:
         message_id = int(file_id)
@@ -288,7 +288,7 @@ async def signed_download(
         except ValueError:
             fid = None
     canonical = links.presign_canonical(message_id, fid, exp, owner, max_downloads)
-    if not links.verify_presign_signature(secret, canonical, sig):
+    if not links.verify_presign_with_secrets(secrets, canonical, sig):
         return api_error("INVALID_SIGNATURE", "Invalid or tampered download link", 403)
     if exp > 0 and int(time.time()) > exp:
         return api_error("LINK_EXPIRED", "This download link has expired", 410)

@@ -137,7 +137,7 @@ class Authenticator:
             self.guard.record_failure(client_ip)
         return ok
 
-    def verify_api_key(self, provided: str) -> Optional[CallerIdentity]:
+    def verify_api_key(self, provided: str, required_scope: str | None = None) -> Optional[CallerIdentity]:
         # Single-tenant key hash (api_settings.json / env API_KEY).
         stored = self._effective_key_hash()
         if stored:
@@ -150,6 +150,10 @@ class Authenticator:
                         )
                     except OSError as exc:
                         logger.warning("key hash upgrade failed: %s", exc)
+                # Scope check for single-tenant (full access by default)
+                if required_scope and required_scope not in []:
+                    # Single tenant has full access unless restricted via tenants table
+                    pass
                 return CallerIdentity(kind="api", tenant_id="default")
         # Multi-tenant table.
         if self.settings.multi_tenant_enabled:
@@ -166,6 +170,9 @@ class Authenticator:
                             security.hash_api_key(provided),
                             tenant.get("display_name"),
                         )
+                    scopes = self.storage.get_tenant_scopes(tenant["tenant_id"])
+                    if required_scope and scopes and required_scope not in scopes:
+                        return None  # scope denied
                     return CallerIdentity(
                         kind="tenant", tenant_id=tenant["tenant_id"]
                     )
@@ -185,7 +192,19 @@ class Authenticator:
             )
         api_key = request.headers.get(API_KEY_HEADER)
         if api_key:
-            identity = self.verify_api_key(api_key)
+            # Infer required scope from route path
+            path = request.url.path
+            scope_map = {
+                "/api/v1/files": "read",
+                "/api/v1/shares": "read",
+                "/api/v1/folders": "read",
+            }
+            required = None
+            for prefix, sc in scope_map.items():
+                if path.startswith(prefix):
+                    required = sc
+                    break
+            identity = self.verify_api_key(api_key, required_scope=required)
             if identity is not None:
                 return identity
             raise HTTPException(

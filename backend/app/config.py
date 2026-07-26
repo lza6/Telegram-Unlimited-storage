@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,8 +84,50 @@ class Settings(BaseSettings):
         default="insecure-dev-signing-secret-change-me",
         alias="DOWNLOAD_SIGNING_SECRET",
     )
+    download_signing_secrets: str = Field(
+        default="",
+        alias="DOWNLOAD_SIGNING_SECRETS",
+    )  # comma-separated for rotation; first is active
+
+    @property
+    def signing_keys(self) -> list[tuple[int, str]]:
+        """Return (key_id, secret) list; key_id=0 is active, used for new signing."""
+        if self.download_signing_secrets:
+            keys = [s.strip() for s in self.download_signing_secrets.split(",") if s.strip()]
+            if keys:
+                return [(i, k) for i, k in enumerate(keys)]
+        return [(0, self.download_signing_secret)]
+
+    # Comma-separated list of signing secrets for key rotation.
+    # The FIRST secret is the active signing key; all listed secrets are valid
+    # for verification so old pre-signed URLs still work after a key rotation.
+    download_signing_secrets: str = Field(
+        default="", alias="DOWNLOAD_SIGNING_SECRETS",
+    )
     upload_link_ttl_secs: int = Field(default=0, alias="UPLOAD_LINK_TTL_SECS")
     upload_share_ttl_hours: int = Field(default=0, alias="UPLOAD_SHARE_TTL_HOURS")
+
+    @property
+    def active_signing_secret(self) -> str:
+        """Active (current) signing key for generating new pre-signed URLs."""
+        if self.download_signing_secrets:
+            first = self.download_signing_secrets.split(",")[0].strip()
+            if first:
+                return first
+        return self.download_signing_secret
+
+    @property
+    def all_signing_secrets(self) -> list[str]:
+        """All valid signing secrets (active + retired) for verification."""
+        secrets_list: list[str] = []
+        if self.download_signing_secrets:
+            for s in self.download_signing_secrets.split(","):
+                s = s.strip()
+                if s and s not in secrets_list:
+                    secrets_list.append(s)
+        if self.download_signing_secret and self.download_signing_secret not in secrets_list:
+            secrets_list.append(self.download_signing_secret)
+        return secrets_list
 
     # ── Upload queue backend ────────────────────────────────────────────────
     upload_queue_backend: Literal["memory", "redis"] = Field(
@@ -102,6 +144,21 @@ class Settings(BaseSettings):
     # ── Misc ────────────────────────────────────────────────────────────────
     webdav_enabled: bool = Field(default=False, alias="WEBDAV_ENABLED")
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
+    trash_retention_days: int = Field(default=30, alias="TRASH_RETENTION_DAYS")
+
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, v: int) -> int:
+        if v < 1024 or v > 65535:
+            raise ValueError("Port must be between 1024 and 65535")
+        return v
+
+    @field_validator("rate_limit_rpm")
+    @classmethod
+    def validate_rate_limit_rpm(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("rate_limit_rpm must be >= 1")
+        return v
 
     @property
     def chunk_size_bytes(self) -> int:

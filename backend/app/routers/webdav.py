@@ -15,14 +15,12 @@ Gated by ``WEBDAV_ENABLED`` (config). Mounted under ``/webdav``.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 from urllib.parse import quote, unquote
-from xml.etree.ElementTree import Element, SubElement, tostring
+from xml.etree.ElementTree import Element, tostring
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -60,6 +58,11 @@ def _client_ip(request: Request) -> str:
 
 
 def _auth_via_basic(state: AppState, request: Request) -> bool:
+    ip = _client_ip(request)
+    try:
+        state.authenticator.guard.check(ip)
+    except Exception:
+        return False  # locked out — reject immediately
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("basic "):
         return False
@@ -72,11 +75,12 @@ def _auth_via_basic(state: AppState, request: Request) -> bool:
     _user, _, password = decoded.partition(":")
     if not password:
         return False
-    ip = _client_ip(request)
     if state.authenticator.verify_access_pwd(password, ip):
         return True
     if state.authenticator.verify_api_key(password) is not None:
         return True
+    # Record failure for brute-force lockout
+    state.authenticator.guard.record_failure(ip)
     return False
 
 
@@ -137,7 +141,6 @@ def _propstat_response(
         }
         resp = _dav_response(href, props)
         # Add collection element
-        rt = resp.find(f".//{{{DAV_NS}}}resourcetype")
         rt_elem = Element(_ns("resourcetype"))
         rt_elem.append(Element(_ns("collection")))
         for ps in resp.findall(f".//{{{DAV_NS}}}propstat"):

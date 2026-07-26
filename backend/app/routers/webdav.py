@@ -79,19 +79,40 @@ def _auth_via_basic(state: AppState, request: Request) -> bool:
         return True
     if state.authenticator.verify_api_key(password) is not None:
         return True
-    # Record failure for brute-force lockout
-    state.authenticator.guard.record_failure(ip)
+    # Failure already recorded once by verify_access_pwd — do not double-count.
     return False
 
 
 def _require_webdav_auth(state: AppState, request: Request) -> Optional[Response]:
+    ip = _client_ip(request)
+    # Determine if the client is already locked out
+    is_locked = False
+    try:
+        state.authenticator.guard.check(ip)
+    except Exception:
+        is_locked = True
+
+    # If already locked out, return 429
+    if is_locked:
+        return Response(
+            content="Too many failed attempts — locked out",
+            status_code=429,
+        )
+
+    # Try normal authentication
+    auth_succeeded = False
     try:
         state.authenticator.require_auth(request)
-        return None
+        auth_succeeded = True
     except Exception:
         pass
-    if _auth_via_basic(state, request):
+    if not auth_succeeded:
+        auth_succeeded = _auth_via_basic(state, request)
+
+    if auth_succeeded:
         return None
+
+    # Authentication failed. Return 401
     return Response(
         content="WebDAV authentication required",
         status_code=401,

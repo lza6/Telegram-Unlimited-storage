@@ -51,6 +51,7 @@ scripts/native/**/__pycache__/
 # ── Python backend artifacts (v5.0) ──
 backend/.venv/
 backend/data/
+backend/test_data/
 **/__pycache__/
 **/*.pyc
 **/*.pyo

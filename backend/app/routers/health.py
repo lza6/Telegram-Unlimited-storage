@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..metrics import get_metrics, get_registry
 from ..state import AppState
 
 router = APIRouter(tags=["health"])
@@ -12,6 +13,21 @@ router = APIRouter(tags=["health"])
 
 def _health_payload(state: AppState, telegram_connected: bool, ready: bool) -> dict:
     settings = state.settings
+    # Storage health
+    db_ok = False
+    try:
+        state.storage._query("SELECT 1")
+        db_ok = True
+    except Exception:
+        pass
+    # Disk free space check (data dir)
+    import shutil
+    disk_free_mb = -1
+    try:
+        usage = shutil.disk_usage(settings.data_dir)
+        disk_free_mb = usage.free // (1024 * 1024)
+    except Exception:
+        pass
     return {
         "status": "ok" if ready else "not_ready",
         "version": state.version,
@@ -22,6 +38,8 @@ def _health_payload(state: AppState, telegram_connected: bool, ready: bool) -> d
         "transport_mode": state.effective_transport_mode(),
         "bot_configured": state.bot_configured,
         "user_configured": state.user_configured,
+        "db_connected": db_ok,
+        "disk_free_mb": disk_free_mb,
         "upload_queue": state.transfers.queue_status(),
         "metadata_cache_enabled": settings.metadata_cache_enabled,
         "metadata_cache_ttl_secs": settings.metadata_cache_ttl_secs,
@@ -87,17 +105,8 @@ async def metrics(request: Request) -> Response:
     state: AppState = request.app.state.app
     if not state.settings.metrics_enabled:
         return PlainTextResponse("metrics disabled", status_code=404)
+    registry = get_registry()
     queue = state.transfers.queue_status()
-    lines = [
-        "# TYPE telegram_drive_uptime_seconds gauge",
-        f"telegram_drive_uptime_seconds {state.uptime_secs}",
-        "# TYPE telegram_drive_upload_chunk_slots_available gauge",
-        f"telegram_drive_upload_chunk_slots_available {queue['chunk_slots_available']}",
-        "# TYPE telegram_drive_upload_file_slots_available gauge",
-        f"telegram_drive_upload_file_slots_available {queue['file_slots_available']}",
-        "# TYPE telegram_drive_metadata_cache_enabled gauge",
-        f"telegram_drive_metadata_cache_enabled {int(state.settings.metadata_cache_enabled)}",
-    ]
-    return PlainTextResponse(
-        "\n".join(lines) + "\n", media_type="text/plain; version=0.0.4"
-    )
+    registry.upload_slots_available.set(queue["file_slots_available"])
+    registry.upload_chunk_slots_available.set(queue["chunk_slots_available"])
+    return Response(content=get_metrics(), media_type="text/plain; version=0.0.4")

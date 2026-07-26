@@ -33,7 +33,7 @@ class AppState:
 
     @property
     def version(self) -> str:
-        return "1.0.0-python"
+        return "2.0.0-python"
 
     @property
     def uptime_secs(self) -> int:

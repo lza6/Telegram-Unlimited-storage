@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from ..audit import query_audit_log
 from ..settings_store import DEFAULT_PROXY, DEFAULT_VPN, SettingsStore
 from ..state import AppState
 
@@ -210,3 +211,25 @@ async def put_network(request: Request) -> JSONResponse:
     public_proxy["password_set"] = bool(public_proxy.get("password"))
     public_proxy["password"] = ""
     return JSONResponse({"proxy": public_proxy, "vpn": vpn})
+
+
+# ── audit log query ────────────────────────────────────────────────────────
+@router.get("/admin/audit")
+async def query_audit(
+    request: Request,
+    since: Optional[str] = Query(None, description="ISO timestamp filter"),
+    event: Optional[str] = Query(None, description="Event type filter"),
+    actor: Optional[str] = Query(None, description="Actor filter"),
+    limit: int = Query(100, ge=1, le=1000),
+) -> JSONResponse:
+    state = get_state(request)
+    state.authenticator.require_auth(request)
+    log_path = state.settings.data_dir / "audit.log"
+    entries = query_audit_log(
+        log_path,
+        since=since,
+        event_type=event,
+        actor=actor,
+        limit=limit,
+    )
+    return JSONResponse(entries)

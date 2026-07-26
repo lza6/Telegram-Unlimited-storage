@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -234,3 +233,38 @@ def init_audit_logger(log_path: Path, enabled: bool = True) -> AuditLogger:
     global _audit_logger
     _audit_logger = AuditLogger(log_path=log_path, enabled=enabled)
     return _audit_logger
+
+
+def query_audit_log(
+    log_path: Path,
+    since: Optional[str] = None,
+    event_type: Optional[str] = None,
+    actor: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Query audit JSONL file with optional filters."""
+    if not log_path.exists():
+        return []
+    results: list[dict[str, Any]] = []
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event_type and entry.get("event") != event_type:
+                    continue
+                if actor and entry.get("actor") != actor:
+                    continue
+                if since and entry.get("timestamp", "") < since:
+                    continue
+                results.append(entry)
+                if len(results) >= limit:
+                    break
+    except OSError:
+        return []
+    return results

@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS shared_links (
     expires_at INTEGER,
     revoked INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
-    owner_id TEXT
+    owner_id TEXT,
+    access_count INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at INTEGER,
+    unique_visitors TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_shares_expires ON shared_links(expires_at);
 CREATE INDEX IF NOT EXISTS idx_shares_revoked ON shared_links(revoked, created_at);
@@ -38,6 +41,9 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
     session_id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     total_chunks INTEGER NOT NULL,
+    total_size INTEGER NOT NULL DEFAULT 0,
+    file_hash TEXT NOT NULL DEFAULT '',
+    owner_id TEXT NOT NULL DEFAULT 'default',
     status TEXT NOT NULL DEFAULT 'active',
     manifest_file_id TEXT,
     created_at INTEGER NOT NULL,
@@ -55,6 +61,19 @@ CREATE TABLE IF NOT EXISTS upload_chunks (
     FOREIGN KEY (session_id) REFERENCES upload_sessions(session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_upload_session ON upload_chunks(session_id);
+
+CREATE TABLE IF NOT EXISTS saga_uploads (
+    saga_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,  -- started | tg_sent | db_written | completed | compensating | compensated
+    message_id INTEGER,
+    peer_id INTEGER,
+    file_name TEXT,
+    file_size INTEGER,
+    owner_id TEXT,
+    idempotency_key TEXT UNIQUE,
+    created_at INTEGER,
+    updated_at INTEGER
+);
 
 CREATE TABLE IF NOT EXISTS bot_file_map (
     message_id INTEGER PRIMARY KEY,
@@ -82,6 +101,15 @@ CREATE TABLE IF NOT EXISTS tenants (
     enabled INTEGER NOT NULL DEFAULT 1,
     scopes TEXT,  -- JSON array: ["read","write","delete","share","admin"]
     created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tenant_quotas (
+    tenant_id TEXT PRIMARY KEY,
+    storage_bytes_limit INTEGER NOT NULL DEFAULT 0,
+    storage_bytes_used INTEGER NOT NULL DEFAULT 0,
+    files_count_limit INTEGER NOT NULL DEFAULT 0,
+    files_count_used INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS file_assets (
@@ -184,6 +212,9 @@ class Storage:
         cur = self._read_conn().execute(sql, tuple(params))
         return [dict(row) for row in cur.fetchall()]
 
+    def _write(self, sql: str, params: Iterable[Any] = ()) -> int:
+        return self._execute(sql, params)
+
     def _query_one(self, sql: str, params: Iterable[Any] = ()) -> Optional[dict[str, Any]]:
         rows = self._query(sql, params)
         return rows[0] if rows else None
@@ -253,6 +284,42 @@ class Storage:
     def revoke_share(self, share_id: str) -> int:
         return self._execute(
             "UPDATE shared_links SET revoked = 1 WHERE id = ?", (share_id,)
+        )
+
+    def bulk_revoke_shares(self, share_ids: list[str]) -> int:
+        """Revoke multiple shares at once. Returns count of affected rows."""
+        if not share_ids:
+            return 0
+        placeholders = ",".join("?" * len(share_ids))
+        return self._execute(
+            f"UPDATE shared_links SET revoked = 1 WHERE id IN ({placeholders})",
+            tuple(share_ids),
+        )
+
+    def revoke_shares_by_file(self, message_id: int) -> int:
+        """Revoke all shares for a given file (by message_id). Returns count."""
+        return self._execute(
+            "UPDATE shared_links SET revoked = 1 WHERE message_id = ?",
+            (message_id,),
+        )
+
+    def record_share_access(self, share_id: str, visitor_ip_hash: str) -> None:
+        """Increment share access count and append unique visitor hash (capped at 100)."""
+        share = self.get_share(share_id)
+        if not share:
+            return
+        access_count = int(share.get("access_count") or 0) + 1
+        existing_visitors = share.get("unique_visitors") or ""
+        visitor_list = [v for v in existing_visitors.split(",") if v] if existing_visitors else []
+        if visitor_ip_hash not in visitor_list:
+            visitor_list.append(visitor_ip_hash)
+            # Cap at 100 to prevent unbounded growth
+            visitor_list = visitor_list[-100:]
+        visitors_csv = ",".join(visitor_list)
+        now = _now()
+        self._execute(
+            "UPDATE shared_links SET access_count = ?, last_accessed_at = ?, unique_visitors = ? WHERE id = ?",
+            (access_count, now, visitors_csv, share_id),
         )
 
     def delete_share(self, share_id: str) -> int:
@@ -456,6 +523,75 @@ class Storage:
             return json.loads(row["scopes"]) or []
         except Exception:
             return []
+
+    # ── tenant_quotas (TASK-P1-03) ─────────────────────────────────────────
+    def get_tenant_quota(self, tenant_id: str) -> Optional[dict[str, Any]]:
+        row = self._query_one(
+            "SELECT * FROM tenant_quotas WHERE tenant_id = ?",
+            (tenant_id,),
+        )
+        return row
+
+    def upsert_tenant_quota(
+        self,
+        tenant_id: str,
+        storage_bytes_limit: int,
+        files_count_limit: int,
+        storage_bytes_used: int = 0,
+        files_count_used: int = 0,
+    ) -> None:
+        self._execute(
+            "INSERT INTO tenant_quotas (tenant_id, storage_bytes_limit, storage_bytes_used, "
+            "files_count_limit, files_count_used, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(tenant_id) DO UPDATE SET "
+            "storage_bytes_limit = excluded.storage_bytes_limit, "
+            "files_count_limit = excluded.files_count_limit, "
+            "updated_at = excluded.updated_at",
+            (tenant_id, storage_bytes_limit, storage_bytes_used,
+             files_count_limit, files_count_used, _now()),
+        )
+
+    def increment_tenant_quota_usage(
+        self, tenant_id: str, bytes_delta: int, files_delta: int = 1
+    ) -> None:
+        """Increment usage counters (can be negative for decrements)."""
+        row = self.get_tenant_quota(tenant_id)
+        if not row:
+            return  # quota tracking not enabled for this tenant
+        self._execute(
+            "UPDATE tenant_quotas SET storage_bytes_used = MAX(0, storage_bytes_used + ?), "
+            "files_count_used = MAX(0, files_count_used + ?), updated_at = ? "
+            "WHERE tenant_id = ?",
+            (bytes_delta, files_delta, _now(), tenant_id),
+        )
+
+    def recompute_tenant_quota(self, tenant_id: str) -> dict[str, int]:
+        """Reconcile quota counters from file_assets (anti-drift).
+
+        Returns the recomputed usage dict.
+        """
+        rows = self._query(
+            "SELECT COALESCE(SUM(file_size), 0) AS total_bytes, COUNT(*) AS total_files "
+            "FROM file_assets WHERE owner_id = ? AND deleted_at IS NULL",
+            (tenant_id,),
+        )
+        if not rows:
+            usage = {"storage_bytes_used": 0, "files_count_used": 0}
+        else:
+            r = rows[0]
+            usage = {
+                "storage_bytes_used": int(r["total_bytes"] or 0),
+                "files_count_used": int(r["total_files"] or 0),
+            }
+        existing = self.get_tenant_quota(tenant_id)
+        if existing:
+            self._execute(
+                "UPDATE tenant_quotas SET storage_bytes_used = ?, files_count_used = ?, updated_at = ? "
+                "WHERE tenant_id = ?",
+                (usage["storage_bytes_used"], usage["files_count_used"], _now(), tenant_id),
+            )
+        return usage
 
     # ── file_assets / asset_locators ────────────────────────────────────────
     def upsert_file_asset(

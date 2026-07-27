@@ -31,17 +31,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
 from . import security
+from . import __version__
 from .audit import init_audit_logger
 from .auth import Authenticator
 from .bot_transport import BotTransport
 from .config import Settings, get_settings
 from .errors import TelegramDriveError
+from .quota import periodic_quota_reconcile
 from .routers import auth as auth_router
 from .routers import files as files_router
 from .routers import health as health_router
 from .routers import legacy as legacy_router
+from .routers import quota as quota_router
 from .routers import settings as settings_router
 from .routers import shares as shares_router
+from .routers import upload as upload_router
+from .routers import transfers as transfers_router
 from .routers import webdav as webdav_router
 from .settings_store import SettingsStore
 from .state import AppState
@@ -287,8 +292,21 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    # Background task: daily download signing keys rotation check
+    async def _periodic_key_rotation():
+        try:
+            # First execution check at startup
+            state.key_rotation.rotate_if_due(actor="startup")
+            while True:
+                await asyncio.sleep(86400)  # check daily
+                state.key_rotation.rotate_if_due(actor="scheduler")
+        except asyncio.CancelledError:
+            pass
+
     prune_task = asyncio.create_task(_periodic_prune())
     backup_task = asyncio.create_task(_periodic_backup())
+    rotation_task = asyncio.create_task(_periodic_key_rotation())
+    quota_reconcile_task = asyncio.create_task(periodic_quota_reconcile(state))
 
     # Background task: poll channel posts (bot mode)
     poll_task = None
@@ -301,12 +319,22 @@ async def lifespan(app: FastAPI):
     finally:
         prune_task.cancel()
         backup_task.cancel()
+        rotation_task.cancel()
+        quota_reconcile_task.cancel()
         try:
             await prune_task
         except asyncio.CancelledError:
             pass
         try:
             await backup_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await rotation_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await quota_reconcile_task
         except asyncio.CancelledError:
             pass
         if poll_task is not None:
@@ -335,7 +363,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(
         title="Telegram Drive",
-        version="2.0.0-python",
+        version=__version__,
         lifespan=lifespan,
         docs_url="/api/docs" if not settings.disable_docs else None,
         redoc_url="/api/redoc" if not settings.disable_docs else None,
@@ -409,9 +437,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(files_router.router)
     app.include_router(shares_router.router)
+    app.include_router(upload_router.router)
+    app.include_router(transfers_router.router)
     app.include_router(settings_router.router)
     app.include_router(legacy_router.router)
     app.include_router(webdav_router.router)
+    app.include_router(quota_router.router)
 
     # ── Global exception handler for structured errors ──────────────────────
     @app.exception_handler(TelegramDriveError)

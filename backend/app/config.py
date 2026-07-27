@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     # ── Rate limiting ───────────────────────────────────────────────────────
     rate_limit_rpm: int = Field(default=120, alias="RATE_LIMIT_RPM")
     rate_limit_api_rpm: int = Field(default=300, alias="RATE_LIMIT_API_RPM")
+    # Per-share download rate limit (requests per minute per token).
+    share_download_rpm: int = Field(default=60, alias="SHARE_DOWNLOAD_RPM")
 
     # ── Metadata cache ──────────────────────────────────────────────────────
     metadata_cache_enabled: bool = Field(default=True, alias="METADATA_CACHE_ENABLED")
@@ -101,9 +103,7 @@ class Settings(BaseSettings):
     # Comma-separated list of signing secrets for key rotation.
     # The FIRST secret is the active signing key; all listed secrets are valid
     # for verification so old pre-signed URLs still work after a key rotation.
-    download_signing_secrets: str = Field(
-        default="", alias="DOWNLOAD_SIGNING_SECRETS",
-    )
+    # (Field defined once above at download_signing_secrets.)
     upload_link_ttl_secs: int = Field(default=0, alias="UPLOAD_LINK_TTL_SECS")
     upload_share_ttl_hours: int = Field(default=0, alias="UPLOAD_SHARE_TTL_HOURS")
 
@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     webdav_enabled: bool = Field(default=False, alias="WEBDAV_ENABLED")
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
     trash_retention_days: int = Field(default=30, alias="TRASH_RETENTION_DAYS")
+
+    # ── Database backend (TASK-P1-04 step 2: optional PostgreSQL) ─────────
+    # Empty/"sqlite" → SQLite (default). "postgresql://user:pass@host:port/dbname"
+    database_url: Optional[str] = Field(default=None, alias="DATABASE_URL")
 
     @field_validator("port")
     @classmethod

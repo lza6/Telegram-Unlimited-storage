@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -19,8 +19,8 @@ class ProgressState:
     total_chunks: int = 0
     uploaded_chunks: int = 0
     status: str = "active"  # active | completed | failed
-    file_id: Optional[str] = None
-    download_url: Optional[str] = None
+    file_id: str | None = None
+    download_url: str | None = None
     updated_at: float = field(default_factory=time.time)
 
     def snapshot(self) -> dict[str, Any]:
@@ -42,7 +42,7 @@ class ProgressBus:
     """Fan-out of progress snapshots to SSE/WebSocket subscribers."""
 
     def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue[Optional[dict[str, Any]]]] = set()
+        self._subscribers: set[asyncio.Queue[dict[str, Any] | None]] = set()
 
     def publish(self, snapshot: dict[str, Any]) -> None:
         for queue in list(self._subscribers):
@@ -51,12 +51,12 @@ class ProgressBus:
             except asyncio.QueueFull:
                 pass  # slow consumer — drop, next snapshot follows shortly
 
-    async def subscribe(self) -> asyncio.Queue[Optional[dict[str, Any]]]:
-        queue: asyncio.Queue[Optional[dict[str, Any]]] = asyncio.Queue(maxsize=16)
+    async def subscribe(self) -> asyncio.Queue[dict[str, Any] | None]:
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=16)
         self._subscribers.add(queue)
         return queue
 
-    def unsubscribe(self, queue: asyncio.Queue[Optional[dict[str, Any]]]) -> None:
+    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any] | None]) -> None:
         self._subscribers.discard(queue)
 
     async def close(self) -> None:
@@ -75,6 +75,7 @@ class TransferManager:
         self,
         file_slots: int,
         chunk_slots: int,
+        storage: Any | None = None,
     ) -> None:
         self.file_slots_total = max(1, file_slots)
         self.chunk_slots_total = max(1, chunk_slots)
@@ -91,6 +92,10 @@ class TransferManager:
         # Prevents duplicate uploads when the client retries after a timeout.
         self._idempotency_cache: dict[str, tuple[int, str, bytes, float]] = {}
         self._idempotency_locks: dict[str, asyncio.Lock] = {}
+        # v8 (TASK-P1-04): optional persistent backend so idempotency survives
+        # restarts. When set, idempotency_get/put mirror to storage so a process
+        # restart replays the cached response instead of re-executing the upload.
+        self._storage = storage
 
     # ── slot accounting ─────────────────────────────────────────────────────
     def queue_status(self) -> dict[str, int]:
@@ -138,10 +143,10 @@ class TransferManager:
                 state.total_chunks = total_chunks
         return state
 
-    def get_progress(self, session_id: str) -> Optional[ProgressState]:
+    def get_progress(self, session_id: str) -> ProgressState | None:
         return self._progress.get(session_id)
 
-    def update_progress(self, session_id: str, **changes: Any) -> Optional[ProgressState]:
+    def update_progress(self, session_id: str, **changes: Any) -> ProgressState | None:
         state = self._progress.get(session_id)
         if state is None:
             return None
@@ -171,22 +176,58 @@ class TransferManager:
     # ── idempotency cache ──────────────────────────────────────────────────
     def idempotency_get(
         self, key: str,
-    ) -> Optional[tuple[int, str, bytes]]:
-        """Return (status, media_type, body_bytes) if key was already processed."""
+    ) -> tuple[int, str, bytes] | None:
+        """Return (status, media_type, body_bytes) if key was already processed.
+
+        v8 (TASK-P1-04): falls back to the persistent store on a memory miss so
+        a restart replays the cached response. Returns the sentinel
+        ``("__PROCESSING__", "", b"")`` when a request is in-flight so the
+        caller can return 409 Conflict.
+        """
         entry = self._idempotency_cache.get(key)
-        if entry is None:
-            return None
-        status, media_type, body, stored_at = entry
-        # Expire entries older than 1 hour to bound memory.
-        if time.time() - stored_at > 3600.0:
-            self._idempotency_cache.pop(key, None)
-            return None
-        return status, media_type, body
+        if entry is not None:
+            status, media_type, body, stored_at = entry
+            if time.time() - stored_at > 3600.0:
+                self._idempotency_cache.pop(key, None)
+            else:
+                return status, media_type, body
+        # Memory miss → check persistent store (v8).
+        if self._storage is not None:
+            raw = self._storage.get_idempotency(key)
+            if raw == "__PROCESSING__":
+                # In-flight in a previous process; treat as conflict.
+                return 409, "", b""
+            if raw and raw != "__PROCESSING__":
+                try:
+                    import base64
+                    import json
+
+                    payload = json.loads(raw)
+                    body = base64.b64decode(payload.get("body", ""))
+                    return int(payload["status"]), str(payload["media_type"]), body
+                except (ValueError, KeyError, TypeError):
+                    return None
+        return None
 
     def idempotency_put(
         self, key: str, status: int, media_type: str, body: bytes,
     ) -> None:
         self._idempotency_cache[key] = (status, media_type, body, time.time())
+        # v8: mirror to persistent store so restart replays.
+        if self._storage is not None:
+            import base64
+
+            payload = {
+                "status": status,
+                "media_type": media_type,
+                "body": base64.b64encode(body).decode("ascii"),
+            }
+            self._storage.set_idempotency_complete(key, payload)
+
+    def idempotency_mark_processing(self, key: str) -> None:
+        """Mark a key as in-flight in the persistent store (v8)."""
+        if self._storage is not None:
+            self._storage.set_idempotency_processing(key)
 
     def idempotency_lock(self, key: str) -> asyncio.Lock:
         """Return (or create) a per-key lock so concurrent retries serialise."""

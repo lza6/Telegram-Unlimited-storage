@@ -2316,3 +2316,178 @@ input.sr-only.sr-only {
 .form-field input[aria-invalid="true"] {
   border-color: #ff7b72;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   v8 Web Components (TASK-P1-02): td-file-card, td-toast, td-lightbox
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* File card grid */
+td-file-card {
+  display: block;
+}
+.td-file-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #f8fafc);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  overflow: hidden;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+  height: 100%;
+}
+.td-file-card:hover,
+.td-file-card:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  outline: none;
+  border-color: var(--accent, #3b82f6);
+}
+.td-file-card__thumb {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  background: var(--bg-primary, #fff);
+}
+.td-file-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem;
+}
+.td-file-card__name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.td-file-card__size {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #64748b);
+}
+.td-file-card__badge {
+  align-self: flex-start;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent-soft, #dbeafe);
+  color: var(--accent-strong, #1e40af);
+  letter-spacing: 0.04em;
+}
+
+/* Lightbox */
+.td-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+  padding: 2rem;
+}
+.td-lightbox[hidden] {
+  display: none;
+}
+.td-lightbox__close {
+  position: absolute;
+  top: 1rem;
+  right: 1.5rem;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: #fff;
+  font-size: 2rem;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.td-lightbox__content {
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.td-lightbox__content img,
+.td-lightbox__content video,
+.td-lightbox__content embed {
+  max-width: 90vw;
+  max-height: 85vh;
+  border-radius: 8px;
+}
+.td-lightbox__noop {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 1.5rem 2rem;
+  border-radius: 8px;
+}
+.td-lightbox__noop a {
+  color: #60a5fa;
+}
+
+/* Toast host */
+.td-toast-host {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 9500;
+  max-width: 380px;
+}
+.td-toast {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: var(--bg-secondary, #1e293b);
+  color: var(--text-primary, #f8fafc);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  border-left: 4px solid var(--accent, #3b82f6);
+  animation: td-toast-in 0.2s ease;
+}
+.td-toast--success { border-left-color: #10b981; }
+.td-toast--error { border-left-color: #ef4444; }
+.td-toast--warning { border-left-color: #f59e0b; }
+.td-toast--info { border-left-color: #3b82f6; }
+.td-toast__icon {
+  font-weight: 700;
+  width: 1.5rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+.td-toast__msg {
+  flex: 1;
+  font-size: 0.9rem;
+}
+.td-toast__close {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 1.25rem;
+  cursor: pointer;
+  line-height: 1;
+}
+.td-toast__close:hover { opacity: 1; }
+.td-toast--leave {
+  animation: td-toast-out 0.2s ease forwards;
+}
+@keyframes td-toast-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes td-toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(20px); }
+}

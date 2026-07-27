@@ -141,3 +141,89 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil(clients.openWindow(event.notification.data.url));
 });
+
+// ── Background Sync: replay failed uploads when connectivity returns ───────
+// (TASK-P1-02, v8.0)
+//
+// Clients register the 'upload-queue' sync tag via registration.sync.register()
+// after an upload fails offline. On the sync event, we drain the IndexedDB
+// 'upload_queue' store and replay each pending upload, dispatching a td:toast
+// event to the controlling client on success/failure.
+const SYNC_TAG = 'upload-queue';
+const DB_NAME = 'td-offline';
+const DB_VERSION = 1;
+const STORE = 'upload_queue';
+
+function openOfflineDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = function (ev) {
+      const db = ev.target.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error); };
+  });
+}
+
+self.addEventListener('sync', (event) => {
+  if (event.tag === SYNC_TAG) {
+    event.waitUntil(replayUploadQueue());
+  }
+});
+
+async function replayUploadQueue() {
+  let db;
+  try {
+    db = await openOfflineDB();
+  } catch (_err) {
+    return; // IndexedDB unavailable — nothing to replay
+  }
+  const tx = db.transaction(STORE, 'readonly');
+  const store = tx.objectStore(STORE);
+  const all = await new Promise((resolve, reject) => {
+    const r = store.getAll();
+    r.onsuccess = function () { resolve(r.result || []); };
+    r.onerror = function () { reject(r.error); };
+  });
+
+  for (const item of all) {
+    try {
+      const res = await fetch(item.url, {
+        method: item.method || 'POST',
+        headers: item.headers || {},
+        body: item.body,
+        credentials: 'include',
+      });
+      if (res.ok) {
+        await deleteFromQueue(db, item.id);
+        await notifyClients('success', '离线上传已同步: ' + (item.name || ''));
+      } else {
+        // Non-2xx — leave in queue for next sync; avoid hot-looping.
+        await notifyClients('warning', '离线上传待重试: ' + (item.name || ''));
+        break;
+      }
+    } catch (_err) {
+      await notifyClients('error', '离线上传失败: ' + (item.name || ''));
+      break; // still offline — stop, will retry on next sync
+    }
+  }
+}
+
+function deleteFromQueue(db, id) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete = function () { resolve(); };
+    tx.onerror = function () { reject(tx.error); };
+  });
+}
+
+async function notifyClients(type, message) {
+  const clients = await self.clients.matchAll({ includeUncontrolled: true });
+  for (const client of clients) {
+    client.postMessage({ kind: 'td:toast', type: type, message: message });
+  }
+}

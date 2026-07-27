@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from .audit import AuditEvent, get_audit_logger
@@ -47,7 +46,12 @@ class QuotaExceededError(Exception):
 
 
 def check_upload_quota(state: AppState, tenant_id: str, file_size: int) -> None:
-    """Pre-check upload against tenant quota. Raises QuotaExceededError on overage."""
+    """Pre-check upload against tenant quota. Raises QuotaExceededError on overage.
+
+    v8 (TASK-P2-02): also emits a quota.alert audit event when usage crosses
+    the configured threshold (default 80%) so operators can act before the
+    hard limit is hit.
+    """
     quota = state.storage.get_tenant_quota(tenant_id)
     if not quota:
         return  # no quota configured = unlimited
@@ -65,6 +69,37 @@ def check_upload_quota(state: AppState, tenant_id: str, file_size: int) -> None:
 
     if files_limit > 0 and files_used >= files_limit:
         raise QuotaExceededError(tenant_id, storage_used, storage_limit, file_size)
+
+    # v8: soft alert when usage is at/above the warning threshold.
+    _maybe_alert_quota(state, tenant_id, storage_used + file_size, storage_limit,
+                      files_used + 1, files_limit)
+
+
+def _maybe_alert_quota(
+    state: AppState,
+    tenant_id: str,
+    storage_used: int,
+    storage_limit: int,
+    files_used: int,
+    files_limit: int,
+    threshold: float = 0.8,
+) -> None:
+    """Emit a quota.alert audit event when usage ratio >= threshold."""
+    ratio = storage_used / storage_limit if storage_limit > 0 else 0.0
+    if ratio < threshold:
+        return
+    audit = get_audit_logger()
+    if audit is None:
+        return
+    # Use a synthetic actor; quota alerts are system-side.
+    audit.log(
+        AuditEvent.SETTINGS_CHANGE, "system",
+        target=f"quota:{tenant_id}", success=True,
+        action="quota.alert",
+        ratio=round(ratio, 3),
+        storage_used=storage_used, storage_limit=storage_limit,
+        files_used=files_used, files_limit=files_limit,
+    )
 
 
 @router.post("/admin/tenants/{tenant_id}/quota", dependencies=[Depends(require_scope("admin"))])

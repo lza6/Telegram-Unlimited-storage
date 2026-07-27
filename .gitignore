@@ -62,3 +62,10 @@ htmlcov/
 
 # ── Pre-migration runtime backups (contain Telegram session secrets — never commit) ──
 /backups/
+
+# ── v8: runtime temp files & logs (never commit) ──
+server-e2e.log
+*.tmp
+*.log
+.env.backup-*
+!.github/**/*.yml

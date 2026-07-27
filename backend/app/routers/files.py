@@ -5,18 +5,17 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..auth import CallerIdentity
-
 from .. import links
 from ..audit import get_audit_logger
+from ..auth import CallerIdentity
 from ..classifier import classify_file
 from ..downloads import content_disposition, parse_range_header, resolve_download
 from ..errors import (
@@ -26,6 +25,8 @@ from ..errors import (
     TelegramError,
     ValidationError,
 )
+from ..etag import compute_etag, etag_matches
+from ..metrics import get_registry
 from ..settings_store import SettingsStore
 from ..state import AppState
 
@@ -39,7 +40,7 @@ _NULLISH = {"", "null", "none"}
 @dataclass
 class _BotFileMeta:
     id: int
-    folder_id: Optional[int]
+    folder_id: int | None
     name: str
     size: int
     mime_type: str
@@ -56,7 +57,7 @@ def api_error(code: str, message: str, status_code: int) -> JSONResponse:
     )
 
 
-def parse_folder_id(raw: Optional[str]) -> Optional[int]:
+def parse_folder_id(raw: str | None) -> int | None:
     if raw is None or raw.strip().lower() in _NULLISH:
         return None
     try:
@@ -66,7 +67,7 @@ def parse_folder_id(raw: Optional[str]) -> Optional[int]:
 
 
 def rfc3339(ts: int) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _bot_row_to_meta(row: dict[str, Any]) -> _BotFileMeta:
@@ -146,15 +147,15 @@ async def list_folders(request: Request) -> JSONResponse:
 @router.get("/files")
 async def list_files(
     request: Request,
-    folder_id: Optional[str] = None,
+    folder_id: str | None = None,
     page: int = 1,
     limit: int = 100,
-    search: Optional[str] = None,
+    search: str | None = None,
     sort: str = "created_at",
     order: str = "desc",
-    mime_type: Optional[str] = None,
-    size_min: Optional[int] = None,
-    size_max: Optional[int] = None,
+    mime_type: str | None = None,
+    size_min: int | None = None,
+    size_max: int | None = None,
 ) -> JSONResponse:
     state = get_state(request)
     state.authenticator.require_auth(request)
@@ -219,9 +220,9 @@ async def list_files(
 @router.get("/files/search")
 async def search_files(
     request: Request,
-    q: Optional[str] = None,
-    folder_id: Optional[str] = None,
-    recursive: Optional[bool] = None,
+    q: str | None = None,
+    folder_id: str | None = None,
+    recursive: bool | None = None,
 ) -> JSONResponse:
     state = get_state(request)
     state.authenticator.require_auth(request)
@@ -263,7 +264,7 @@ async def search_files(
 
 
 @router.get("/files/{message_id}")
-async def get_file(message_id: int, request: Request, folder_id: Optional[str] = None):
+async def get_file(message_id: int, request: Request, folder_id: str | None = None):
     state = get_state(request)
     state.authenticator.require_auth(request)
     await _require_connected(state)
@@ -294,12 +295,62 @@ async def get_file(message_id: int, request: Request, folder_id: Optional[str] =
 
 
 # ── download ────────────────────────────────────────────────────────────────
+
+
+@router.get("/files/{message_id}/thumb")
+async def file_thumbnail(message_id: int, request: Request, folder_id: str | None = None):
+    """v8 (TASK-P1-02): generate an SVG placeholder thumbnail for a file.
+
+    Returns a category-coloured SVG with the file's first letter — a lightweight
+    visual cue for the files grid without pulling the full file from Telegram.
+    Real image thumbnails (Pillow) are a P3 follow-up; this endpoint's contract
+    (returns image/svg+xml) stays stable when that lands.
+    """
+    state = get_state(request)
+    state.authenticator.require_auth(request)
+    fid = parse_folder_id(folder_id)
+    try:
+        target = await resolve_download(state, fid, message_id, None)
+    except LookupError:
+        raise NotFoundError("File", str(message_id))
+    except Exception:
+        raise StorageError("Thumbnail lookup failed")
+
+    cat = classify_file(target.filename, getattr(target, "mime_type", None))
+    palette = {
+        "image": ("#6366f1", "#312e81"),
+        "video": ("#ec4899", "#831843"),
+        "audio": ("#10b981", "#064e3b"),
+        "document": ("#f59e0b", "#78350f"),
+        "archive": ("#6b7280", "#1f2937"),
+        "code": ("#06b6d4", "#0e7490"),
+        "font": ("#8b5cf6", "#4c1d95"),
+        "other": ("#3b82f6", "#1e3a8a"),
+    }
+    fg, bg = palette.get(cat, palette["other"])
+    initial = (target.filename or "?")[0:1].upper() or "?"
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" '
+        f'viewBox="0 0 200 200">'
+        f'<rect width="200" height="200" rx="16" fill="{bg}"/>'
+        f'<text x="100" y="118" font-family="system-ui,sans-serif" '
+        f'font-size="96" font-weight="700" fill="{fg}" text-anchor="middle">{initial}</text>'
+        f"</svg>"
+    )
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @router.get("/files/{message_id}/download")
 async def download_file(
     message_id: int,
     request: Request,
-    folder_id: Optional[str] = None,
-    filename: Optional[str] = None,
+    folder_id: str | None = None,
+    filename: str | None = None,
 ):
     state = get_state(request)
     state.authenticator.require_auth(request)
@@ -313,11 +364,27 @@ async def download_file(
     except Exception:
         raise StorageError("Download failed")
 
+    # v8 (TASK-P1-03): ETag / conditional request handling.
+    # Compute (or fetch cached) a weak ETag and honour If-None-Match → 304.
+    etag = state.storage.get_file_etag(message_id)
+    if etag is None:
+        etag = compute_etag(message_id, target.size, target.filename)
+        state.storage.set_file_etag(message_id, etag)
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and etag_matches(if_none_match, etag):
+        get_registry().download_304_total.inc()
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "private"},
+        )
+
     total = target.size
     ranged = parse_range_header(range_header, total) if total > 0 else None
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Disposition": content_disposition(target.filename, target.mime_type),
+        "ETag": etag,
+        "Cache-Control": "private",
     }
     if ranged and total > 0:
         start, end = ranged
@@ -332,6 +399,7 @@ async def download_file(
         )
     if total > 0:
         headers["Content-Length"] = str(total)
+    get_registry().download_200_total.inc()
     return StreamingResponse(
         target.stream, status_code=200, media_type=target.mime_type, headers=headers
     )
@@ -339,8 +407,8 @@ async def download_file(
 
 # ── upload ──────────────────────────────────────────────────────────────────
 def _issue_download_link(
-    state: AppState, message_id: int, folder_id: Optional[int], owner_id: str, filename: str
-) -> tuple[Optional[str], Optional[str], Optional[int], str]:
+    state: AppState, message_id: int, folder_id: int | None, owner_id: str, filename: str
+) -> tuple[str | None, str | None, int | None, str]:
     """Returns (download_url, share_id, expires_at, link_kind)."""
     settings = state.settings
     base = SettingsStore(settings.data_dir).share_base_url(settings.base_url, None)
@@ -385,8 +453,8 @@ def _issue_download_link(
 @router.post("/files")
 async def upload_file(
     request: Request,
-    file: Optional[UploadFile] = None,
-    folder_id: Optional[str] = Form(None),
+    file: UploadFile | None = None,
+    folder_id: str | None = Form(None),
 ):
     state = get_state(request)
     identity = state.authenticator.require_auth(request)
@@ -487,8 +555,8 @@ async def upload_file(
 class BulkRequest(BaseModel):
     action: str
     file_ids: list[Any]
-    folder_id: Optional[int] = None
-    payload: Optional[dict[str, Any]] = None
+    folder_id: int | None = None
+    payload: dict[str, Any] | None = None
 
 
 @router.post("/files/bulk")
@@ -574,11 +642,11 @@ async def bulk_files(body: BulkRequest, request: Request):
 
 # ── index rebuild (admin, user mode only) ───────────────────────────────────
 class RebuildIndexRequest(BaseModel):
-    folder_ids: Optional[list[Optional[int]]] = None
+    folder_ids: list[int | None] | None = None
 
 
 @router.post("/files/rebuild-index")
-async def rebuild_index(request: Request, body: Optional[RebuildIndexRequest] = None):
+async def rebuild_index(request: Request, body: RebuildIndexRequest | None = None):
     state = get_state(request)
     identity = state.authenticator.require_auth(request)
     if state.effective_transport_mode() == "bot":
@@ -680,7 +748,7 @@ class BatchDeleteRequest(BaseModel):
 
 class BatchMoveRequest(BaseModel):
     message_ids: list[int] = Field(..., min_length=1)
-    target_folder_id: Optional[int] = None
+    target_folder_id: int | None = None
 
 
 @router.post("/files/batch-move")

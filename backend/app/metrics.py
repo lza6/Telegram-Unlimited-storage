@@ -7,7 +7,6 @@ Prometheus text format. The /metrics endpoint in health.py calls this.
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from prometheus_client import (  # type: ignore[import-untyped]
     CollectorRegistry,
@@ -91,6 +90,18 @@ class MetricsRegistry:
             registry=self._registry,
         )
 
+        # v8 (TASK-P1-03): HTTP cache hit/miss counters for ETag conditional requests.
+        self.download_304_total = Counter(
+            "telegram_drive_download_304_total",
+            "Downloads served 304 Not Modified (ETag hit)",
+            registry=self._registry,
+        )
+        self.download_200_total = Counter(
+            "telegram_drive_download_200_total",
+            "Downloads served 200 with body",
+            registry=self._registry,
+        )
+
         self._started_at = time.time()
 
     def uptime_seconds(self) -> float:
@@ -101,7 +112,7 @@ class MetricsRegistry:
 
 
 # Global singleton.
-_metrics_registry: Optional[MetricsRegistry] = None
+_metrics_registry: MetricsRegistry | None = None
 
 
 def get_registry() -> MetricsRegistry:

@@ -7,7 +7,6 @@ Used by the files router to add category metadata to file listings.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 CATEGORY_RULES: dict[str, dict[str, set[str]]] = {
     "image": {
@@ -63,7 +62,7 @@ CATEGORY_ICONS: dict[str, str] = {
 }
 
 
-def classify_file(filename: str, mime_type: Optional[str] = None) -> str:
+def classify_file(filename: str, mime_type: str | None = None) -> str:
     """Classify a file into a category based on extension and MIME type.
 
     Returns the category key (e.g. 'image', 'video', 'document', 'other').
@@ -78,7 +77,7 @@ def classify_file(filename: str, mime_type: Optional[str] = None) -> str:
 
 
 def classify_batch(
-    files: list[tuple[str, Optional[str]]]
+    files: list[tuple[str, str | None]]
 ) -> dict[str, int]:
     """Classify a batch of files and return category counts.
 

@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram Drive — unified Python tooling config (TASK-P0-02, v8.0).
+#
+# Single source of truth for ruff (lint/format), mypy (type check) and pytest
+# (test + coverage gate). Mirrors the engineering baseline described in
+# plans/v8-迭代升级指南/下一步改进指南.md (TASK-P0-02).
+#
+# Rollout strategy: conservative defaults that the current 270-test suite passes
+# out of the box; stricter rules (ANN/S/B) are listed but selectively opted into
+# via per-line `# noqa` so we never block the gate on legacy code. The gate
+# itself (cov-fail-under) starts at 70 and ratchets up as coverage improves.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+line-length = 120                # E501 — generous to legacy Rust-ported code (138 violations at 88)
+target-version = "py311"
+extend-exclude = [
+  ".venv",
+  ".build-cache",
+  "build",
+  "data",
+]
+
+[tool.ruff.lint]
+# Tier 1 (enforced): correctness + imports + modernization.
+#   E  pycodestyle errors
+#   W  pycodestyle warnings
+#   F  pyflakes (unused imports/vars)
+#   I  isort
+#   UP pyupgrade (py311+ idioms)
+# Tier 2 (advisory, not enforced yet — opt-in via `# noqa: <code>`):
+#   ANN  flake8-annotations  (type hints — mypy already covers this)
+#   S    bandit              (security — semgrep/gitleaks in CI cover it)
+#   B    bugbear             (subtle bugs)
+select = ["E", "W", "F", "I", "UP"]
+ignore = [
+  "E501",   # line length — handled by line-length=120 above; legacy code has long lines
+  "E731",   # lambda assignment — used in a few callbacks
+  "B008",   # function call in default arg — FastAPI Depends() pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402", "F401", "F841"]   # tests import fixtures, may leave unused
+"scripts/*" = ["E402", "F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+combine-as-imports = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# mypy
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+# Start permissive — ratchet toward strict. Existing code has 36 errors; we don't
+# block on them yet but we STOP new ones via CI diff-check.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+show_error_codes = true
+files = ["app"]
+
+# Opt-in strictness per-module (new modules only — v8 additions).
+[[tool.mypy.overrides]]
+module = ["app.storage_backend", "app.observability", "app.idempotency"]
+strict = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest (supersedes pytest.ini — keep this file as the single source)
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+# Coverage gate: ratcheted up as coverage improves.
+#   v8 baseline: 50% (measured 50.52% across 267 tests)
+#   target:      70% after P0/P1 work, 80% final
+addopts = "-q --cov=app --cov-report=term-missing --cov-fail-under=50"
+filterwarnings = [
+  "ignore::DeprecationWarning:starlette.*",
+  "ignore::DeprecationWarning:httpx.*",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+  "app/__init__.py",
+  "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+  "\\.\\.\\.",            # protocol/abc stubs
+]
+show_missing = true

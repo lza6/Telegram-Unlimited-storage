@@ -19,7 +19,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import (
@@ -57,7 +57,7 @@ def map_telegram_error(exc: BaseException) -> str:
     return text
 
 
-def _parse_proxy(proxy_url: Optional[str]):
+def _parse_proxy(proxy_url: str | None):
     """Parse socks5://[user:pass@]host:port into a python-socks tuple."""
     if not proxy_url or not proxy_url.lower().startswith("socks5://"):
         return None
@@ -81,7 +81,7 @@ def _parse_proxy(proxy_url: Optional[str]):
 
 @dataclass
 class FolderInfo:
-    id: Optional[int]  # None = Saved Messages
+    id: int | None  # None = Saved Messages
     name: str
     is_root: bool = False
 
@@ -89,7 +89,7 @@ class FolderInfo:
 @dataclass
 class FileMetadata:
     id: int  # message id
-    folder_id: Optional[int]
+    folder_id: int | None
     name: str
     size: int
     mime_type: str
@@ -101,23 +101,23 @@ class FileMetadata:
 @dataclass
 class AuthResult:
     success: bool
-    next_step: Optional[str] = None  # "code" | "password" | "dashboard" | "waiting"
-    error: Optional[str] = None
+    next_step: str | None = None  # "code" | "password" | "dashboard" | "waiting"
+    error: str | None = None
 
 
 @dataclass
 class TelegramState:
     """Live Telegram session state — mirrors the Rust TelegramState."""
 
-    api_id: Optional[int]
-    api_hash: Optional[str]
+    api_id: int | None
+    api_hash: str | None
     data_dir: Path
-    proxy_url: Optional[str] = None
+    proxy_url: str | None = None
 
-    client: Optional[TelegramClient] = None
+    client: TelegramClient | None = None
     # Pending phone-code login: phone + phone_code_hash between request/sign-in.
-    pending_phone: Optional[str] = None
-    pending_phone_code_hash: Optional[str] = None
+    pending_phone: str | None = None
+    pending_phone_code_hash: str | None = None
     password_pending: bool = False
     qr_login_obj: Any = None
 
@@ -234,7 +234,7 @@ class TelegramState:
                 return self.client
             if self.client is None:
                 self.client = self._build_client()
-            last_exc: Optional[Exception] = None
+            last_exc: Exception | None = None
             for attempt in range(self._CONNECT_RETRIES + 1):
                 try:
                     await asyncio.wait_for(
@@ -364,7 +364,7 @@ class TelegramState:
         self.backup_session()
 
     # ── peer / folder resolution ────────────────────────────────────────────
-    async def resolve_peer(self, folder_id: Optional[int]):
+    async def resolve_peer(self, folder_id: int | None):
         """None → self (Saved Messages); Some(channel_id) → cached/scanned peer."""
         client = await self.connect()
         if folder_id is None:
@@ -453,12 +453,12 @@ class TelegramState:
 
     # ── file metadata ───────────────────────────────────────────────────────
     @staticmethod
-    def message_to_metadata(message: Any, folder_id: Optional[int]) -> Optional[FileMetadata]:
+    def message_to_metadata(message: Any, folder_id: int | None) -> FileMetadata | None:
         """Map a Telegram message with media to FileMetadata (empty-caption format)."""
         media = getattr(message, "media", None)
         if media is None:
             return None
-        doc: Optional[Document] = None
+        doc: Document | None = None
         if isinstance(media, MessageMediaDocument):
             d = media.document
             if isinstance(d, Document):
@@ -496,7 +496,7 @@ class TelegramState:
             )
         return None
 
-    async def list_files(self, folder_id: Optional[int]) -> list[FileMetadata]:
+    async def list_files(self, folder_id: int | None) -> list[FileMetadata]:
         client = await self.connect()
         peer = await self.resolve_peer(folder_id)
         files: list[FileMetadata] = []
@@ -506,7 +506,7 @@ class TelegramState:
                 files.append(meta)
         return files
 
-    async def get_message(self, folder_id: Optional[int], message_id: int):
+    async def get_message(self, folder_id: int | None, message_id: int):
         client = await self.connect()
         peer = await self.resolve_peer(folder_id)
         messages = await client.get_messages(peer, ids=[message_id])
@@ -516,7 +516,7 @@ class TelegramState:
 
     async def upload_bytes(
         self,
-        folder_id: Optional[int],
+        folder_id: int | None,
         data: bytes,
         filename: str,
         progress_callback: Any = None,
@@ -544,7 +544,7 @@ class TelegramState:
 
     async def upload_stream(
         self,
-        folder_id: Optional[int],
+        folder_id: int | None,
         file_obj: Any,
         file_size: int,
         filename: str,
@@ -561,15 +561,15 @@ class TelegramState:
         )
         return message.id
 
-    async def delete_files(self, folder_id: Optional[int], message_ids: list[int]) -> None:
+    async def delete_files(self, folder_id: int | None, message_ids: list[int]) -> None:
         client = await self.connect()
         peer = await self.resolve_peer(folder_id)
         await client.delete_messages(peer, message_ids)
 
     async def move_files(
         self,
-        source_folder_id: Optional[int],
-        target_folder_id: Optional[int],
+        source_folder_id: int | None,
+        target_folder_id: int | None,
         message_ids: list[int],
     ) -> list[int]:
         """Forward messages to target, then delete originals. Returns new ids."""
@@ -592,7 +592,7 @@ class TelegramState:
 
     async def iter_download_by_id(
         self,
-        folder_id: Optional[int],
+        folder_id: int | None,
         message_id: int,
         start_byte: int = 0,
         part_size_kb: int = 512,

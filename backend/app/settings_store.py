@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 DEFAULT_PROXY: dict[str, Any] = {
     "enabled": False,
@@ -39,7 +39,7 @@ DEFAULT_VPN: dict[str, Any] = {
 class JsonFileStore:
     """Atomic read/merge/write for a single JSON settings file."""
 
-    def __init__(self, path: Path, defaults: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, path: Path, defaults: dict[str, Any] | None = None) -> None:
         self.path = path
         self.defaults = defaults or {}
 
@@ -82,7 +82,7 @@ class SettingsStore:
         self.transport = JsonFileStore(data_dir / "transport_mode.json", {"mode": None})
 
     # ── share link base resolution ──────────────────────────────────────────
-    def share_base_url(self, env_base_url: str, request_host: Optional[str]) -> str:
+    def share_base_url(self, env_base_url: str, request_host: str | None) -> str:
         """ui_settings.share_domain > BASE_URL env > request Host."""
         share_domain = (self.ui.load().get("share_domain") or "").strip()
         if share_domain:

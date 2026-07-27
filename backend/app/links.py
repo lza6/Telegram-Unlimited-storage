@@ -15,7 +15,6 @@ import hashlib
 import hmac
 import secrets
 import time
-from typing import Optional
 from urllib.parse import quote
 
 PROGRESS_TOKEN_TTL_SECS = 300
@@ -41,10 +40,10 @@ def verify_share_cookie(token: str, password_hash: str, cookie: str) -> bool:
 # ── presigned download URLs ─────────────────────────────────────────────────
 def presign_canonical(
     message_id: int,
-    folder_id: Optional[int],
+    folder_id: int | None,
     expires_at: int,
     owner_id: str,
-    max_downloads: Optional[int],
+    max_downloads: int | None,
 ) -> str:
     folder_part = str(folder_id) if folder_id is not None else ""
     max_part = str(max_downloads) if max_downloads is not None else ""
@@ -74,10 +73,10 @@ def presigned_url(
     base_url: str,
     secret: str,
     message_id: int,
-    folder_id: Optional[int],
+    folder_id: int | None,
     owner_id: str,
     ttl_secs: int,
-    max_downloads: Optional[int] = None,
+    max_downloads: int | None = None,
 ) -> tuple[str, int]:
     """Build /d/signed?... — returns (url, expires_at); exp=0 means never."""
     expires_at = int(time.time()) + ttl_secs if ttl_secs > 0 else 0
@@ -94,11 +93,11 @@ def presigned_url(
 # ── upload progress tokens ──────────────────────────────────────────────────
 def _progress_key(access_pwd: str) -> bytes:
     # Rust impl: hex(SHA256("upload-progress-v1|"+pwd)) used as a STRING key.
-    return hashlib.sha256(f"upload-progress-v1|{access_pwd}".encode("utf-8")).hexdigest().encode("utf-8")
+    return hashlib.sha256(f"upload-progress-v1|{access_pwd}".encode()).hexdigest().encode("utf-8")
 
 
 def issue_progress_token(access_pwd: str, session_id: str, expires_at: int) -> str:
-    msg = f"v1|{session_id}|{expires_at}".encode("utf-8")
+    msg = f"v1|{session_id}|{expires_at}".encode()
     return hmac.new(_progress_key(access_pwd), msg, hashlib.sha256).hexdigest()
 
 

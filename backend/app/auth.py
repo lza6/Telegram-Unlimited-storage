@@ -18,7 +18,6 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
@@ -35,7 +34,7 @@ API_KEY_HEADER = "X-API-Key"
 @dataclass(frozen=True)
 class CallerIdentity:
     kind: str  # "console" | "api" | "tenant"
-    tenant_id: Optional[str] = None
+    tenant_id: str | None = None
 
     @property
     def owner_id(self) -> str:
@@ -107,14 +106,14 @@ class Authenticator:
         )
 
     # ── credential sources ──────────────────────────────────────────────────
-    def _effective_access_pwd(self) -> Optional[str]:
+    def _effective_access_pwd(self) -> str | None:
         if self.settings.access_pwd:
             return self.settings.access_pwd
         data = self.api_settings_file.load()
         pwd = data.get("local_access_pwd")
         return pwd if isinstance(pwd, str) and pwd else None
 
-    def _effective_key_hash(self) -> Optional[str]:
+    def _effective_key_hash(self) -> str | None:
         data = self.api_settings_file.load()
         h = data.get("key_hash")
         if isinstance(h, str) and h:
@@ -137,7 +136,7 @@ class Authenticator:
             self.guard.record_failure(client_ip)
         return ok
 
-    def verify_api_key(self, provided: str, required_scope: str | None = None) -> Optional[CallerIdentity]:
+    def verify_api_key(self, provided: str, required_scope: str | None = None) -> CallerIdentity | None:
         # Single-tenant key hash (api_settings.json / env API_KEY).
         stored = self._effective_key_hash()
         if stored:

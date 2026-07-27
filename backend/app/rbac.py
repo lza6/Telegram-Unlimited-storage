@@ -5,7 +5,7 @@ Provides scope-based authorization for multi-tenant deployments.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request
 

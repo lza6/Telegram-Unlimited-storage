@@ -7,11 +7,10 @@ ensuring strict atomicity across distributed systems.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from .audit import AuditEvent, get_audit_logger
 
@@ -28,8 +27,8 @@ SAGA_EXPIRATION_SECS = 3600  # 1 hour
 class SagaStep:
     saga_id: str
     state: str  # started | tg_sent | db_written | completed | compensating | compensated
-    message_id: Optional[int]
-    peer_id: Optional[int]
+    message_id: int | None
+    peer_id: int | None
     file_name: str
     file_size: int
     owner_id: str

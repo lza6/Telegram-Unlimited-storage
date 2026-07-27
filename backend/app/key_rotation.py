@@ -13,7 +13,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from .audit import AuditEvent, get_audit_logger
 
@@ -32,7 +32,7 @@ class KeyRotationManager:
     def __init__(
         self,
         data_dir: Path,
-        settings: Optional[Settings] = None,
+        settings: Settings | None = None,
         rotation_interval_secs: int = DEFAULT_ROTATION_INTERVAL_SECS,
         max_retained_keys: int = MAX_RETAINED_KEYS,
     ) -> None:
@@ -153,7 +153,7 @@ class KeyRotationManager:
 
         return secrets_list
 
-    def rotate_if_due(self, actor: str = "scheduler") -> Optional[dict]:
+    def rotate_if_due(self, actor: str = "scheduler") -> dict | None:
         """Check if rotation interval has elapsed and rotate if due."""
         ring = self.load_key_ring()
         last = ring.get("last_rotated_at", 0)

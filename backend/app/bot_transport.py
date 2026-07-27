@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import httpx
 
@@ -48,7 +49,7 @@ class BotTransport:
         self,
         bot_token: str,
         storage_channel_id: str,
-        proxy_url: Optional[str] = None,
+        proxy_url: str | None = None,
     ) -> None:
         if not bot_token:
             raise BotTransportError("TG_BOT_TOKEN is required for bot mode")
@@ -153,7 +154,7 @@ class BotTransport:
         self,
         telegram_file_id: str,
         offset: int = 0,
-        length: Optional[int] = None,
+        length: int | None = None,
         chunk_size: int = 64 * 1024,
     ) -> AsyncIterator[bytes]:
         """Stream file bytes, optionally ranged (offset/length)."""

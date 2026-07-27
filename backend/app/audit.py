@@ -8,15 +8,15 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("telegram_drive.audit")
 
 
-class AuditEvent(str, Enum):
+class AuditEvent(StrEnum):
     """All auditable event types."""
 
     # Authentication
@@ -55,11 +55,11 @@ class AuditEntry:
 
     event: AuditEvent
     actor: str  # IP address or tenant_id
-    target: Optional[str]  # Resource identifier
+    target: str | None  # Resource identifier
     success: bool
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
     def to_json(self) -> str:
@@ -82,7 +82,7 @@ class AuditLogger:
 
     def __init__(
         self,
-        log_path: Optional[Path] = None,
+        log_path: Path | None = None,
         enabled: bool = True,
         console_output: bool = False,
     ) -> None:
@@ -96,7 +96,7 @@ class AuditLogger:
         self,
         event: AuditEvent,
         actor: str,
-        target: Optional[str] = None,
+        target: str | None = None,
         success: bool = True,
         **metadata: Any,
     ) -> None:
@@ -220,10 +220,10 @@ class AuditLogger:
 
 
 # Global audit logger instance (initialized in main.py)
-_audit_logger: Optional[AuditLogger] = None
+_audit_logger: AuditLogger | None = None
 
 
-def get_audit_logger() -> Optional[AuditLogger]:
+def get_audit_logger() -> AuditLogger | None:
     """Get the global audit logger instance."""
     return _audit_logger
 
@@ -237,9 +237,9 @@ def init_audit_logger(log_path: Path, enabled: bool = True) -> AuditLogger:
 
 def query_audit_log(
     log_path: Path,
-    since: Optional[str] = None,
-    event_type: Optional[str] = None,
-    actor: Optional[str] = None,
+    since: str | None = None,
+    event_type: str | None = None,
+    actor: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Query audit JSONL file with optional filters."""

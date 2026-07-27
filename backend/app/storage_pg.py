@@ -8,11 +8,10 @@ Used behind a feature flag (DATABASE_URL) so SQLite stays the default.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from pathlib import Path
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 logger = logging.getLogger("telegram_drive.storage_pg")
 
@@ -129,7 +128,7 @@ class PostgresBackend:
             rows = await conn.fetch(sql, *params)
             return [dict(r) for r in rows]
 
-    async def fetchrow(self, sql: str, params: Iterable[Any] = ()) -> Optional[dict[str, Any]]:
+    async def fetchrow(self, sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *params)
             return dict(row) if row else None
@@ -141,8 +140,8 @@ class PostgresBackend:
     # ── shared_links ──────────────────────────────────────────────────────────
     async def create_share(
         self, share_id: str, message_id: int, file_name: str, file_size: int,
-        owner_id: Optional[str] = None, password_hash: Optional[str] = None,
-        expires_at: Optional[int] = None, folder_id: Optional[int] = None,
+        owner_id: str | None = None, password_hash: str | None = None,
+        expires_at: int | None = None, folder_id: int | None = None,
     ) -> dict[str, Any]:
         now = _now()
         await self.execute(
@@ -154,10 +153,10 @@ class PostgresBackend:
         )
         return await self.get_share(share_id)
 
-    async def get_share(self, share_id: str) -> Optional[dict[str, Any]]:
+    async def get_share(self, share_id: str) -> dict[str, Any] | None:
         return await self.fetchrow("SELECT * FROM shared_links WHERE id = $1", (share_id,))
 
-    async def list_shares(self, owner_id: Optional[str] = None) -> list[dict[str, Any]]:
+    async def list_shares(self, owner_id: str | None = None) -> list[dict[str, Any]]:
         if owner_id:
             return await self.fetch(
                 "SELECT * FROM shared_links WHERE owner_id = $1 ORDER BY created_at DESC",
@@ -172,7 +171,7 @@ class PostgresBackend:
 
     # ── tenants ───────────────────────────────────────────────────────────────
     async def upsert_tenant(
-        self, tenant_id: str, api_key_hash: str, display_name: Optional[str]
+        self, tenant_id: str, api_key_hash: str, display_name: str | None
     ) -> None:
         await self.execute(
             "INSERT INTO tenants (tenant_id, api_key_hash, display_name, enabled, created_at) "
@@ -200,7 +199,7 @@ class PostgresBackend:
             return []
 
     # ── tenant_quotas ─────────────────────────────────────────────────────────
-    async def get_tenant_quota(self, tenant_id: str) -> Optional[dict[str, Any]]:
+    async def get_tenant_quota(self, tenant_id: str) -> dict[str, Any] | None:
         return await self.fetchrow(
             "SELECT * FROM tenant_quotas WHERE tenant_id = $1", (tenant_id,)
         )
@@ -286,7 +285,7 @@ class PostgresBackend:
         )
 
     # ── app_meta ──────────────────────────────────────────────────────────────
-    async def get_meta(self, key: str) -> Optional[str]:
+    async def get_meta(self, key: str) -> str | None:
         row = await self.fetchrow("SELECT value FROM app_meta WHERE key = $1", (key,))
         return row["value"] if row else None
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .storage import Storage
@@ -72,7 +72,7 @@ class ResumeManager:
             )
 
         # Create new session ID
-        raw = f"{owner_id}|{file_hash}|{now}|{total_size}".encode("utf-8")
+        raw = f"{owner_id}|{file_hash}|{now}|{total_size}".encode()
         session_id = f"res_{hashlib.sha256(raw).hexdigest()[:24]}"
 
         self.storage._write(
@@ -116,8 +116,8 @@ class ResumeManager:
         session_id: str,
         chunk_index: int,
         chunk_bytes: bytes,
-        file_id: Optional[str] = None,
-        expected_sha256: Optional[str] = None,
+        file_id: str | None = None,
+        expected_sha256: str | None = None,
     ) -> bool:
         """Record chunk verification and mark it complete in storage.
 

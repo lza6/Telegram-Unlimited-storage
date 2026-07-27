@@ -6,8 +6,6 @@ Error envelope note: auth_routes in the Rust backend use a FLAT
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -46,8 +44,8 @@ async def auth_status(request: Request) -> dict:
     state = get_state(request)
     mode = state.effective_transport_mode()
     connected = False
-    user: Optional[str] = None
-    hint: Optional[str] = None
+    user: str | None = None
+    hint: str | None = None
     if mode == "user":
         try:
             connected = await state.telegram.is_authorized()

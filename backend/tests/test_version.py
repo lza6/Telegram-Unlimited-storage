@@ -1,7 +1,7 @@
 """TASK-P0-01: 版本号统一 + 构建元数据 — 验收测试.
 
 验证：
-1. 单一版本源 `app.__version__` 存在且为 7.0.0-python
+1. 单一版本源 `app.__version__` 存在且为 8.0.0-python
 2. state.version / FastAPI version 引用同一常量
 3. health payload 含 build_date / python_version
 4. config.py 中 download_signing_secrets 只定义一次（无重复字段）
@@ -16,7 +16,7 @@ import re
 def test_single_version_source():
     import app
 
-    assert app.__version__ == "7.0.0-python"
+    assert app.__version__ == "8.0.0-python"
     meta = app.build_metadata()
     assert meta["version"] == app.__version__
     assert "build_date" in meta and meta["build_date"]
@@ -72,7 +72,7 @@ def test_health_payload_contains_build_metadata():
 
         @property
         def version(self):
-            return "7.0.0-python"
+            return "8.0.0-python"
 
         @property
         def uptime_secs(self):
@@ -90,7 +90,7 @@ def test_health_payload_contains_build_metadata():
             return False
 
     payload = _health_payload(_State(), telegram_connected=False, ready=True)
-    assert payload["version"] == "7.0.0-python"
+    assert payload["version"] == "8.0.0-python"
     assert "build_date" in payload
     assert "python_version" in payload
 
@@ -123,6 +123,7 @@ def test_no_hardcoded_legacy_version_in_source():
 
 def app_root() -> str:
     import pathlib
+
     import app
 
     return str(pathlib.Path(app.__file__).resolve().parent)

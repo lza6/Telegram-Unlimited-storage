@@ -11,10 +11,10 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "7.0.0-python"
+__version__ = "8.0.0-python"
 
 # Build date stamped at release time; can be overridden via env for reproducible builds.
-__build_date__: str = os.environ.get("APP_BUILD_DATE", "2026-07-27")
+__build_date__: str = os.environ.get("APP_BUILD_DATE", "2026-07-28")
 
 # Git SHA injected at build time (Dockerfile build-arg -> env). Empty in dev.
 __git_sha__: str = os.environ.get("APP_GIT_SHA", "")

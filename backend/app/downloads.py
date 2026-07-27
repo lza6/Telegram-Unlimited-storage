@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
 from urllib.parse import quote
 
 _RANGE_RE = re.compile(r"bytes=(\d+)-(\d*)")
@@ -22,7 +22,7 @@ class DownloadTarget:
     supports_range: bool = True
 
 
-def parse_range_header(header: Optional[str], total: int) -> Optional[tuple[int, int]]:
+def parse_range_header(header: str | None, total: int) -> tuple[int, int] | None:
     """Parse ``bytes=start-end`` → (start, end) clamped to total-1."""
     if not header:
         return None
@@ -54,7 +54,7 @@ def guess_mime(filename: str) -> str:
 
 
 async def _user_mode_stream(
-    state, folder_id: Optional[int], message_id: int, offset: int, length: Optional[int],
+    state, folder_id: int | None, message_id: int, offset: int, length: int | None,
     file_size: int = 0,
 ) -> AsyncIterator[bytes]:
     """Stream from Telethon; offset aligned to 4096 like the Rust impl."""
@@ -93,11 +93,11 @@ def adaptive_part_size(file_size: int) -> int:
 
 async def resolve_download(
     state,
-    folder_id: Optional[int],
+    folder_id: int | None,
     message_id: int,
-    filename_hint: Optional[str] = None,
+    filename_hint: str | None = None,
     offset: int = 0,
-    length: Optional[int] = None,
+    length: int | None = None,
 ) -> DownloadTarget:
     """Resolve a message id to a byte stream via the active transport."""
     mode = state.effective_transport_mode()

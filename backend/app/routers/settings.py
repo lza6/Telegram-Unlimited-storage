@@ -8,7 +8,7 @@ documented ranges.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -236,9 +236,9 @@ async def rotate_keys(request: Request) -> JSONResponse:
 @router.get("/admin/audit")
 async def query_audit(
     request: Request,
-    since: Optional[str] = Query(None, description="ISO timestamp filter"),
-    event: Optional[str] = Query(None, description="Event type filter"),
-    actor: Optional[str] = Query(None, description="Actor filter"),
+    since: str | None = Query(None, description="ISO timestamp filter"),
+    event: str | None = Query(None, description="Event type filter"),
+    actor: str | None = Query(None, description="Actor filter"),
     limit: int = Query(100, ge=1, le=1000),
 ) -> JSONResponse:
     state = get_state(request)

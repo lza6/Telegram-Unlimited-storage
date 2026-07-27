@@ -1,5 +1,80 @@
 # Changelog
 
+## [8.0.0-python] - 2026-07-28
+
+### Engineering baseline + observability + HTTP cache + reliability
+
+v8 completes the v7 → v8 upgrade roadmap (`plans/v8-迭代升级指南/下一步改进指南.md`):
+storage abstraction, structured logging, ETag conditional requests, idempotency
+persistence, web components + previews, FTS self-healing, and engineering gates.
+
+#### Engineering Baseline (TASK-P0-02 / P0-03)
+- **`backend/pyproject.toml`** — unified ruff (E/W/F/I/UP) + mypy + pytest config;
+  coverage gate `--cov-fail-under=50` (baseline 50.61%, ratcheting up).
+- **ruff auto-fix** — 250+ violations resolved; `ruff check app` now passes clean.
+- **`.github/workflows/python-ci.yml`** — lint + type + test (blocking), mypy
+  (advisory), gitleaks + semgrep SAST, Docker build smoke test. Replaces the
+  stale Rust/Tauri `ci-cd-server.yml` for the Python codebase.
+
+#### Storage Layer Abstraction (TASK-P0-01)
+- **`app/storage_backend.py`** — `StorageBackend` Protocol (runtime-checkable)
+  that `Storage` (SQLite, sync) and `PostgresBackend` (asyncpg, async) both
+  satisfy via duck typing. `create_storage_backend()` factory selects by
+  `DATABASE_URL`. No schema changes; call sites unchanged.
+- **`app/main.py`** — `build_state()` routes through the factory so PG can be
+  swapped in via env without touching routers.
+
+#### HTTP Cache Layer (TASK-P1-03)
+- **`app/etag.py`** — weak-validator ETag (`W/<sha256[:16]>` of file identity)
+  + RFC 7232 `If-None-Match` matching (weak comparison, `*` wildcard).
+- **`/files/{id}/download`** — returns `ETag` + `Cache-Control`; honours
+  `If-None-Match` → `304 Not Modified`. New metrics: `download_304_total`,
+  `download_200_total`.
+- **`Storage.get_file_etag` / `set_file_etag`** — persistent ETag cache.
+
+#### Idempotency Persistence (TASK-P1-04)
+- **`TransferManager`** — `idempotency_get/put` now mirror to a persistent
+  store so a process restart replays the cached response. `idempotency_mark_processing`
+  + 409 Conflict sentinel for in-flight keys. Backward compatible
+  (`storage=None` → pure in-memory).
+
+#### Structured Logging + Telemetry (TASK-P1-01)
+- **`app/observability.py`** — `JsonFormatter` (single-line JSON with
+  `ts`/`level`/`logger`/`message`/`request_id`/extras), `contextvars`-based
+  request_id propagation, optional OpenTelemetry (no-op when
+  `opentelemetry` absent or `OTEL_ENABLED` unset).
+- **`main.py`** — `setup_logging()` on app creation; `bind_request_context`
+  in the request middleware so every downstream record carries `request_id`.
+
+#### Frontend Components + Previews (TASK-P1-02)
+- **`<td-file-card>`** — file card with SVG thumbnail + lightbox preview
+  (image/video/audio/PDF embed + download fallback).
+- **`<td-toast-host>`** — notification host (success/error/warning/info),
+  auto-dismiss, keyboard-accessible.
+- **`/files/{id}/thumb`** — category-coloured SVG placeholder thumbnail.
+- **`service-worker.js`** — Background Sync (`upload-queue` tag) replays
+  failed uploads from IndexedDB when connectivity returns.
+- **`admin.css`** — file-card / lightbox / toast component styles.
+- **`files.html`** — wired the new components in.
+
+#### Reliability & Cleanup (TASK-P2-01 / P2-02 / P2-03 / P2-04)
+- **FTS5 auto-sync triggers** — `file_fts` now self-heals on
+  INSERT/UPDATE/DELETE of `file_assets`; no more index drift on rename/delete.
+- **Quota alerts** — `check_upload_quota` emits a `quota.alert` audit event at
+  80% usage threshold (configurable).
+- **`scripts/restore-drill.ps1`** — disaster-recovery drill: restores the
+  latest backup into a temp DB and validates table presence/row counts.
+- **Legacy Deprecation headers** — tg-disk endpoints (`/upload`,
+  `/upload_status`, `/merge_chunks`, …) return `Deprecation: true` +
+  `Sunset` + `Link rel="successor-version"` headers.
+- **Old artifact cleanup** — removed `server-e2e.log`, `x.tmp`;
+  `.gitignore` hardened against runtime logs/temp files.
+
+#### Version
+- `__version__` → `8.0.0-python` (single source `app/__init__.py`).
+
+---
+
 ## [4.0.0-beta] - 2026-06-14
 
 ### Production-ready hardening & DevOps modernization

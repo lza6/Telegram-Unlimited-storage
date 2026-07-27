@@ -7,14 +7,9 @@ re-uploading completed chunks.
 
 from __future__ import annotations
 
-import hashlib
-import time
-from typing import Any, Optional
+from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi.responses import JSONResponse
 
-from fastapi import APIRouter, Request, UploadFile, File, Form
-from fastapi.responses import JSONResponse, PlainTextResponse
-
-from .. import links
 from ..resume import ResumeManager
 from ..state import AppState
 
@@ -103,7 +98,7 @@ async def upload_chunk(
     session_id: str,
     chunk_index: int,
     request: Request,
-    chunk: Optional[UploadFile] = File(None),
+    chunk: UploadFile | None = File(None),
     sha256: str = Form(""),
     total_chunks: int = Form(0),
 ):
@@ -137,7 +132,7 @@ async def upload_chunk(
 async def upload_complete(
     session_id: str,
     request: Request,
-    folder_id: Optional[str] = Form(None),
+    folder_id: str | None = Form(None),
 ):
     state = get_state(request)
     state.authenticator.require_auth(request)
@@ -168,7 +163,7 @@ async def upload_complete(
             return api_error("MISSING_FILE_ID", f"Chunk {c['chunk_index']} missing Telegram file_id", 400)
         final_ids.append(c["file_id"])
 
-    fid: Optional[int] = None
+    fid: int | None = None
     if folder_id not in (None, "", "null"):
         try:
             fid = int(folder_id)

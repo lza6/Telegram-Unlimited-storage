@@ -17,7 +17,7 @@ import pytest
 
 from app.auth import CallerIdentity
 from app.quota import QuotaExceededError, check_upload_quota
-from app.rbac import SCOPES, has_scope, require_scope, _effective_scopes
+from app.rbac import SCOPES, _effective_scopes, has_scope, require_scope
 from app.storage import Storage
 
 

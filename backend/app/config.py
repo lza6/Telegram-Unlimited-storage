@@ -8,11 +8,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 # Repository root: backend/app/config.py -> app -> backend -> repo root.
 # Resolve the canonical .env location absolutely so the server loads credentials
@@ -30,25 +29,25 @@ class Settings(BaseSettings):
     )
 
     # ── Telegram credentials ────────────────────────────────────────────────
-    telegram_api_id: Optional[int] = Field(default=None, alias="TELEGRAM_API_ID")
-    telegram_api_hash: Optional[str] = Field(default=None, alias="TELEGRAM_API_HASH")
+    telegram_api_id: int | None = Field(default=None, alias="TELEGRAM_API_ID")
+    telegram_api_hash: str | None = Field(default=None, alias="TELEGRAM_API_HASH")
     # Transport mode: "user" (MTProto user account, legacy default) or "bot"
     # (bot pool uploading into a storage channel).
     telegram_transport_mode: Literal["user", "bot"] = Field(
         default="user", alias="TELEGRAM_TRANSPORT_MODE"
     )
-    tg_bot_token: Optional[str] = Field(default=None, alias="TG_BOT_TOKEN")
-    tg_storage_channel_id: Optional[int] = Field(
+    tg_bot_token: str | None = Field(default=None, alias="TG_BOT_TOKEN")
+    tg_storage_channel_id: int | None = Field(
         default=None, alias="TG_STORAGE_CHANNEL_ID"
     )
     # Optional SOCKS5 proxy, e.g. socks5://user:pass@host:1080
-    proxy_socks5: Optional[str] = Field(default=None, alias="PROXY_SOCKS5")
+    proxy_socks5: str | None = Field(default=None, alias="PROXY_SOCKS5")
 
     # ── Authentication ──────────────────────────────────────────────────────
     # Web console password (header X-Access-Pwd).
-    access_pwd: Optional[str] = Field(default=None, alias="ACCESS_PWD")
+    access_pwd: str | None = Field(default=None, alias="ACCESS_PWD")
     # External integration API key (header X-API-Key).
-    api_key: Optional[str] = Field(default=None, alias="API_KEY")
+    api_key: str | None = Field(default=None, alias="API_KEY")
     access_lockout_max: int = Field(default=8, alias="ACCESS_LOCKOUT_MAX")
     access_lockout_secs: int = Field(default=300, alias="ACCESS_LOCKOUT_SECS")
     multi_tenant_enabled: bool = Field(default=False, alias="MULTI_TENANT_ENABLED")
@@ -58,8 +57,8 @@ class Settings(BaseSettings):
     bind_host: str = Field(default="127.0.0.1", alias="BIND_HOST")
     base_url: str = Field(default="http://localhost:1334", alias="BASE_URL")
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
-    static_dir: Optional[Path] = Field(default=None, alias="STATIC_DIR")
-    docs_dir: Optional[Path] = Field(default=None, alias="DOCS_DIR")
+    static_dir: Path | None = Field(default=None, alias="STATIC_DIR")
+    docs_dir: Path | None = Field(default=None, alias="DOCS_DIR")
 
     # ── Transfer tuning ─────────────────────────────────────────────────────
     download_threads: int = Field(default=8, alias="DOWNLOAD_THREADS")
@@ -133,7 +132,7 @@ class Settings(BaseSettings):
     upload_queue_backend: Literal["memory", "redis"] = Field(
         default="memory", alias="UPLOAD_QUEUE_BACKEND"
     )
-    redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
 
     # ── CORS ─────────────────────────────────────────────────────────────────
     cors_origins: str = Field(default="http://localhost:1334", alias="CORS_ORIGINS")
@@ -148,7 +147,7 @@ class Settings(BaseSettings):
 
     # ── Database backend (TASK-P1-04 step 2: optional PostgreSQL) ─────────
     # Empty/"sqlite" → SQLite (default). "postgresql://user:pass@host:port/dbname"
-    database_url: Optional[str] = Field(default=None, alias="DATABASE_URL")
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
     @field_validator("port")
     @classmethod

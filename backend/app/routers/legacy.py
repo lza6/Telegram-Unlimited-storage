@@ -13,7 +13,7 @@ import hmac
 import json
 import re
 import time
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -47,7 +47,7 @@ def api_error(code: str, message: str, status_code: int) -> JSONResponse:
 
 
 # ── password helpers (no lockout; /verify handles lockout separately) ───────
-def _effective_pwd(state: AppState) -> Optional[str]:
+def _effective_pwd(state: AppState) -> str | None:
     return state.authenticator._effective_access_pwd()
 
 
@@ -74,7 +74,7 @@ def _host_base(state: AppState, request: Request) -> str:
     )
 
 
-def _flood_wait_seconds(exc: BaseException) -> Optional[int]:
+def _flood_wait_seconds(exc: BaseException) -> int | None:
     secs = getattr(exc, "seconds", None)
     if isinstance(secs, int):
         return secs
@@ -82,7 +82,7 @@ def _flood_wait_seconds(exc: BaseException) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def _flood_response(exc: BaseException) -> Optional[JSONResponse]:
+def _flood_response(exc: BaseException) -> JSONResponse | None:
     secs = _flood_wait_seconds(exc)
     if secs is None:
         return None
@@ -95,7 +95,7 @@ def _flood_response(exc: BaseException) -> Optional[JSONResponse]:
 
 # ── upload transport (bot vs user) ──────────────────────────────────────────
 async def _upload_bytes(
-    state: AppState, folder_id: Optional[int], data: bytes, filename: str, caption: str = ""
+    state: AppState, folder_id: int | None, data: bytes, filename: str, caption: str = ""
 ) -> int:
     mode = state.effective_transport_mode()
     if mode == "bot":
@@ -116,7 +116,7 @@ async def _upload_bytes(
 def _issue_upload_link(
     state: AppState,
     base: str,
-    folder_id: Optional[int],
+    folder_id: int | None,
     message_id: int,
     filename: str,
     file_size: int,
@@ -191,9 +191,9 @@ async def verify(request: Request, pwd: str = Form("")):
 @router.post("/upload")
 async def legacy_upload(
     request: Request,
-    file: Optional[UploadFile] = None,
+    file: UploadFile | None = None,
     pwd: str = Form(""),
-    folder_id: Optional[str] = Form(None),
+    folder_id: str | None = Form(None),
 ):
     state = get_state(request)
     if not (_pwd_form_ok(state, pwd) or _pwd_header_ok(state, request)):
@@ -249,7 +249,7 @@ async def legacy_upload(
 async def _do_legacy_upload(
     state: AppState,
     file: UploadFile,
-    folder_id: Optional[str],
+    folder_id: str | None,
     request: Request,
 ) -> PlainTextResponse | JSONResponse:
     try:
@@ -260,7 +260,7 @@ async def _do_legacy_upload(
                 f"file exceeds {state.settings.max_upload_size_mb} MB limit",
                 status_code=413,
             )
-        fid: Optional[int] = None
+        fid: int | None = None
         if folder_id not in (None, "", "null"):
             try:
                 fid = int(folder_id)
@@ -293,7 +293,7 @@ async def _do_legacy_upload(
 @router.post("/upload_chunk")
 async def upload_chunk(
     request: Request,
-    chunk: Optional[UploadFile] = None,
+    chunk: UploadFile | None = None,
     pwd: str = Form(""),
     chunk_index: str = Form(""),
     total_chunks: str = Form(""),
@@ -391,8 +391,8 @@ async def upload_status(request: Request):
         return PlainTextResponse("session not found", status_code=404)
     chunks = state.storage.list_upload_chunks(session_id)
     uploaded_count = sum(1 for c in chunks if c.get("status") == "uploaded")
-    file_id: Optional[str] = None
-    download_url: Optional[str] = None
+    file_id: str | None = None
+    download_url: str | None = None
     if session["status"] == "completed" and session.get("manifest_file_id"):
         try:
             mid = int(session["manifest_file_id"])
@@ -431,7 +431,7 @@ async def merge_chunks(
     pwd: str = Form(""),
     filename: str = Form(""),
     session_id: str = Form(""),
-    folder_id: Optional[str] = Form(None),
+    folder_id: str | None = Form(None),
     chunk_ids: str = Form(""),
 ):
     state = get_state(request)
@@ -442,7 +442,7 @@ async def merge_chunks(
     try:
         if not filename:
             return PlainTextResponse("missing filename", status_code=400)
-        fid: Optional[int] = None
+        fid: int | None = None
         if folder_id not in (None, "", "null"):
             try:
                 fid = int(folder_id)

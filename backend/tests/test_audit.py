@@ -7,7 +7,6 @@ import os
 import tempfile
 from pathlib import Path
 
-
 from app.audit import AuditEntry, AuditEvent, AuditLogger
 
 
@@ -67,7 +66,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log(AuditEvent.AUTH_SUCCESS, "10.0.0.1", success=True)
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 lines = f2.readlines()
 
             assert len(lines) == 1
@@ -84,7 +83,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=False)
             logger.log(AuditEvent.AUTH_FAILURE, "10.0.0.1", success=False)
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 content = f2.read()
 
             assert content == ""
@@ -97,7 +96,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log(AuditEvent.SHARE_CREATE, "localhost", success=True)
             assert log_path.exists()
-            with open(log_path, "r", encoding="utf-8") as f:
+            with open(log_path, encoding="utf-8") as f:
                 lines = f.readlines()
             assert len(lines) == 1
 
@@ -108,7 +107,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log_auth_success("192.168.1.100", method="password")
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "auth.success"
             assert data["actor"] == "192.168.1.100"
@@ -123,7 +122,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log_auth_failure("192.168.1.100", reason="invalid password")
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "auth.failure"
             assert data["success"] is False
@@ -138,7 +137,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log_file_upload("10.0.0.1", file_id=12345, filename="test.pdf", size=1024)
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "file.upload"
             assert data["target"] == "12345"
@@ -154,7 +153,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log_file_delete("admin", file_ids=[1, 2, 3], count=3)
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "file.delete"
             assert data["metadata"]["file_ids"] == [1, 2, 3]
@@ -171,7 +170,7 @@ class TestAuditLogger:
                 "localhost", share_id="abc123", filename="secret.pdf", password_protected=True
             )
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "share.create"
             assert data["target"] == "abc123"
@@ -187,7 +186,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log_share_download("192.168.1.1", share_id="xyz789", file_id=42)
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "share.download"
             assert data["target"] == "xyz789"
@@ -202,7 +201,7 @@ class TestAuditLogger:
             logger = AuditLogger(log_path=log_path, enabled=True)
             logger.log_share_password_fail("10.0.0.5", share_id="locked-share")
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 data = json.loads(f2.read())
             assert data["event"] == "share.password_failed"
             assert data["success"] is False
@@ -224,7 +223,7 @@ class TestAuditLogger:
             logger.log_file_upload("10.0.0.1", file_id=1, filename="a.txt", size=100)
             logger.log_share_create("10.0.0.1", share_id="s1", filename="b.txt", password_protected=False)
 
-            with open(log_path, "r", encoding="utf-8") as f2:
+            with open(log_path, encoding="utf-8") as f2:
                 lines = f2.readlines()
 
             assert len(lines) == 3

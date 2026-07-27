@@ -17,7 +17,7 @@ import hmac
 import time
 from collections import deque
 from html import escape as _html_escape
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
@@ -72,7 +72,7 @@ def _share_base_url(state: AppState, request: Request) -> str:
     )
 
 
-def _owner_filter(state: AppState, identity) -> Optional[str]:
+def _owner_filter(state: AppState, identity) -> str | None:
     """Tenant → scoped owner; admin (console/api) → None (see all)."""
     if identity.kind == "tenant":
         return f"tenant:{identity.tenant_id}"
@@ -134,12 +134,12 @@ async def create_share(request: Request) -> JSONResponse:
     folder_id = int(folder_id) if folder_id not in (None, "") else None
     file_size = int(body.get("file_size") or 0)
     password = (body.get("password") or "").strip()
-    password_hash: Optional[str] = None
-    password_salt: Optional[str] = None
+    password_hash: str | None = None
+    password_salt: str | None = None
     if password:
         password_hash, password_salt = security.hash_share_password(password)
     expiry_hours = body.get("expiry_hours")
-    expires_at: Optional[int] = None
+    expires_at: int | None = None
     if expiry_hours:
         try:
             hours = int(expiry_hours)
@@ -206,7 +206,7 @@ async def delete_share(share_id: str, request: Request) -> JSONResponse:
 async def bulk_revoke_shares(request: Request) -> JSONResponse:
     """Revoke multiple shares at once (admin only)."""
     state = get_state(request)
-    identity = state.authenticator.require_auth(request)
+    state.authenticator.require_auth(request)  # auth check side-effect; result unused here
     try:
         body = await request.json()
     except ValueError:
@@ -234,7 +234,7 @@ async def bulk_revoke_shares(request: Request) -> JSONResponse:
 async def revoke_shares_by_file(request: Request) -> JSONResponse:
     """Revoke all shares for a given file (admin only)."""
     state = get_state(request)
-    identity = state.authenticator.require_auth(request)
+    state.authenticator.require_auth(request)  # auth side-effect only
     try:
         body = await request.json()
     except ValueError:
@@ -262,10 +262,10 @@ async def revoke_shares_by_file(request: Request) -> JSONResponse:
 # ── public download helpers ─────────────────────────────────────────────────
 async def _stream_target(
     state: AppState,
-    folder_id: Optional[int],
+    folder_id: int | None,
     message_id: int,
-    filename_hint: Optional[str],
-    range_header: Optional[str],
+    filename_hint: str | None,
+    range_header: str | None,
 ) -> StreamingResponse:
     target = await resolve_download(state, folder_id, message_id, filename_hint)
     total = target.size
@@ -327,7 +327,7 @@ _PASSWORD_FORM = """<!DOCTYPE html>
 </html>"""
 
 
-def _password_form(token: str, file_name: str, error: Optional[str] = None) -> HTMLResponse:
+def _password_form(token: str, file_name: str, error: str | None = None) -> HTMLResponse:
     error_html = f'<p class="error">{_html_escape(error)}</p>' if error else ""
     html = _PASSWORD_FORM.format(
         file_name=_html_escape(file_name),
@@ -337,7 +337,7 @@ def _password_form(token: str, file_name: str, error: Optional[str] = None) -> H
     return HTMLResponse(html)
 
 
-def _share_blocked_response(share: dict[str, Any]) -> Optional[PlainTextResponse]:
+def _share_blocked_response(share: dict[str, Any]) -> PlainTextResponse | None:
     """Returns a 404/410 response if the share is revoked or expired."""
     if share.get("revoked"):
         return PlainTextResponse("This shared link has been revoked", status_code=404)
@@ -354,8 +354,8 @@ async def signed_download(
     exp: int = 0,
     owner: str = "",
     sig: str = "",
-    folder_id: Optional[str] = None,
-    max_downloads: Optional[int] = None,
+    folder_id: str | None = None,
+    max_downloads: int | None = None,
 ):
     state = get_state(request)
     secrets = state.key_rotation.get_all_secrets()
@@ -365,7 +365,7 @@ async def signed_download(
         message_id = int(file_id)
     except ValueError:
         return api_error("BAD_REQUEST", "invalid file_id", 400)
-    fid: Optional[int] = None
+    fid: int | None = None
     if folder_id not in (None, "", "null"):
         try:
             fid = int(folder_id)
@@ -500,8 +500,8 @@ def _raw_file_id_allowed(state: AppState, request: Request) -> bool:
 async def legacy_download(
     request: Request,
     file_id: str = "",
-    filename: Optional[str] = None,
-    folder_id: Optional[str] = None,
+    filename: str | None = None,
+    folder_id: str | None = None,
 ):
     state = get_state(request)
     if not _raw_file_id_allowed(state, request):
@@ -510,7 +510,7 @@ async def legacy_download(
         message_id = int(file_id)
     except ValueError:
         return PlainTextResponse("invalid file_id", status_code=400)
-    fid: Optional[int] = None
+    fid: int | None = None
     if folder_id not in (None, "", "null"):
         try:
             fid = int(folder_id)
@@ -530,7 +530,7 @@ async def stream_media(folder_id: str, message_id: int, request: Request, token:
     state = get_state(request)
     if not token or not hmac.compare_digest(token, state.stream_token):
         return PlainTextResponse("Invalid or missing stream token", status_code=403)
-    fid: Optional[int]
+    fid: int | None
     if folder_id.lower() in ("me", "home", "null"):
         fid = None
     else:

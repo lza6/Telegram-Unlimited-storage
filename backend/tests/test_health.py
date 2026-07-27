@@ -15,7 +15,7 @@ def test_api_health_always_200(client):
     r = client.get("/api/v1/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["version"] == "7.0.0-python"
+    assert body["version"] == "8.0.0-python"
     assert body["ready"] is False  # Telegram not configured
 
 
@@ -29,7 +29,7 @@ def test_config_endpoint(client):
     assert r.status_code == 200
     body = r.json()
     assert "chunk_size_mb" in body
-    assert body["api_version"] == "7.0.0-python"
+    assert body["api_version"] == "8.0.0-python"
 
 
 def test_metrics_endpoint(client):

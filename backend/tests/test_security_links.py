@@ -23,7 +23,7 @@ def test_api_key_wrong_rejected():
 
 
 def test_api_key_legacy_sha256_upgrade_flag():
-    legacy = hashlib.sha256("secret-key".encode()).hexdigest()
+    legacy = hashlib.sha256(b"secret-key").hexdigest()
     valid, upgrade = security.verify_api_key("secret-key", legacy)
     assert valid is True
     assert upgrade is True  # should upgrade to Argon2

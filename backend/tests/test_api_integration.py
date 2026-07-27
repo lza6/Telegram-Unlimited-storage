@@ -36,7 +36,7 @@ def test_config_endpoint_returns_config(client):
     assert "chunk_size_mb" in body
     assert "chunk_concurrent" in body
     assert "files_concurrent" in body
-    assert body["api_version"] == "7.0.0-python"
+    assert body["api_version"] == "8.0.0-python"
 
 
 def test_files_list_requires_auth(client):

@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import Optional
 from urllib.parse import quote, unquote
 from xml.etree.ElementTree import Element, tostring
 
@@ -83,7 +82,7 @@ def _auth_via_basic(state: AppState, request: Request) -> bool:
     return False
 
 
-def _require_webdav_auth(state: AppState, request: Request) -> Optional[Response]:
+def _require_webdav_auth(state: AppState, request: Request) -> Response | None:
     ip = _client_ip(request)
     # Determine if the client is already locked out
     is_locked = False
@@ -187,7 +186,7 @@ def _multistatus(responses: list[Element]) -> str:
     return tostring(ms, encoding="unicode", xml_declaration=True)
 
 
-async def _resolve_file_id(state: AppState, segments: list[str]) -> Optional[int]:
+async def _resolve_file_id(state: AppState, segments: list[str]) -> int | None:
     if not segments:
         return None
     target = segments[-1]
@@ -204,7 +203,7 @@ async def _resolve_file_id(state: AppState, segments: list[str]) -> Optional[int
         return None
     if not state.user_configured:
         return None
-    folder_id: Optional[int] = None
+    folder_id: int | None = None
     try:
         files = await state.telegram.list_files(folder_id)
     except Exception:

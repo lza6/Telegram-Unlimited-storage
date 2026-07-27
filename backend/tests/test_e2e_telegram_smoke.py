@@ -139,8 +139,9 @@ async def test_saga_compensation_marks_compensated(storage):
 @pytest.mark.asyncio
 async def test_saga_orphan_recovery_scanner(storage):
     """Saga recover_orphans: 扫描超过 5 分钟未完成的 saga 并触发补偿."""
-    from app.saga import SagaManager
     import time
+
+    from app.saga import SagaManager
 
     class _FakeTelegram:
         client = None

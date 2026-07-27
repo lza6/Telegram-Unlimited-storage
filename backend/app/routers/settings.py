@@ -213,6 +213,25 @@ async def put_network(request: Request) -> JSONResponse:
     return JSONResponse({"proxy": public_proxy, "vpn": vpn})
 
 
+# ── key rotation ────────────────────────────────────────────────────────────
+@router.post("/admin/rotate-keys")
+async def rotate_keys(request: Request) -> JSONResponse:
+    state = get_state(request)
+    state.authenticator.require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        new_ring = state.key_rotation.rotate_key(actor=f"admin:{client_ip}")
+    except Exception as exc:
+        return api_error("ROTATION_FAILED", str(exc), 500)
+    return JSONResponse(
+        {
+            "ok": True,
+            "last_rotated_at": new_ring["last_rotated_at"],
+            "retired_keys_count": len(new_ring["retired_keys"]),
+        }
+    )
+
+
 # ── audit log query ────────────────────────────────────────────────────────
 @router.get("/admin/audit")
 async def query_audit(

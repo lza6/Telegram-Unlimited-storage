@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hmac
 import time
+from collections import deque
 from html import escape as _html_escape
 from typing import Any, Optional
 
@@ -32,6 +33,26 @@ router = APIRouter(tags=["shares"])
 # Brute-force limiter for password-protected share verify (5 attempts / 300s).
 _VERIFY_MAX_ATTEMPTS = 5
 _VERIFY_WINDOW_SECS = 300
+
+# Sliding-window share download rate limiter (TASK-P1-02).
+# Key = share:{token}; each token limited to SHARE_DOWNLOAD_RPM requests/minute.
+_SHARE_RATE_WINDOW_SECS = 60.0
+_share_download_hits: dict[str, deque[float]] = {}
+
+
+def _share_rate_limiter_allow(state: AppState, token: str) -> tuple[bool, int]:
+    """Return (allowed, retry_after_secs) for per-share download rate limit."""
+    max_rpm = max(1, state.settings.share_download_rpm)
+    key = f"share:{token}"
+    now = time.time()
+    window = _share_download_hits.setdefault(key, deque())
+    while window and now - window[0] > _SHARE_RATE_WINDOW_SECS:
+        window.popleft()
+    if len(window) >= max_rpm:
+        retry_after = int(_SHARE_RATE_WINDOW_SECS - (now - window[0])) + 1
+        return False, max(1, retry_after)
+    window.append(now)
+    return True, 0
 
 
 def get_state(request: Request) -> AppState:
@@ -59,6 +80,8 @@ def _owner_filter(state: AppState, identity) -> Optional[str]:
 
 
 def _to_share_info(share: dict[str, Any], base: str) -> dict[str, Any]:
+    unique_visitors = share.get("unique_visitors") or ""
+    visitor_list = [v for v in unique_visitors.split(",") if v] if unique_visitors else []
     return {
         "id": share["id"],
         "file_name": share["file_name"],
@@ -67,6 +90,9 @@ def _to_share_info(share: dict[str, Any], base: str) -> dict[str, Any]:
         "expires_at": share["expires_at"],
         "has_password": bool(share.get("password_hash")),
         "link": f"{base}/d/{share['id']}",
+        "access_count": int(share.get("access_count") or 0),
+        "last_accessed_at": share.get("last_accessed_at"),
+        "unique_visitors_count": len(visitor_list),
     }
 
 
@@ -175,6 +201,64 @@ async def delete_share(share_id: str, request: Request) -> JSONResponse:
     return JSONResponse({"revoked": True})
 
 
+# ── share governance (TASK-P1-02) ───────────────────────────────────────────
+@router.post("/api/v1/shares/bulk-revoke")
+async def bulk_revoke_shares(request: Request) -> JSONResponse:
+    """Revoke multiple shares at once (admin only)."""
+    state = get_state(request)
+    identity = state.authenticator.require_auth(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return api_error("BAD_REQUEST", "invalid JSON body", 400)
+    share_ids = body.get("share_ids") or []
+    if not isinstance(share_ids, list) or not share_ids:
+        return api_error("BAD_REQUEST", "share_ids must be a non-empty array", 400)
+    share_ids = [str(sid).strip() for sid in share_ids if str(sid).strip()]
+    if not share_ids:
+        return api_error("BAD_REQUEST", "no valid share_ids", 400)
+
+    count = state.storage.bulk_revoke_shares(share_ids)
+    audit = get_audit_logger()
+    if audit:
+        client_ip = request.client.host if request.client else "unknown"
+        audit.log(
+            AuditEvent.SHARE_REVOKE, client_ip,
+            target=f"bulk:{len(share_ids)}", success=True,
+            bulk=True, count=count, share_ids=share_ids,
+        )
+    return JSONResponse({"revoked": count, "requested": len(share_ids)})
+
+
+@router.post("/api/v1/shares/revoke-by-file")
+async def revoke_shares_by_file(request: Request) -> JSONResponse:
+    """Revoke all shares for a given file (admin only)."""
+    state = get_state(request)
+    identity = state.authenticator.require_auth(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return api_error("BAD_REQUEST", "invalid JSON body", 400)
+    file_id = body.get("file_id")
+    if not file_id:
+        return api_error("BAD_REQUEST", "file_id required", 400)
+    try:
+        message_id = int(file_id)
+    except (TypeError, ValueError):
+        return api_error("BAD_REQUEST", "invalid file_id", 400)
+
+    count = state.storage.revoke_shares_by_file(message_id)
+    audit = get_audit_logger()
+    if audit:
+        client_ip = request.client.host if request.client else "unknown"
+        audit.log(
+            AuditEvent.SHARE_REVOKE, client_ip,
+            target=f"file:{message_id}", success=True,
+            bulk=True, count=count,
+        )
+    return JSONResponse({"revoked": count, "file_id": message_id})
+
+
 # ── public download helpers ─────────────────────────────────────────────────
 async def _stream_target(
     state: AppState,
@@ -274,7 +358,7 @@ async def signed_download(
     max_downloads: Optional[int] = None,
 ):
     state = get_state(request)
-    secrets = state.settings.all_signing_secrets
+    secrets = state.key_rotation.get_all_secrets()
     if not secrets or len(secrets[0]) < 32:
         return api_error("PRESIGN_DISABLED", "Presigned downloads are not configured", 503)
     try:
@@ -313,17 +397,33 @@ async def share_download(token: str, request: Request):
     blocked = _share_blocked_response(share)
     if blocked:
         return blocked
+    # Per-share download rate limiting (TASK-P1-02)
+    allowed, retry_after = _share_rate_limiter_allow(state, token)
+    if not allowed:
+        return PlainTextResponse(
+            "Too many downloads for this share link",
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
     password_hash = share.get("password_hash")
     if password_hash:
         cookie = request.cookies.get(f"share_auth_{token}")
         if not cookie or not links.verify_share_cookie(token, password_hash, cookie):
             return _password_form(token, share["file_name"])
     try:
-        # Audit log: share download access
+        # Audit log: share download access + access stats (TASK-P1-02)
         audit = get_audit_logger()
+        client_ip = request.client.host if request.client else "unknown"
         if audit:
-            client_ip = request.client.host if request.client else "unknown"
             audit.log_share_download(actor=client_ip, share_id=token, file_id=share.get("message_id"))
+
+        # Async-like record: IP hash (privacy-preserving) appended to visitors set
+        import hashlib as _hashlib
+        ip_hash = _hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:16]
+        try:
+            state.storage.record_share_access(token, ip_hash)
+        except Exception:  # noqa: BLE001 — best effort, never block download
+            pass
 
         return await _stream_target(
             state, share.get("folder_id"), share["message_id"],

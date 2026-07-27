@@ -221,3 +221,46 @@ class TransferManager:
         ]
         for k in stale_idem:
             self._idempotency_cache.pop(k, None)
+
+    # ── transfer listing (TASK-U-02) ─────────────────────────────────────────
+    def list_all_progress(self) -> list[dict[str, Any]]:
+        """Return a snapshot of all tracked transfer progress states."""
+        return [state.snapshot() for state in self._progress.values()]
+
+    def cancel_transfer(self, session_id: str) -> bool:
+        """Mark a transfer as cancelled; clients polling will see status='cancelled'."""
+        state = self._progress.get(session_id)
+        if state is None:
+            return False
+        state.status = "cancelled"
+        state.updated_at = time.time()
+        bus = self._buses.get(session_id)
+        if bus is not None:
+            bus.publish(state.snapshot())
+        return True
+
+    def retry_transfer(self, session_id: str) -> bool:
+        """Mark a failed/cancelled transfer for retry by resetting to 'queued'."""
+        state = self._progress.get(session_id)
+        if state is None:
+            return False
+        if state.status not in ("failed", "cancelled"):
+            return False
+        state.status = "queued"
+        state.updated_at = time.time()
+        bus = self._buses.get(session_id)
+        if bus is not None:
+            bus.publish(state.snapshot())
+        return True
+
+    def pause_transfer(self, session_id: str) -> bool:
+        """Mark a running transfer as paused."""
+        state = self._progress.get(session_id)
+        if state is None:
+            return False
+        state.status = "paused"
+        state.updated_at = time.time()
+        bus = self._buses.get(session_id)
+        if bus is not None:
+            bus.publish(state.snapshot())
+        return True

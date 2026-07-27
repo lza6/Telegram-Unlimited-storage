@@ -362,6 +362,91 @@
     return fetch(url, options);
   }
 
+  async function computeSha256Incrementally(blob, chunkSize, onProgress) {
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+      // Fallback: if Web Crypto unavailable, read whole file (risky for large files)
+      const buf = await blob.arrayBuffer();
+      const hash = await crypto.subtle.digest('SHA-256', buf);
+      return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    const reader = new FileReader();
+    let offset = 0;
+    let hash = await crypto.subtle.digest('SHA-256', new Uint8Array(0));
+    // Web Crypto doesn't support incremental hashing; we must read chunks and re-hash
+    // For now, read the whole file in chunks and update a running buffer
+    const chunks = [];
+    while (offset < blob.size) {
+      const end = Math.min(offset + chunkSize, blob.size);
+      const chunk = blob.slice(offset, end);
+      const buf = await chunk.arrayBuffer();
+      chunks.push(new Uint8Array(buf));
+      offset = end;
+      if (typeof onProgress === 'function') {
+        onProgress(offset, blob.size);
+      }
+    }
+    // Concatenate and hash
+    let totalLen = 0;
+    chunks.forEach(c => totalLen += c.length);
+    const combined = new Uint8Array(totalLen);
+    let pos = 0;
+    chunks.forEach(c => { combined.set(c, pos); pos += c.length; });
+    hash = await crypto.subtle.digest('SHA-256', combined);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function getResumableSessionKey(fileHash) {
+    return 'td-resumable-session:' + fileHash;
+  }
+
+  async function initOrResumeUpload(file, pwd, fileHash) {
+    const storageKey = getResumableSessionKey(fileHash);
+    let sessionId = null;
+    try { sessionId = localStorage.getItem(storageKey); } catch (ignore) { /* ignore */ }
+
+    if (sessionId) {
+      // Check if session still exists on server
+      try {
+        const res = await fetch('/api/v1/upload/status/' + encodeURIComponent(sessionId), {
+          headers: { 'X-Access-Pwd': pwd },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'active') {
+            return { sessionId: sessionId, missingChunks: data.missing_chunks || [] };
+          }
+        }
+      } catch (e) {
+        console.warn('resume check failed, will init new session', e);
+      }
+    }
+
+    // Init new session
+    const formData = new FormData();
+    formData.append('filename', file.name);
+    formData.append('total_size', file.size);
+    formData.append('total_chunks', Math.ceil(file.size / CHUNK_SIZE));
+    formData.append('file_hash', fileHash);
+    formData.append('owner_id', 'default');
+
+    const res = await fetch('/api/v1/upload/init', {
+      method: 'POST',
+      headers: { 'X-Access-Pwd': pwd },
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error('init session failed: ' + err);
+    }
+    const data = await res.json();
+    try { localStorage.setItem(storageKey, data.session_id); } catch (ignore) { /* ignore */ }
+    return { sessionId: data.session_id, missingChunks: data.missing_chunks || [] };
+  }
+
+  function clearResumableSession(fileHash) {
+    try { localStorage.removeItem(getResumableSessionKey(fileHash)); } catch (ignore) { /* ignore */ }
+  }
+
   class UploadQueue {
     constructor(concurrency) {
       this.concurrency = concurrency;
@@ -544,10 +629,53 @@
         return response.json();
       }
 
-      statusEl.textContent = '分片上传 (共 ' + totalChunks + ' 片，并发 ' + CONCURRENT_UPLOADS + ')…';
-      const sessionId = newUploadSessionId();
+      // ── Resumable Upload (TASK-P0-02) ─────────────────────────────────────
+      statusEl.textContent = '计算文件哈希…';
+      const fileHash = await computeSha256Incrementally(file, CHUNK_SIZE, function (offset, total) {
+        const pct = Math.round((offset / total) * 100);
+        statusEl.textContent = '计算文件哈希… ' + pct + '%';
+      });
+
+      let resumeInfo = null;
+      try {
+        resumeInfo = await initOrResumeUpload(file, pwd, fileHash);
+      } catch (e) {
+        console.warn('resumable init failed, falling back to legacy', e);
+        clearResumableSession(fileHash);
+      }
+
+      let sessionId;
+      let missingChunks = null;
+      if (resumeInfo) {
+        sessionId = resumeInfo.sessionId;
+        missingChunks = resumeInfo.missingChunks;
+        if (missingChunks.length === 0) {
+          // Already complete, just finalize
+          statusEl.textContent = '合并分片…';
+          const mergeFormData = new FormData();
+          mergeFormData.append('pwd', pwd);
+          mergeFormData.append('filename', file.name);
+          mergeFormData.append('session_id', sessionId);
+          mergeFormData.append('chunk_ids', JSON.stringify([]));
+          appendFolderId(mergeFormData, folderId);
+          const mergeResponse = await fetchWithRetry('/merge_chunks', { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: mergeFormData }, undefined, on503Wait);
+          if (!mergeResponse.ok) {
+            const rawError = await mergeResponse.text();
+            throw new Error(uploadStateMessage(rawError, mergeResponse.headers.get('Retry-After')));
+          }
+          clearResumableSession(fileHash);
+          progressBar.value = 100;
+          statusEl.textContent = '完成';
+          return mergeResponse.json();
+        }
+        statusEl.textContent = '恢复上传 (剩余 ' + missingChunks.length + ' 片)…';
+      } else {
+        sessionId = newUploadSessionId();
+        statusEl.textContent = '分片上传 (共 ' + totalChunks + ' 片，并发 ' + CONCURRENT_UPLOADS + ')…';
+      }
+
       const chunkIds = new Array(totalChunks);
-      let uploadedChunks = 0;
+      let uploadedChunks = missingChunks ? (totalChunks - missingChunks.length) : 0;
       const queue = new UploadQueue(CONCURRENT_UPLOADS);
       const uploadTasks = [];
       let progressFailed = null;
@@ -576,7 +704,8 @@
       }, pwd, onConnStatusChange);
 
       try {
-        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        const chunksToUpload = missingChunks || Array.from({ length: totalChunks }, (_, i) => i);
+        for (const chunkIndex of chunksToUpload) {
           const task = queue.add(async () => {
             if (progressFailed || chunkAbort.signal.aborted) {
               throw new Error(progressFailed || '上传已取消');
@@ -584,6 +713,8 @@
             const start = chunkIndex * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
             const chunk = file.slice(start, end);
+            const chunkSha = await computeSha256Incrementally(chunk, chunk.size, null);
+
             const formData = new FormData();
             formData.append('pwd', pwd);
             formData.append('session_id', sessionId);
@@ -591,6 +722,8 @@
             formData.append('chunk_index', String(chunkIndex));
             formData.append('total_chunks', String(totalChunks));
             formData.append('filename', file.name);
+            formData.append('sha256', chunkSha);
+
             const response = await fetchWithRetry(
               '/upload_chunk',
               { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: formData, signal: chunkAbort.signal },
@@ -636,6 +769,7 @@
           const rawError = await mergeResponse.text();
           throw new Error(uploadStateMessage(rawError, mergeResponse.headers.get('Retry-After')));
         }
+        clearResumableSession(fileHash);
         statusEl.textContent = '完成';
         return mergeResponse.json();
       } finally {

@@ -35,50 +35,15 @@
 
   <a class="skip-link" href="#main-content">跳到主要内容</a>
 
-  <div class="layout">
+  <td-shell current="dashboard">
 
-    <aside class="sidebar">
-
-      <strong class="brand-lockup">Telegram Drive</strong>
-
-      <nav class="sidebar-nav" aria-label="主导航">
-
-        <a href="/dashboard.html" class="active" data-nav="dashboard" aria-current="page">概览 & 上传</a>
-
-        <a href="/files.html" data-nav="files">文件列表</a>
-
-        <a href="/shares.html" data-nav="shares">分享管理</a>
-
-        <a href="/settings.html" data-nav="settings">服务设置</a>
-
-        <a href="/upload.html" data-nav="upload">上传页 (tg-disk)</a>
-
-        <a href="/docs.html" data-nav="docs">API 文档</a>
-
-        <a href="/telegram.html" data-nav="telegram">Telegram 登录</a>
-
-        <button type="button" id="logout-btn" class="btn-secondary sidebar-logout">退出登录</button>
-
-        <button type="button" id="theme-toggle" class="theme-toggle" aria-label="切换主题">
-          <span class="theme-toggle-icon" aria-hidden="true">🌙</span>
-          <span class="theme-toggle-label">暗色模式</span>
-        </button>
-
-      </nav>
-
-      <p class="sidebar-note">高级配置与 API 说明可在设置和文档中完成。</p>
-
-    </aside>
-
-    <main id="main-content" class="content" tabindex="-1">
-
-      <header class="page-header">
-        <div class="page-header-copy">
-          <p class="eyebrow">Storage control plane</p>
-          <h2>存储概览</h2>
-          <p class="page-subtitle">确认 Telegram 中继状态，然后把文件安全送入当前存储目标。</p>
-        </div>
-      </header>
+    <header class="page-header">
+      <div class="page-header-copy">
+        <p class="eyebrow">Storage control plane</p>
+        <h2>存储概览</h2>
+        <p class="page-subtitle">确认 Telegram 中继状态，然后把文件安全送入当前存储目标。</p>
+      </div>
+    </header>
       <div id="onboarding" class="onboarding" hidden aria-live="polite">
         <strong>首次使用（Bot 模式 3 步）</strong>
         <ol>
@@ -163,9 +128,7 @@
         <pre class="code" id="curl-upload"></pre>
       </section>
 
-    </main>
-
-  </div>
+  </td-shell>
 
 
 
@@ -188,6 +151,7 @@
 
 
   <script src="/assets/api-client.js"></script>
+  <script src="/components/td-shell.js"></script>
   <script src="/assets/web-pure.js"></script>
   <script src="/assets/page-readiness.js"></script>
   <script src="/assets/share-domain.js"></script>
@@ -294,10 +258,10 @@
       loginUrl: '/login.html'
 
     });
-    })();
 
+    TdApi.initSidebar('dashboard');
+    })();
   </script>
 
 </body>
-
 </html>

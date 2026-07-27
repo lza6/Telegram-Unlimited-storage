@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="传输中心 — 实时查看上传/下载队列、速度、ETA，取消或重试任务。" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/manifest.json" />
+  <title>传输中心 · Telegram Drive</title>
+  <link rel="stylesheet" href="/assets/admin.css" />
+  <script src="/assets/theme.js"></script>
+  <script src="/assets/page-meta.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <td-shell current="transfers">
+    <header class="page-header">
+      <div class="page-header-copy">
+        <p class="eyebrow">Transfer center</p>
+        <h2>传输中心</h2>
+        <p class="page-subtitle">实时队列、速度、ETA，支持取消与重试。</p>
+      </div>
+    </header>
+
+    <section class="card" aria-labelledby="transfers-heading">
+      <h3 id="transfers-heading">活跃传输</h3>
+      <table id="transfers-table" class="transfers-table">
+        <thead>
+          <tr>
+            <th scope="col">文件名</th>
+            <th scope="col">大小</th>
+            <th scope="col">进度</th>
+            <th scope="col">速度</th>
+            <th scope="col">剩余时间</th>
+            <th scope="col">状态</th>
+            <th scope="col" aria-sort="none">操作</th>
+          </tr>
+        </thead>
+        <tbody id="transfers-tbody">
+          <tr><td colspan="7" class="empty">加载中…</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </td-shell>
+
+  <button id="td-transfers-fab" class="transfers-fab" type="button" aria-label="打开传输中心" hidden>
+    <span class="fab-count" aria-live="polite">0</span>
+    <span class="fab-label">加载中…</span>
+  </button>
+
+  <script src="/components/td-shell.js"></script>
+  <script src="/assets/transfers-core.js"></script>
+</body>
+</html>

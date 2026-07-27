@@ -1920,8 +1920,8 @@ input.sr-only.sr-only {
   --surface-2: #f0f4f8;
   --surface-3: #e8eef4;
   --text: #1a2332;
-  --muted: #5c6b7e;
-  --text-soft: #3d4f63;
+  --muted: #4a5a6e;
+  --text-soft: #2a3a4e;
   --td-accent: #0d7ec2;
   --accent: #0d7ec2;
   --accent-2: #0a6da8;
@@ -1988,7 +1988,14 @@ input.sr-only.sr-only {
 
 [data-theme="light"] button,
 [data-theme="light"] .button {
-  color: #ffffff;
+  color: var(--text);
+}
+
+/* Theme toggle label must inherit a dark-on-light color in light mode for WCAG AA contrast */
+[data-theme="light"] .theme-toggle,
+[data-theme="light"] .theme-toggle-label,
+[data-theme="light"] .theme-toggle-icon {
+  color: var(--text-soft);
 }
 
 [data-theme="light"] .btn-secondary,
@@ -2196,4 +2203,116 @@ input.sr-only.sr-only {
 .theme-toggle-icon {
   font-size: 1rem;
   line-height: 1;
+}
+
+/* ── TASK-U-02: 传输中心 UI + WCAG 2.2 AA 增强 ────────────────────────────── */
+
+/* WCAG 2.2 AA: focus-visible 焦点可见样式（对比度 ≥3:1） */
+*:focus-visible {
+  outline: 2px solid #4a90d9;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* WCAG 2.2 AA: prefers-reduced-motion 禁用动画 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* WCAG 2.2 AA: 跳过链接可见 */
+.skip-link:focus {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 9999;
+  padding: 0.5rem 1rem;
+  background: #fff;
+  color: #182533;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.3);
+}
+
+/* 传输中心表格 */
+.transfers-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.transfers-table th,
+.transfers-table td {
+  padding: 0.65rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid #33475b;
+}
+.transfers-table th[scope="col"] {
+  background: #202b36;
+  color: #9fb3c8;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.transfers-table .empty {
+  text-align: center;
+  color: #9fb3c8;
+  padding: 2rem;
+}
+.transfers-table .status-completed { color: #3fb950; }
+.transfers-table .status-failed { color: #ff7b72; }
+.transfers-table .status-running { color: #4a90d9; }
+.transfers-table .status-queued { color: #9fb3c8; }
+.transfers-table .status-cancelled { color: #9fb3c8; text-decoration: line-through; }
+
+/* 浮动面板 */
+.transfers-fab {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  border: 1px solid #33475b;
+  background: #202b36;
+  color: #e6edf3;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  font-size: 0.85rem;
+}
+.transfers-fab .fab-count {
+  display: inline-flex;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  background: #40a7e3;
+  color: #08131f;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 0 0.35rem;
+}
+
+/* WCAG 2.2 AA: 表单 label 关联 + 错误提示 */
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+.form-field label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.form-field [aria-describedby] + .field-error,
+.form-field .field-error {
+  color: #ff7b72;
+  font-size: 0.8rem;
+}
+.form-field input[aria-invalid="true"] {
+  border-color: #ff7b72;
 }

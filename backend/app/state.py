@@ -7,12 +7,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import __version__
 from .auth import Authenticator
 from .bot_transport import BotTransport
 from .config import Settings
 from .storage import Storage
 from .telegram_state import TelegramState
 from .transfers import TransferManager
+from .key_rotation import KeyRotationManager
 
 
 @dataclass
@@ -23,6 +25,7 @@ class AppState:
     bot: Optional[BotTransport]
     authenticator: Authenticator
     transfers: TransferManager
+    key_rotation: KeyRotationManager = field(init=False)
     started_at: float = field(default_factory=time.time)
     # Session-level token guarding /stream URLs (constant-time compared).
     stream_token: str = field(default_factory=lambda: secrets.token_hex(16))
@@ -31,9 +34,12 @@ class AppState:
     # Share password-verify brute-force limiter (keyed by share token).
     share_verify_attempts: dict[str, list[float]] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.key_rotation = KeyRotationManager(self.settings.data_dir, self.settings)
+
     @property
     def version(self) -> str:
-        return "2.0.0-python"
+        return __version__
 
     @property
     def uptime_secs(self) -> int:

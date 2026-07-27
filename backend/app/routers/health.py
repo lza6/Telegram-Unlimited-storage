@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from .. import build_metadata
 from ..metrics import get_metrics, get_registry
 from ..state import AppState
 
@@ -34,6 +35,7 @@ def _health_payload(state: AppState, telegram_connected: bool, ready: bool) -> d
         "telegram_connected": telegram_connected,
         "uptime_secs": state.uptime_secs,
         "build": f"{state.version}-local",
+        **build_metadata(),
         "ready": ready,
         "transport_mode": state.effective_transport_mode(),
         "bot_configured": state.bot_configured,

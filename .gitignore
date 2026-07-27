@@ -52,6 +52,7 @@ scripts/native/**/__pycache__/
 backend/.venv/
 backend/data/
 backend/test_data/
+backend/axe.min.js
 **/__pycache__/
 **/*.pyc
 **/*.pyo

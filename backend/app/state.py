@@ -5,24 +5,25 @@ from __future__ import annotations
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from . import __version__
 from .auth import Authenticator
 from .bot_transport import BotTransport
 from .config import Settings
-from .storage import Storage
+from .key_rotation import KeyRotationManager
+from .storage_backend import StorageBackend
 from .telegram_state import TelegramState
 from .transfers import TransferManager
-from .key_rotation import KeyRotationManager
 
 
 @dataclass
 class AppState:
     settings: Settings
-    storage: Storage
+    # v8: typed against the StorageBackend Protocol so either the sync SQLite
+    # Storage or the async PostgresBackend can be injected (TASK-P0-01).
+    storage: StorageBackend
     telegram: TelegramState
-    bot: Optional[BotTransport]
+    bot: BotTransport | None
     authenticator: Authenticator
     transfers: TransferManager
     key_rotation: KeyRotationManager = field(init=False)
@@ -30,7 +31,7 @@ class AppState:
     # Session-level token guarding /stream URLs (constant-time compared).
     stream_token: str = field(default_factory=lambda: secrets.token_hex(16))
     # Runtime transport mode override (persisted in transport_mode.json).
-    active_transport_mode: Optional[str] = None
+    active_transport_mode: str | None = None
     # Share password-verify brute-force limiter (keyed by share token).
     share_verify_attempts: dict[str, list[float]] = field(default_factory=dict)
 

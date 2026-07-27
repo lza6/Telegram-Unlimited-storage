@@ -23,34 +23,36 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 
-from . import security
-from . import __version__
+from . import __version__, security
 from .audit import init_audit_logger
 from .auth import Authenticator
 from .bot_transport import BotTransport
 from .config import Settings, get_settings
 from .errors import TelegramDriveError
+from .observability import bind_request_context, setup_logging, setup_telemetry
 from .quota import periodic_quota_reconcile
-from .routers import auth as auth_router
-from .routers import files as files_router
-from .routers import health as health_router
-from .routers import legacy as legacy_router
-from .routers import quota as quota_router
-from .routers import settings as settings_router
-from .routers import shares as shares_router
-from .routers import upload as upload_router
-from .routers import transfers as transfers_router
-from .routers import webdav as webdav_router
+from .routers import (
+    auth as auth_router,
+    files as files_router,
+    health as health_router,
+    legacy as legacy_router,
+    quota as quota_router,
+    settings as settings_router,
+    shares as shares_router,
+    transfers as transfers_router,
+    upload as upload_router,
+    webdav as webdav_router,
+)
 from .settings_store import SettingsStore
 from .state import AppState
 from .storage import Storage
+from .storage_backend import create_storage_backend
 from .telegram_state import TelegramState
 from .transfers import TransferManager
 
@@ -59,6 +61,20 @@ logger = logging.getLogger("telegram_drive")
 # Paths exempt from rate limiting (probes hit these constantly).
 _RATE_LIMIT_EXEMPT_PREFIXES = ("/health", "/api/v1/health", "/metrics")
 _RATE_WINDOW_SECS = 60.0
+
+# v8: legacy tg-disk endpoints that carry a Deprecation/Sunset header (TASK-P2-04).
+_LEGACY_PATHS = (
+    "/verify", "/upload", "/upload_chunk", "/upload_status",
+    "/merge_chunks", "/upload_progress_token", "/upload_events", "/upload_ws",
+)
+
+
+def _is_legacy_path(path: str) -> bool:
+    """True if the path is a deprecated tg-disk legacy endpoint."""
+    for prefix in _LEGACY_PATHS:
+        if path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "?"):
+            return True
+    return False
 
 
 # ── tenant bootstrap ────────────────────────────────────────────────────────
@@ -81,7 +97,7 @@ def _bootstrap_tenants(settings: Settings, storage: Storage) -> None:
         logger.info("bootstrapped default tenant from API_KEY")
 
 
-def _load_transport_override(settings: Settings) -> Optional[str]:
+def _load_transport_override(settings: Settings) -> str | None:
     """Restore the persisted transport_mode.json override (Rust parity)."""
     try:
         mode = SettingsStore(settings.data_dir).transport.load().get("mode")
@@ -93,14 +109,17 @@ def _load_transport_override(settings: Settings) -> Optional[str]:
 def build_state(settings: Settings) -> AppState:
     """Construct the full AppState graph (no network I/O yet)."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    storage = Storage(settings.db_path)
+    # v8: route through the storage backend factory so DATABASE_URL can swap
+    # SQLite → PostgreSQL without touching call sites (TASK-P0-01).
+    # For SQLite (default) this returns the exact same Storage instance as before.
+    storage = create_storage_backend(settings)
     telegram = TelegramState(
         api_id=settings.telegram_api_id,
         api_hash=settings.telegram_api_hash,
         data_dir=settings.data_dir,
         proxy_url=settings.proxy_socks5,
     )
-    bot: Optional[BotTransport] = None
+    bot: BotTransport | None = None
     if settings.tg_bot_token and settings.tg_storage_channel_id:
         bot = BotTransport(
             bot_token=settings.tg_bot_token,
@@ -111,6 +130,7 @@ def build_state(settings: Settings) -> AppState:
     transfers = TransferManager(
         file_slots=settings.files_concurrent,
         chunk_slots=settings.chunk_concurrent,
+        storage=storage,  # v8: idempotency persistence (TASK-P1-04)
     )
     _bootstrap_tenants(settings, storage)
     return AppState(
@@ -202,7 +222,7 @@ def _inject_nonce(html: str, nonce: str) -> str:
 
 
 # ── static file serving ─────────────────────────────────────────────────────
-def _safe_resolve(root: Path, rel: str) -> Optional[Path]:
+def _safe_resolve(root: Path, rel: str) -> Path | None:
     """Resolve rel under root, rejecting path traversal (returns None if unsafe)."""
     root = root.resolve()
     target = (root / rel).resolve()
@@ -359,8 +379,10 @@ async def lifespan(app: FastAPI):
             logger.warning("storage close failed: %s", exc)
 
 
-def create_app(settings: Optional[Settings] = None) -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    # v8 (TASK-P1-01): structured JSON logging + optional OpenTelemetry.
+    setup_logging()
     app = FastAPI(
         title="Telegram Drive",
         version=__version__,
@@ -369,6 +391,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         redoc_url="/api/redoc" if not settings.disable_docs else None,
     )
     app.state.settings = settings
+    setup_telemetry(app)  # no-op unless OTEL_ENABLED=1 + opentelemetry installed
 
     # GZip before CORS so compressed responses get correct headers.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -404,6 +427,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.middleware("http")
     async def request_pipeline(request: Request, call_next):
         request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        # v8: bind request_id so every downstream log record includes it.
+        bind_request_context(request_id)
         nonce = secrets.token_urlsafe(16)
         request.state.nonce = nonce
 
@@ -421,6 +446,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
+        # v8 (TASK-P2-04): mark legacy tg-disk endpoints as deprecated so
+        # clients see the Sunset header and migrate to /api/v1/*.
+        if _is_legacy_path(path):
+            response.headers.setdefault("Deprecation", "true")
+            response.headers.setdefault("Sunset", "Mon, 31 Dec 2026 23:59:59 GMT")
+            response.headers.setdefault(
+                "Link",
+                '</api/v1/files>; rel="successor-version"',
+            )
         # Security headers (CSP nonce only meaningful for HTML we serve).
         _security_headers(response, nonce)
         logger.info(

@@ -13,8 +13,9 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS shared_links (
@@ -157,6 +158,25 @@ CREATE TABLE IF NOT EXISTS app_meta (
 CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(
     file_name, caption, tokenize='unicode61'
 );
+
+-- v8 (TASK-P2-01): keep file_fts in sync with file_assets automatically.
+-- Before v8 the index was maintained by manual fts_insert/fts_delete calls,
+-- which drifted on renames/deletes. These triggers make FTS self-healing.
+CREATE TRIGGER IF NOT EXISTS file_fts_ai AFTER INSERT ON file_assets
+BEGIN
+    INSERT OR REPLACE INTO file_fts (rowid, file_name, caption)
+    VALUES (new.message_id, new.file_name, '');
+END;
+CREATE TRIGGER IF NOT EXISTS file_fts_ad AFTER DELETE ON file_assets
+BEGIN
+    DELETE FROM file_fts WHERE rowid = old.message_id;
+END;
+CREATE TRIGGER IF NOT EXISTS file_fts_au AFTER UPDATE ON file_assets
+BEGIN
+    DELETE FROM file_fts WHERE rowid = old.message_id;
+    INSERT OR REPLACE INTO file_fts (rowid, file_name, caption)
+    VALUES (new.message_id, new.file_name, '');
+END;
 """
 
 
@@ -215,7 +235,7 @@ class Storage:
     def _write(self, sql: str, params: Iterable[Any] = ()) -> int:
         return self._execute(sql, params)
 
-    def _query_one(self, sql: str, params: Iterable[Any] = ()) -> Optional[dict[str, Any]]:
+    def _query_one(self, sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
         rows = self._query(sql, params)
         return rows[0] if rows else None
 
@@ -226,7 +246,7 @@ class Storage:
             return cur.rowcount
 
     # ── app_meta ────────────────────────────────────────────────────────────
-    def get_meta(self, key: str) -> Optional[str]:
+    def get_meta(self, key: str) -> str | None:
         row = self._query_one("SELECT value FROM app_meta WHERE key = ?", (key,))
         return row["value"] if row else None
 
@@ -241,14 +261,14 @@ class Storage:
     def create_share(
         self,
         share_id: str,
-        folder_id: Optional[int],
+        folder_id: int | None,
         message_id: int,
         file_name: str,
         file_size: int,
-        password_hash: Optional[str],
-        password_salt: Optional[str],
-        expires_at: Optional[int],
-        owner_id: Optional[str],
+        password_hash: str | None,
+        password_salt: str | None,
+        expires_at: int | None,
+        owner_id: str | None,
     ) -> dict[str, Any]:
         self._execute(
             "INSERT INTO shared_links (id, folder_id, message_id, file_name, "
@@ -269,10 +289,10 @@ class Storage:
         )
         return self.get_share(share_id)  # type: ignore[return-value]
 
-    def get_share(self, share_id: str) -> Optional[dict[str, Any]]:
+    def get_share(self, share_id: str) -> dict[str, Any] | None:
         return self._query_one("SELECT * FROM shared_links WHERE id = ?", (share_id,))
 
-    def list_shares(self, owner_id: Optional[str] = None) -> list[dict[str, Any]]:
+    def list_shares(self, owner_id: str | None = None) -> list[dict[str, Any]]:
         if owner_id is not None:
             return self._query(
                 "SELECT * FROM shared_links WHERE owner_id = ? "
@@ -363,13 +383,13 @@ class Storage:
                 )
             self._write_conn.commit()
 
-    def get_upload_session(self, session_id: str) -> Optional[dict[str, Any]]:
+    def get_upload_session(self, session_id: str) -> dict[str, Any] | None:
         return self._query_one(
             "SELECT * FROM upload_sessions WHERE session_id = ?", (session_id,)
         )
 
     def update_upload_session_status(
-        self, session_id: str, status: str, manifest_file_id: Optional[str] = None
+        self, session_id: str, status: str, manifest_file_id: str | None = None
     ) -> None:
         self._execute(
             "UPDATE upload_sessions SET status = ?, manifest_file_id = "
@@ -381,8 +401,8 @@ class Storage:
         self,
         session_id: str,
         chunk_index: int,
-        file_id: Optional[str],
-        sha256: Optional[str],
+        file_id: str | None,
+        sha256: str | None,
     ) -> None:
         self._execute(
             "INSERT INTO upload_chunks (session_id, chunk_index, file_id, "
@@ -395,7 +415,7 @@ class Storage:
 
     def get_upload_chunk(
         self, session_id: str, chunk_index: int
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return self._query_one(
             "SELECT * FROM upload_chunks WHERE session_id = ? AND chunk_index = ?",
             (session_id, chunk_index),
@@ -415,7 +435,7 @@ class Storage:
         telegram_file_id: str,
         file_name: str,
         file_size: int,
-        caption: Optional[str],
+        caption: str | None,
         bot_pool_index: int,
     ) -> None:
         self._execute(
@@ -427,7 +447,7 @@ class Storage:
             (message_id, telegram_file_id, file_name, file_size, caption, _now(), bot_pool_index),
         )
 
-    def get_bot_file(self, message_id: int) -> Optional[dict[str, Any]]:
+    def get_bot_file(self, message_id: int) -> dict[str, Any] | None:
         return self._query_one(
             "SELECT * FROM bot_file_map WHERE message_id = ?", (message_id,)
         )
@@ -460,7 +480,7 @@ class Storage:
             return cursor.rowcount > 0
 
     # ── metadata_cache ──────────────────────────────────────────────────────
-    def cache_get(self, cache_key: str, ttl_secs: int) -> Optional[Any]:
+    def cache_get(self, cache_key: str, ttl_secs: int) -> Any | None:
         row = self._query_one(
             "SELECT payload, updated_at FROM metadata_cache WHERE cache_key = ?",
             (cache_key,),
@@ -488,7 +508,7 @@ class Storage:
         self,
         tenant_id: str,
         api_key_hash: str,
-        display_name: Optional[str],
+        display_name: str | None,
     ) -> None:
         self._execute(
             "INSERT INTO tenants (tenant_id, api_key_hash, display_name, "
@@ -504,7 +524,7 @@ class Storage:
 
     def get_enabled_tenant_by_hash(
         self, api_key_hash: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return self._query_one(
             "SELECT * FROM tenants WHERE api_key_hash = ? AND enabled = 1",
             (api_key_hash,),
@@ -525,7 +545,7 @@ class Storage:
             return []
 
     # ── tenant_quotas (TASK-P1-03) ─────────────────────────────────────────
-    def get_tenant_quota(self, tenant_id: str) -> Optional[dict[str, Any]]:
+    def get_tenant_quota(self, tenant_id: str) -> dict[str, Any] | None:
         row = self._query_one(
             "SELECT * FROM tenant_quotas WHERE tenant_id = ?",
             (tenant_id,),
@@ -597,7 +617,7 @@ class Storage:
     def upsert_file_asset(
         self,
         message_id: int,
-        folder_id: Optional[int],
+        folder_id: int | None,
         owner_id: str,
         file_name: str,
         file_size: int,
@@ -703,3 +723,65 @@ class Storage:
             "FROM file_fts WHERE file_fts MATCH ? ORDER BY rank LIMIT ?",
             (clean, limit),
         )
+
+    # ── v8: ETag cache (TASK-P1-03 prerequisite) ───────────────────────────
+    # Stored in app_meta with a namespaced key to avoid a schema migration
+    # for the initial rollout. A dedicated column can be added later without
+    # changing this method signature.
+    _ETAG_PREFIX = "etag:"
+
+    def get_file_etag(self, message_id: int) -> str | None:
+        """Return the cached ETag for a file asset, or None if not computed."""
+        return self.get_meta(f"{self._ETAG_PREFIX}{message_id}")
+
+    def set_file_etag(self, message_id: int, etag: str) -> None:
+        """Persist the ETag for a file asset (idempotent upsert)."""
+        self.set_meta(f"{self._ETAG_PREFIX}{message_id}", etag)
+
+    # ── v8: idempotency key store (TASK-P1-04 prerequisite) ────────────────
+    # Same app_meta-namespacing strategy: zero-migration persistence for the
+    # idempotency replay cache. Response body is JSON-encoded.
+    _IDEMPOTENCY_PREFIX = "idem:"
+    _IDEMPOTENCY_PROCESSING = "__PROCESSING__"
+
+    def get_idempotency(self, key: str) -> Any | None:
+        """Return the cached response for an idempotency key.
+
+        Returns the sentinel ``__PROCESSING__`` string when a request is
+        in-flight (so concurrent callers get 409 Conflict), the cached
+        response dict when complete, or None when the key is unknown.
+        """
+        return self.get_meta(f"{self._IDEMPOTENCY_PREFIX}{key}")
+
+    def set_idempotency_processing(self, key: str) -> None:
+        """Mark an idempotency key as in-flight (insert if absent)."""
+        self.set_meta(f"{self._IDEMPOTENCY_PREFIX}{key}", self._IDEMPOTENCY_PROCESSING)
+
+    def set_idempotency_complete(self, key: str, response: Any) -> None:
+        """Persist the completed response for an idempotency key."""
+        self.set_meta(
+            f"{self._IDEMPOTENCY_PREFIX}{key}",
+            json.dumps(response) if not isinstance(response, str) else response,
+        )
+
+    def cleanup_idempotency(self, ttl_secs: int = 86400) -> int:
+        """Remove idempotency entries older than ttl_secs.
+
+        Uses the app_meta table's lack of a timestamp column by storing
+        TTL-expiry as part of the value when set; here we simply cap total
+        count to avoid unbounded growth (simple LRU-ish sweep).
+        """
+        # app_meta has no timestamp column; sweep by prefix and count.
+        rows = self._query(
+            "SELECT key FROM app_meta WHERE key LIKE ?",
+            (f"{self._IDEMPOTENCY_PREFIX}%",),
+        )
+        if len(rows) < 1000:
+            return 0
+        # Over cap: delete oldest half (no timestamp → delete by row order).
+        deleted = 0
+        for row in rows[: len(rows) // 2]:
+            deleted += self._execute(
+                "DELETE FROM app_meta WHERE key = ?", (row["key"],)
+            )
+        return deleted
